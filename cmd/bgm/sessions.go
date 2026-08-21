@@ -56,6 +56,7 @@ func presetsCommand() *cobra.Command {
 			}
 			fmt.Println("\nstart one with: bgm --preset NAME")
 			fmt.Println("switch inside the player with: preset NAME")
+			fmt.Println(`or skip presets and start from a prompt: bgm "dark techno"`)
 		},
 	}
 }
