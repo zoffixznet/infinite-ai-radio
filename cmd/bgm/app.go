@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"bgm/internal/config"
@@ -14,17 +15,20 @@ import (
 	"bgm/internal/logging"
 	"bgm/internal/prompting"
 	"bgm/internal/session"
+	"bgm/internal/state"
 )
 
 // app bundles everything the subcommands need.
 type app struct {
-	paths  config.Paths
-	cfg    config.Config
-	log    *slog.Logger
-	closer io.Closer
+	paths   config.Paths
+	cfg     config.Config
+	log     *slog.Logger
+	closer  io.Closer
+	stateD  state.Dir
+	timings *state.Timings
 }
 
-// newApp resolves paths, loads config and opens the log.
+// newApp resolves paths, loads config, opens the log and the state dir.
 func newApp(verbose bool) (*app, error) {
 	paths, err := config.ResolvePaths()
 	if err != nil {
@@ -41,7 +45,18 @@ func newApp(verbose bool) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &app{paths: paths, cfg: cfg, log: logger, closer: closer}, nil
+	stateD, err := state.NewDir(paths.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	return &app{
+		paths:   paths,
+		cfg:     cfg,
+		log:     logger,
+		closer:  closer,
+		stateD:  stateD,
+		timings: state.NewTimings(stateD),
+	}, nil
 }
 
 func (a *app) close() {
@@ -50,51 +65,48 @@ func (a *app) close() {
 	}
 }
 
-// buildEngine constructs the configured music engine, or returns nil (with
-// a user-facing explanation) when it cannot run.
-func (a *app) buildEngine(ctx context.Context) (engine.Engine, string) {
+// daemonLogFile is where the shared engine daemon writes its output.
+func (a *app) daemonLogFile() string {
+	return filepath.Join(a.paths.LogsDir(), "engine-daemon.log")
+}
+
+// buildEngine constructs the configured music engine backed by the shared
+// engine daemon (adopting a running one when possible), or returns nil
+// with a user-facing explanation when it cannot run.
+func (a *app) buildEngine(ctx context.Context) (engine.Engine, *acestep.Remote, string) {
 	switch a.cfg.Engine {
 	case "noise":
-		return nil, ""
+		return nil, nil, ""
 	case "acestep":
 		if !acestep.Installed(a.paths.EngineDir()) {
-			return nil, "music engine not installed; run 'bgm setup' (or 'make setup') first"
+			return nil, nil, "music engine not installed; run 'bgm setup' (or 'make setup') first"
 		}
-		baseURL := fmt.Sprintf("http://127.0.0.1:%d", a.cfg.ACEStep.Port)
-		client := acestep.NewClient(baseURL)
-		sidecar := acestep.NewSidecar(acestep.SidecarConfig{
-			EngineDir:   a.paths.EngineDir(),
-			Port:        a.cfg.ACEStep.Port,
-			LMModelPath: a.cfg.ACEStep.LMModelPath,
-			LMBackend:   a.cfg.ACEStep.LMBackend,
-		}, client, a.log)
-		sidecar.Start(ctx)
-		eng := acestep.NewEngine(client, sidecar, acestep.Options{
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, nil, fmt.Sprintf("cannot locate the bgm executable: %v", err)
+		}
+		remote := acestep.NewRemote(a.stateD, exe, a.daemonLogFile(), a.log)
+		remote.Start(ctx)
+		eng := acestep.NewEngine(remote, acestep.Options{
 			InferenceSteps: a.cfg.ACEStep.InferenceSteps,
 			Thinking:       a.cfg.ACEStep.Thinking,
 		})
-		return eng, ""
+		return eng, remote, ""
 	default:
-		return nil, fmt.Sprintf("unknown engine %q in config; running noise only", a.cfg.Engine)
+		return nil, nil, fmt.Sprintf("unknown engine %q in config; running noise only", a.cfg.Engine)
 	}
 }
 
-// buildBuilder wires the prompt builder, probing Ollama briefly when
-// enabled.
+// buildBuilder wires the prompt builder. Ollama usability is probed in
+// the background; nothing ever waits for it.
 func (a *app) buildBuilder(ctx context.Context, noLLM bool) *prompting.Builder {
 	var oll *prompting.Ollama
 	if a.cfg.Ollama.Enabled && !noLLM {
-		candidate := prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model)
-		probe, cancel := context.WithTimeout(ctx, 2*time.Second)
-		if candidate.Available(probe) {
-			oll = candidate
-			a.log.Info("ollama available", "event", "ollama_available", "model", candidate.Model())
-		} else {
-			a.log.Info("ollama unavailable, using deterministic prompts", "event", "ollama_unavailable")
-		}
-		cancel()
+		oll = prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model)
 	}
-	return prompting.NewBuilder(oll, a.log)
+	b := prompting.NewBuilder(oll, a.log)
+	b.ProbeAsync(ctx)
+	return b
 }
 
 // initialSession picks the starting session from flags.
@@ -123,4 +135,23 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// engineWaitBudget is how long commands wait for engine readiness before
+// giving up with a pointer to doctor.
+const engineWaitBudget = 45 * time.Minute
+
+// resolvePathsEnsured resolves and creates the application directories.
+func resolvePathsEnsured() (config.Paths, error) {
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return config.Paths{}, err
+	}
+	return paths, paths.EnsureDirs()
+}
+
+// loadConfig loads the configuration for processes that do not need the
+// full app wiring (the engine daemon).
+func loadConfig(paths config.Paths) (config.Config, error) {
+	return config.Load(paths)
 }

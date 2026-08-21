@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,15 +9,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"bgm/internal/engine/acestep"
 	"bgm/internal/prompting"
+	"bgm/internal/state"
 )
 
-// cmdDoctor checks the environment and reports what works.
-func cmdDoctor(args []string) error {
-	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
-	fs.Parse(args)
+// doctorCommand checks the environment and reports what works.
+func doctorCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check the environment and engine health",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDoctor()
+		},
+	}
+}
 
+func runDoctor() error {
 	a, err := newApp(false)
 	if err != nil {
 		return err
@@ -29,7 +39,7 @@ func cmdDoctor(args []string) error {
 	fmt.Println("bgm doctor")
 	fmt.Println("  data dir:   ", a.paths.DataDir)
 	fmt.Println("  config file:", a.paths.ConfigFile())
-	fmt.Println("  log file:   ", a.paths.LogFile())
+	fmt.Println("  log files:  ", a.paths.LogFile(), "and", a.daemonLogFile())
 	fmt.Println()
 
 	check := func(name string, ok bool, detail string) {
@@ -76,25 +86,33 @@ func cmdDoctor(args []string) error {
 	installed := acestep.Installed(a.paths.EngineDir())
 	check("engine install", installed, a.paths.EngineDir())
 
-	// A running engine API (from another bgm instance)?
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", a.cfg.ACEStep.Port)
-	hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	h, err := acestep.NewClient(baseURL).Health(hctx)
-	cancel()
+	// The shared engine daemon.
+	st, ok := a.stateD.ReadEngineState()
 	switch {
-	case err == nil && h.ModelsInitialized:
-		check("engine api", true, fmt.Sprintf("responding on port %d (model %s)", a.cfg.ACEStep.Port, h.LoadedModel))
-	case err == nil:
-		check("engine api", true, fmt.Sprintf("starting up on port %d", a.cfg.ACEStep.Port))
+	case !ok || !state.PIDAlive(st.PID):
+		check("engine daemon", true, "not running (starts automatically with 'bgm'; stop with 'bgm engine stop')")
 	default:
-		check("engine api", true, "not running (starts automatically with 'bgm')")
+		detail := fmt.Sprintf("running: pid %d, port %d, up %s, last client %s ago",
+			st.PID, st.Port, time.Since(st.Started).Round(time.Second), a.stateD.HeartbeatAge().Round(time.Second))
+		check("engine daemon", true, detail)
+		hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		h, err := acestep.NewClient(fmt.Sprintf("http://127.0.0.1:%d", st.Port)).Health(hctx)
+		cancel()
+		switch {
+		case err != nil:
+			check("engine api", true, "not answering yet (starting up)")
+		case h.ModelsInitialized:
+			check("engine api", true, "ready (model "+h.LoadedModel+")")
+		default:
+			check("engine api", true, "loading models")
+		}
 	}
 
 	// Ollama.
 	oll := prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model)
 	octx, ocancel := context.WithTimeout(ctx, 2*time.Second)
 	if oll.Available(octx) {
-		check("ollama", true, "reachable, model "+oll.Model()+" (optional)")
+		check("ollama", true, "reachable, model "+oll.Model()+" (optional; used only when it responds quickly)")
 	} else {
 		check("ollama", true, "not reachable (optional; deterministic prompt merging is used)")
 	}
