@@ -2,6 +2,8 @@ module bgm
 
 go 1.26
 
+// Direct dependencies: bubbletea drives the full-screen terminal UI and
+// bubbles provides its text input widget. Everything else is stdlib.
 require (
 	charm.land/bubbles/v2 v2.2.0
 	charm.land/bubbletea/v2 v2.0.9
