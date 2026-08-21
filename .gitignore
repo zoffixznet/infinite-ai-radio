@@ -1,0 +1,8 @@
+# Build outputs
+/bgm
+/dist/
+coverage.out
+
+# Editor litter
+*.swp
+*~
