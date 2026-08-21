@@ -47,6 +47,9 @@ type Track struct {
 	Seed string
 	// GenTime is how long generation took.
 	GenTime time.Duration
+	// FromLibrary marks a track loaded from the on-disk library rather
+	// than freshly generated.
+	FromLibrary bool
 }
 
 // Duration reports the track's play time.

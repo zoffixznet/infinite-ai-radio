@@ -113,3 +113,47 @@ func Steer(s *session.Session, raw string) Ack {
 	ack := prefix + "steering with: " + phrase
 	return Ack{Text: ack, ContextChanged: true}
 }
+
+// SessionFromPrompt creates a fresh session seeded from a free-text
+// prompt (prompt-first startup and the in-app `new` command). Vocal
+// requests inside the prompt ("... with vocals about winning") are
+// honored.
+func SessionFromPrompt(prompt string) *session.Session {
+	s := session.New()
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return s
+	}
+	text := strings.ToLower(prompt)
+	if m := noiseRe.FindStringSubmatch(text); m != nil {
+		color := m[1]
+		if color == "" {
+			color = "pink"
+		}
+		s.Mode = session.ModeNoise
+		s.NoiseColor = color
+		return s
+	}
+	if vocalOnRe.MatchString(text) && !vocalOffRe.MatchString(text) {
+		s.Vocal = true
+		if m := aboutRe.FindStringSubmatch(text); m != nil {
+			s.LyricsTheme = strings.TrimSpace(m[1])
+		}
+	}
+	s.BasePrompt = prompt
+	s.Name = "prompt-" + session.SanitizeName(shorten(prompt, 32)) + "-" + s.Created.Format("150405")
+	return s
+}
+
+// shorten trims s to at most n bytes without cutting mid-word when
+// possible.
+func shorten(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := s[:n]
+	if i := strings.LastIndex(cut, " "); i > n/2 {
+		cut = cut[:i]
+	}
+	return cut
+}

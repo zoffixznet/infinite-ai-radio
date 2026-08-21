@@ -10,6 +10,7 @@ import (
 	"bgm/internal/audio"
 	"bgm/internal/config"
 	"bgm/internal/engine"
+	"bgm/internal/library"
 	"bgm/internal/prompting"
 	"bgm/internal/session"
 	"bgm/internal/state"
@@ -56,6 +57,9 @@ type Status struct {
 	LastGenTime time.Duration
 	// Exporting describes a running export, empty otherwise.
 	Exporting string
+	// BufferTarget is how many tracks the generate-ahead worker aims to
+	// keep queued.
+	BufferTarget int
 	// EngineTail holds recent engine output lines, newest last, when the
 	// engine exposes them.
 	EngineTail []string
@@ -84,6 +88,11 @@ type Orchestrator struct {
 	// Timings records how long startup phases take across runs; set it
 	// before Start. Nil disables persistence (estimates use defaults).
 	Timings *state.Timings
+	// Library is the on-disk track cache used for instant starts and
+	// opportunistic banking; nil disables it. Set before Start.
+	Library *library.Library
+	// SnippetsDir is where the save command writes captured tracks.
+	SnippetsDir string
 
 	mu         sync.Mutex
 	sess       *session.Session
@@ -101,6 +110,9 @@ type Orchestrator struct {
 	phaseStart time.Time
 	started    time.Time
 	firstMusic bool
+	curTrack   *engine.Track
+	prevTrack  *engine.Track
+	saving     bool
 
 	volume atomic.Int32
 	events chan Event
@@ -144,6 +156,7 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	o.started = now
 	o.phaseStart = now
 	o.mu.Unlock()
+	o.seedFromLibrary()
 	o.wg.Add(4)
 	go func() { defer o.wg.Done(); o.genLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
@@ -259,6 +272,12 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			continue
 		}
 		failures = 0
+		if o.cfg.NormalizeLoudness {
+			gain := audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
+			if gain != 1 {
+				o.log.Debug("track loudness normalized", "event", "normalized", "gain", gain)
+			}
+		}
 		o.mu.Lock()
 		if epoch == o.epoch {
 			o.queue = append(o.queue, track)
@@ -268,6 +287,15 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		}
 		kept := epoch == o.epoch
 		o.mu.Unlock()
+		if kept {
+			// Bank the fresh track for future instant starts.
+			key := library.Key(sess)
+			go func(t *engine.Track) {
+				if err := o.Library.Put(key, t); err != nil {
+					o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
+				}
+			}(track)
+		}
 		o.log.Info("generation finished", "event", "generation_finished",
 			"elapsed_seconds", elapsed.Seconds(), "track_seconds", track.Duration().Seconds(),
 			"kept", kept, "prompt", track.Prompt)
@@ -332,7 +360,7 @@ func (o *Orchestrator) pumpLoop(ctx context.Context) {
 			o.log.Error("player write failed, switching to silent output", "event", "player_failed", "error", err.Error())
 			o.emit("audio output failed; continuing silently (see log)")
 			o.player.Close()
-			np, nerr := audio.NewPlayer("null", "")
+			np, nerr := audio.NewPlayer(audio.PlayerOptions{Kind: "null"})
 			if nerr != nil {
 				return
 			}
@@ -460,4 +488,26 @@ func (o *Orchestrator) engineFailed() bool {
 		return p.Phase() == "unavailable"
 	}
 	return false
+}
+
+// seedFromLibrary starts playback instantly from a banked track when the
+// library has one for this session's vibe.
+func (o *Orchestrator) seedFromLibrary() {
+	o.mu.Lock()
+	mode := o.sess.Mode
+	sessCopy := o.sess
+	o.mu.Unlock()
+	if o.eng == nil || mode != session.ModeMusic {
+		return
+	}
+	track, ok := o.Library.Pick(library.Key(sessCopy))
+	if !ok {
+		return
+	}
+	o.mu.Lock()
+	o.queue = append(o.queue, track)
+	o.lastGood = track
+	o.mu.Unlock()
+	o.log.Info("instant start from library", "event", "library_start", "prompt", track.Prompt)
+	o.emit("playing a saved track for this vibe while a fresh one generates")
 }

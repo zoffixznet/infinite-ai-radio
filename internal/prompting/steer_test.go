@@ -89,3 +89,28 @@ func TestMergePromptDeterministic(t *testing.T) {
 		t.Fatalf("tweaks missing: %q", got)
 	}
 }
+
+func TestSessionFromPrompt(t *testing.T) {
+	s := SessionFromPrompt("dark techno")
+	if s.BasePrompt != "dark techno" || s.Vocal || s.Mode != session.ModeMusic {
+		t.Fatalf("plain prompt session wrong: %+v", s)
+	}
+	if !strings.HasPrefix(s.Name, "prompt-dark-techno") {
+		t.Fatalf("session name = %q", s.Name)
+	}
+
+	v := SessionFromPrompt("energetic rock with vocals about winning")
+	if !v.Vocal || v.LyricsTheme != "winning" {
+		t.Fatalf("vocal prompt session wrong: vocal=%v theme=%q", v.Vocal, v.LyricsTheme)
+	}
+
+	n := SessionFromPrompt("brown noise")
+	if n.Mode != session.ModeNoise || n.NoiseColor != "brown" {
+		t.Fatalf("noise prompt session wrong: %+v", n)
+	}
+
+	empty := SessionFromPrompt("   ")
+	if empty.BasePrompt == "" {
+		t.Fatal("empty prompt should keep the default base prompt")
+	}
+}

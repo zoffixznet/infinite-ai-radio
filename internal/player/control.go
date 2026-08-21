@@ -202,16 +202,17 @@ func (o *Orchestrator) Status() Status {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	st := Status{
-		Queued:      len(o.queue),
-		Generating:  o.genBusy,
-		Session:     o.sess.Name,
-		SessionDesc: o.sess.Describe(),
-		Volume:      int(o.volume.Load()),
-		Paused:      o.paused,
-		Underruns:   o.ring.Underruns(),
-		GenCount:    o.genCount,
-		LastGenTime: o.lastGen,
-		Exporting:   o.exporting,
+		BufferTarget: o.cfg.BufferTracks,
+		Queued:       len(o.queue),
+		Generating:   o.genBusy,
+		Session:      o.sess.Name,
+		SessionDesc:  o.sess.Describe(),
+		Volume:       int(o.volume.Load()),
+		Paused:       o.paused,
+		Underruns:    o.ring.Underruns(),
+		GenCount:     o.genCount,
+		LastGenTime:  o.lastGen,
+		Exporting:    o.exporting,
 	}
 	if o.eng != nil {
 		st.EngineName = o.eng.Name()
@@ -256,4 +257,17 @@ func (o *Orchestrator) stateLocked() string {
 		}
 		return "playing"
 	}
+}
+
+// Snapshot returns paused state, volume percent and a display title for
+// desktop integration surfaces.
+func (o *Orchestrator) Snapshot() (paused bool, volume int, title string) {
+	o.mu.Lock()
+	paused = o.paused
+	title = o.sess.Describe()
+	if o.curTrack != nil {
+		title = summarize(o.curTrack)
+	}
+	o.mu.Unlock()
+	return paused, int(o.volume.Load()), title
 }

@@ -128,6 +128,15 @@ func (o *Orchestrator) fallbackShouldYield(cur source) bool {
 	if isStopgap(cur) {
 		return len(o.queue) > 0
 	}
+	// A library track is a warm-up: hand over as soon as a freshly
+	// generated track is waiting.
+	if ts, ok := cur.(*trackSource); ok && ts.track.FromLibrary {
+		for _, q := range o.queue {
+			if !q.FromLibrary {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -251,7 +260,11 @@ func mixSegment(tail, head []int16, frames, offset, total int) []int16 {
 func (o *Orchestrator) setCurrent(s source) {
 	o.mu.Lock()
 	o.cur = s
-	_, isTrack := s.(*trackSource)
+	ts, isTrack := s.(*trackSource)
+	if isTrack && (o.curTrack == nil || o.curTrack != ts.track) {
+		o.prevTrack = o.curTrack
+		o.curTrack = ts.track
+	}
 	firstMusic := isTrack && !o.firstMusic
 	if firstMusic {
 		o.firstMusic = true
@@ -271,6 +284,9 @@ func summarize(t *engine.Track) string {
 	p := t.Prompt
 	if len(p) > 60 {
 		p = p[:57] + "..."
+	}
+	if t.FromLibrary {
+		p += " [library]"
 	}
 	if t.Lyrics != "" && t.Lyrics != engine.InstrumentalLyrics {
 		p += " [vocals]"

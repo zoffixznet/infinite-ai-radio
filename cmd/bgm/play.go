@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"bgm/internal/audio"
+	"bgm/internal/mpris"
 	"bgm/internal/player"
 	"bgm/internal/session"
 	"bgm/internal/state"
@@ -42,7 +43,7 @@ func runPlay(pf playFlags) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sess, err := a.initialSession(pf.preset, pf.session)
+	sess, err := a.initialSessionPrompt(pf.preset, pf.session, pf.prompt)
 	if err != nil {
 		return err
 	}
@@ -54,7 +55,11 @@ func runPlay(pf playFlags) error {
 	eng, _, engineNote := a.buildEngine(ctx)
 	builder := a.buildBuilder(ctx, pf.noLLM)
 
-	pl, err := audio.NewPlayer(a.cfg.Player, pf.playerFile)
+	pl, err := audio.NewPlayer(audio.PlayerOptions{
+		Kind:      a.cfg.Player,
+		FilePath:  pf.playerFile,
+		LatencyMS: a.cfg.PipeLatencyMS,
+	})
 	if err != nil {
 		return err
 	}
@@ -63,8 +68,18 @@ func runPlay(pf playFlags) error {
 	store := session.NewStore(a.paths.SessionsDir())
 	orch := player.New(a.cfg, eng, builder, store, sess, pl, a.log)
 	orch.Timings = a.timings
+	orch.Library = a.library()
+	orch.SnippetsDir = a.snippetsDir()
 	orch.Start(ctx)
 	defer orch.Close()
+
+	// Desktop integration: optional, never fatal (headless setups have
+	// no session bus).
+	if mp, err := mpris.Start(ctx, orch, a.log); err != nil {
+		a.log.Info("mpris unavailable", "event", "mpris_unavailable", "error", err.Error())
+	} else {
+		defer mp.Close()
+	}
 
 	ctrl := &ui.Controller{O: orch, ExportsDir: a.paths.ExportsDir()}
 	if engineNote != "" {

@@ -56,6 +56,7 @@ needed.`,
 				Builder:          a.buildBuilder(ctx, noLLM),
 				TrackSeconds:     a.cfg.TrackSeconds,
 				CrossfadeSeconds: a.cfg.CrossfadeSeconds,
+				MP3Quality:       a.cfg.MP3Quality,
 				Log:              a.log,
 				Progress:         func(line string) { fmt.Println(line) },
 			}

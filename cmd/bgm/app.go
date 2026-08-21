@@ -12,6 +12,7 @@ import (
 	"bgm/internal/config"
 	"bgm/internal/engine"
 	"bgm/internal/engine/acestep"
+	"bgm/internal/library"
 	"bgm/internal/logging"
 	"bgm/internal/prompting"
 	"bgm/internal/session"
@@ -111,10 +112,25 @@ func (a *app) buildBuilder(ctx context.Context, noLLM bool) *prompting.Builder {
 
 // initialSession picks the starting session from flags.
 func (a *app) initialSession(presetName, sessionName string) (*session.Session, error) {
+	return a.initialSessionPrompt(presetName, sessionName, "")
+}
+
+// initialSessionPrompt picks the starting session from flags, including
+// prompt-first startup.
+func (a *app) initialSessionPrompt(presetName, sessionName, prompt string) (*session.Session, error) {
 	store := session.NewStore(a.paths.SessionsDir())
+	picked := 0
+	for _, v := range []string{presetName, sessionName, prompt} {
+		if v != "" {
+			picked++
+		}
+	}
+	if picked > 1 {
+		return nil, fmt.Errorf("use only one of --preset, --session, or a prompt")
+	}
 	switch {
-	case presetName != "" && sessionName != "":
-		return nil, fmt.Errorf("use either --preset or --session, not both")
+	case prompt != "":
+		return prompting.SessionFromPrompt(prompt), nil
 	case presetName != "":
 		p, err := session.LookupPreset(presetName)
 		if err != nil {
@@ -154,4 +170,17 @@ func resolvePathsEnsured() (config.Paths, error) {
 // full app wiring (the engine daemon).
 func loadConfig(paths config.Paths) (config.Config, error) {
 	return config.Load(paths)
+}
+
+// library returns the on-disk track cache (nil when disabled).
+func (a *app) library() *library.Library {
+	return library.New(filepath.Join(a.paths.DataDir, "library"), a.cfg.LibraryMaxMB, a.log)
+}
+
+// snippetsDir resolves where saved tracks land.
+func (a *app) snippetsDir() string {
+	if a.cfg.SnippetsDir != "" {
+		return a.cfg.SnippetsDir
+	}
+	return filepath.Join(a.paths.DataDir, "snippets")
 }

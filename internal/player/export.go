@@ -45,6 +45,7 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 			Builder:          o.builder,
 			TrackSeconds:     o.cfg.TrackSeconds,
 			CrossfadeSeconds: o.cfg.CrossfadeSeconds,
+			MP3Quality:       o.cfg.MP3Quality,
 			Gate:             o.exportGate,
 			Log:              o.log,
 			Progress: func(line string) {

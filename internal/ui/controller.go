@@ -45,6 +45,13 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return helpText, false
 	case "clear":
 		return c.O.Clear(), false
+	case "new":
+		if rest == "" {
+			return "usage: new <prompt>  (e.g. new dark techno with vocals)", false
+		}
+		return c.O.NewSession(rest), false
+	case "save", "snippet":
+		return c.O.SaveSnippet(strings.ToLower(rest)), false
 	case "skip", "next":
 		return c.O.Skip(), false
 	case "pause":
@@ -191,6 +198,8 @@ const helpText = `steering: just type what you want, e.g.
   switch to piano | generate pink noise
 commands (leading / optional):
   clear                wipe the steering context
+  new <prompt>         fresh session from a prompt (e.g. new dark techno)
+  save [prev]          save the playing (or previous) track as MP3
   name <name>          save this session under a name
   sessions             list presets and saved sessions
   load <name>          resume a saved session

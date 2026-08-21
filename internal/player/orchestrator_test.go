@@ -4,10 +4,16 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"bgm/internal/audio"
+	"bgm/internal/engine"
+	"bgm/internal/library"
 
 	"bgm/internal/config"
 	"bgm/internal/engine/enginetest"
@@ -247,4 +253,105 @@ func TestSessionNamingAndReload(t *testing.T) {
 	if !strings.Contains(ack, "sleep") {
 		t.Fatalf("preset ack = %q", ack)
 	}
+}
+
+func TestSaveSnippetDuringPlayback(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	eng := enginetest.NewMock()
+	o, _ := newTestOrchestrator(t, eng, session.New())
+	o.SnippetsDir = t.TempDir()
+
+	// Nothing to save before a generated track plays.
+	if ack := o.SaveSnippet(""); !strings.Contains(ack, "nothing to save") {
+		t.Fatalf("early save ack = %q", ack)
+	}
+	waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
+
+	ack := o.SaveSnippet("")
+	if !strings.Contains(ack, "saving this track") {
+		t.Fatalf("save ack = %q", ack)
+	}
+	var files []os.DirEntry
+	waitFor(t, 15*time.Second, "snippet file", func() bool {
+		files, _ = os.ReadDir(o.SnippetsDir)
+		return len(files) == 1
+	})
+	if !strings.HasSuffix(files[0].Name(), ".mp3") {
+		t.Fatalf("snippet name = %q", files[0].Name())
+	}
+	if u := o.Status().Underruns; u != 0 {
+		t.Fatalf("underruns while saving: %d", u)
+	}
+	// prev works after two distinct tracks; here at least verify the
+	// unknown-prev message before one exists.
+	o2, _ := newTestOrchestrator(t, enginetest.NewMock(), session.New())
+	o2.SnippetsDir = t.TempDir()
+	if ack := o2.SaveSnippet("prev"); !strings.Contains(ack, "no previous track") {
+		t.Fatalf("prev ack = %q", ack)
+	}
+}
+
+func TestNewSessionFromPromptCommand(t *testing.T) {
+	eng := enginetest.NewMock()
+	o, _ := newTestOrchestrator(t, eng, session.New())
+	ack := o.NewSession("dreamy jazz with vocals about rain")
+	if !strings.Contains(ack, "new session") || !strings.Contains(ack, "vocals") {
+		t.Fatalf("ack = %q", ack)
+	}
+	waitFor(t, 10*time.Second, "vocal spec generated", func() bool {
+		specs := eng.Specs()
+		if len(specs) == 0 {
+			return false
+		}
+		last := specs[len(specs)-1]
+		return last.Vocal() && strings.Contains(last.SampleQuery+last.Prompt, "dreamy jazz")
+	})
+	// The fresh session is persisted.
+	found := false
+	for _, n := range o.SessionNames() {
+		if strings.HasPrefix(n, "prompt-dreamy-jazz") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("prompt session not persisted: %v", o.SessionNames())
+	}
+}
+
+func TestLibraryInstantStart(t *testing.T) {
+	dir := t.TempDir()
+	lib := library.New(dir, 100, testLogger())
+	banked := &engine.Track{Samples: make([]int16, audio.SampleRate*2*2), Prompt: "banked lofi"}
+	for i := range banked.Samples {
+		banked.Samples[i] = int16(i % 2000)
+	}
+	sess := session.New()
+	if err := lib.Put(library.Key(sess), banked); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := enginetest.NewMock()
+	eng.Delay = 800 * time.Millisecond // fresh generation is not instant
+	pl := &capturePlayer{}
+	store := session.NewStore(t.TempDir())
+	builder := prompting.NewBuilder(nil, testLogger())
+	o := New(testConfig(), eng, builder, store, sess, pl, testLogger())
+	o.Library = lib
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	o.Start(ctx)
+	t.Cleanup(func() { o.Close() })
+
+	// The banked track must be playing well before fresh generation lands.
+	waitFor(t, 2*time.Second, "library track playing", func() bool {
+		st := o.Status()
+		return st.State == "playing" && strings.Contains(st.Source, "[library]")
+	})
+	// The freshly generated track takes over when it arrives.
+	waitFor(t, 10*time.Second, "fresh track takes over", func() bool {
+		st := o.Status()
+		return st.State == "playing" && !strings.Contains(st.Source, "[library]")
+	})
 }

@@ -18,6 +18,7 @@ var version = "dev"
 type playFlags struct {
 	preset     string
 	session    string
+	prompt     string
 	engine     string
 	player     string
 	playerFile string
@@ -36,24 +37,35 @@ func main() {
 func rootCommand() *cobra.Command {
 	var pf playFlags
 	root := &cobra.Command{
-		Use:   "bgm",
+		Use:   "bgm [prompt]",
 		Short: "Endless AI background music, generated locally",
 		Long: `bgm plays a continuous stream of AI-generated background music using
 models running entirely on your machine. Run it with no arguments to
 start playing; type plain English while it plays to steer the stream.
+Start straight from an idea with a prompt:
+
+  bgm "dark techno"
+  bgm --prompt "energetic rock with vocals about winning"
 
 Built-in presets (start with --preset, list with 'bgm presets'):
 ` + presetLines(),
-		Args:          cobra.NoArgs,
+		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if pf.prompt != "" {
+					return fmt.Errorf("give the prompt either as an argument or with --prompt, not both")
+				}
+				pf.prompt = args[0]
+			}
 			return runPlay(pf)
 		},
 	}
 	fl := root.Flags()
 	fl.StringVar(&pf.preset, "preset", "", "start from a built-in preset (see 'bgm presets')")
 	fl.StringVar(&pf.session, "session", "", "resume a saved session by name")
+	fl.StringVar(&pf.prompt, "prompt", "", "start a fresh session from a free-text prompt")
 	fl.StringVar(&pf.engine, "engine", "", "generation engine: acestep or noise")
 	fl.StringVar(&pf.player, "player", "", "audio backend: auto, pipe, null or file")
 	fl.StringVar(&pf.playerFile, "player-file", "", "output path for the file backend")
