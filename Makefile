@@ -43,6 +43,13 @@ deps: ## Check required system tools; if any are missing, print and run the apt-
 	else \
 		echo "All required system tools are present (ffmpeg, git, gcc)."; \
 	fi
+	@if command -v tailscale >/dev/null 2>&1; then \
+		echo "Optional: tailscale is installed (phone remote can bind your tailnet address)."; \
+	else \
+		echo "Optional: tailscale not found. The phone remote works on localhost without it;"; \
+		echo "to reach it from your phone, install Tailscale (needs sudo) per the official"; \
+		echo "guide at https://tailscale.com/download/linux and run: sudo tailscale up"; \
+	fi
 
 .PHONY: test
 test: ## Run the full test suite

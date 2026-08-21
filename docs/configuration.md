@@ -19,6 +19,12 @@ everything else keeps its default.
   "mp3_quality": 0,
   "snippets_dir": "",
   "library_max_mb": 600,
+  "remote": {
+    "enabled": false,
+    "port": 8246,
+    "token": "",
+    "bind": ""
+  },
   "acestep": {
     "port": 0,
     "idle_minutes": 15,
@@ -65,6 +71,23 @@ everything else keeps its default.
   tracks. Empty means `snippets/` under the data directory.
 - `library_max_mb`: total size cap for the on-disk track library that
   powers instant starts (0 disables the library).
+
+## remote
+
+The phone remote (page + live MP3 stream); see the README's "Listening
+from your phone" section for the full flow.
+
+- `enabled`: turn the remote on (the `--remote` flag does the same for
+  one run).
+- `port`: the HTTP port (default 8246).
+- `token`: optional shared secret; when set, every request must carry it
+  (`?token=...` or an Authorization bearer header). The private tailnet
+  is the default trust boundary, so this is off by default.
+- `bind`: overrides the bind addresses. Leave empty: the default binds
+  localhost plus the machine's Tailscale address only. Setting this (for
+  example to `"0.0.0.0"`) exposes the remote to every network the
+  machine is on - only do that on networks you fully trust, and never
+  expose the port to the public internet.
 
 ## acestep
 

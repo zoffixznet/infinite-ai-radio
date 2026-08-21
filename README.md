@@ -23,6 +23,7 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
 - [Presets](#presets)
 - [MP3 export](#mp3-export)
 - [Saving tracks you like](#saving-tracks-you-like)
+- [Listening from your phone](#listening-from-your-phone)
 - [Desktop integration](#desktop-integration)
 - [What the music sounds like](#what-the-music-sounds-like)
 - [Configuration](#configuration)
@@ -229,6 +230,42 @@ acknowledgment. `save prev` captures the previous track instead, for
 when it clicks a moment too late. Saving never interrupts playback. The
 folder is configurable via `snippets_dir`.
 
+## Listening from your phone
+
+bgm has a built-in phone remote: a single page with the live stream, the
+now-playing state, a steering box, a start-fresh-with-prompt action, and
+a save button. It is off by default; start with:
+
+```sh
+./bgm --remote
+```
+
+or set `remote.enabled` in the config. For safety the remote binds only
+to localhost and, when the machine has one, its Tailscale address; it
+never listens on your LAN or the internet unless you explicitly override
+the bind address in the config (do not do that unless you fully trust
+that network, and never expose the port to the public internet).
+
+<img src="assets/remote-phone.png" alt="the bgm phone remote page" width="300">
+
+The intended setup is a private [Tailscale](https://tailscale.com)
+network between your computer and phone:
+
+1. Install Tailscale on the computer per the official Linux guide
+   (`https://tailscale.com/download/linux`; installing and running
+   `sudo tailscale up` needs sudo) and sign in.
+2. Install the Tailscale app on the phone and sign in to the same
+   account.
+3. Start `./bgm --remote`. It prints the URL to open; `bgm doctor` also
+   shows it under the remote section.
+4. Open that URL in the phone's browser and tap play.
+
+The stream is MP3 at ~192 kbps and runs a few seconds behind the
+machine's speakers; steering, starting fresh and saving act instantly
+and show up in the terminal UI too. If you want a shared secret on top
+of the tailnet, set `remote.token` in the config and open the page as
+`http://<ip>:8246/?token=<your-token>`.
+
 ## Desktop integration
 
 bgm shows up as a regular media player (MPRIS) on the desktop bus, so
@@ -309,6 +346,7 @@ usually `~/.config/bgm/config.json`) with these defaults:
   "mp3_quality": 0,
   "snippets_dir": "",
   "library_max_mb": 600,
+  "remote": { "enabled": false, "port": 8246, "token": "", "bind": "" },
   "acestep": {
     "port": 0,
     "idle_minutes": 15,
