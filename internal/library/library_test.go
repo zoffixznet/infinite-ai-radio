@@ -127,3 +127,25 @@ func TestCorruptTrackIsDroppedGracefully(t *testing.T) {
 func writeFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
+
+func TestEvictionIsFairAcrossKeys(t *testing.T) {
+	// Cap ~1MB; key A gets many tracks, key B two. A long session on A
+	// must not wipe out B's instant-start tracks.
+	lib := New(t.TempDir(), 1, testLog())
+	for i := 0; i < 2; i++ {
+		if err := lib.Put("b-vibe", track(24000, 7)); err != nil { // ~94KB each
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 12; i++ {
+		if err := lib.Put("a-vibe", track(24000, 9)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := lib.Count("b-vibe"); got == 0 {
+		t.Fatal("small key wiped out by a big key's session")
+	}
+	if got := lib.Count("a-vibe"); got == 0 {
+		t.Fatal("big key lost everything")
+	}
+}

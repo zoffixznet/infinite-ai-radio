@@ -43,6 +43,15 @@
   }
   #play:active { background: var(--accent-press); }
   #play.playing { background: var(--danger); color: #1a0707; }
+  #streamstate {
+    min-height: 1.3em;
+    margin-top: 8px;
+    font-size: 14px;
+    color: var(--dim);
+    text-align: center;
+  }
+  #streamstate.bad { color: var(--danger); font-weight: 600; }
+  #streamstate.good { color: var(--accent); }
   .card {
     background: var(--panel);
     border: 1px solid var(--edge);
@@ -104,6 +113,7 @@
 </header>
 
 <button id="play" aria-label="Play the live stream">&#9654;&#xFE0E; Play the stream</button>
+<div id="streamstate" role="status"></div>
 
 <section class="card" aria-label="Now playing">
   <h2>Now playing</h2>
@@ -140,22 +150,79 @@
     return path + (q.length ? "?" + q.join("&") : "");
   }
   var audio = null;
+  var watchdog = null;
+  var lastTime = -1;
+  var lastAdvance = 0;
   var playBtn = document.getElementById("play");
   var ackEl = document.getElementById("ack");
+  var stateEl = document.getElementById("streamstate");
+
+  function streamState(text, cls) {
+    stateEl.textContent = text;
+    stateEl.className = cls || "";
+  }
+
+  function stopStream(msg, cls) {
+    if (watchdog) { clearInterval(watchdog); watchdog = null; }
+    if (audio) {
+      audio.onerror = null;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      if (audio.parentNode) audio.parentNode.removeChild(audio);
+      audio = null;
+    }
+    playBtn.classList.remove("playing");
+    playBtn.innerHTML = "&#9654;&#xFE0E; Play the stream";
+    streamState(msg || "", cls || "");
+  }
+
+  function streamError() {
+    // Distinguish an auth problem from a network/stream one.
+    fetch(url("/state")).then(function (r) {
+      if (r.status === 401 || r.status === 403) {
+        stopStream("session expired - reopen this page with your token link", "bad");
+      } else {
+        stopStream("stream error - tap play to reconnect", "bad");
+      }
+    }).catch(function () {
+      stopStream("cannot reach the player - is it still running?", "bad");
+    });
+  }
 
   playBtn.addEventListener("click", function () {
     if (audio) {
-      audio.pause();
-      audio.src = "";
-      audio = null;
-      playBtn.classList.remove("playing");
-      playBtn.innerHTML = "&#9654;&#xFE0E; Play the stream";
+      stopStream("stopped", "");
       return;
     }
+    streamState("connecting…", "");
     audio = new Audio(url("/stream.mp3", "t=" + Date.now()));
-    audio.play().catch(function (e) { ack("could not start audio: " + e.message); });
-    playBtn.classList.add("playing");
-    playBtn.innerHTML = "&#9632;&#xFE0E; Stop listening";
+    audio.id = "liveaudio";
+    document.body.appendChild(audio);
+    audio.onerror = streamError;
+    audio.addEventListener("stalled", function () { streamState("stalled - waiting for data…", "bad"); });
+    audio.addEventListener("waiting", function () { streamState("buffering…", ""); });
+    audio.addEventListener("playing", function () { streamState("receiving audio…", ""); });
+    audio.play().then(function () {
+      playBtn.classList.add("playing");
+      playBtn.innerHTML = "&#9632;&#xFE0E; Stop listening";
+    }).catch(function (e) {
+      stopStream("could not start audio: " + e.message, "bad");
+    });
+    // Honest progress: only report playing while currentTime advances.
+    lastTime = -1;
+    lastAdvance = Date.now();
+    watchdog = setInterval(function () {
+      if (!audio) return;
+      var t = audio.currentTime;
+      if (t > lastTime + 0.2) {
+        lastTime = t;
+        lastAdvance = Date.now();
+        streamState("playing · " + Math.floor(t) + "s", "good");
+      } else if (Date.now() - lastAdvance > 6000) {
+        streamState("no audio arriving - tap stop, then play again", "bad");
+      }
+    }, 2000);
   });
 
   function ack(text) {

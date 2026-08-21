@@ -445,3 +445,149 @@ func TestFailureStreakVisibleInStatus(t *testing.T) {
 		return st.FailStreak >= 1 && strings.Contains(st.LastFailure, "boom reason")
 	})
 }
+
+// tapRecorder captures everything the orchestrator taps (what the remote
+// stream would encode).
+type tapRecorder struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (t *tapRecorder) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	t.buf = append(t.buf, p...)
+	t.mu.Unlock()
+	return len(p), nil
+}
+
+// tail returns the last n bytes captured.
+func (t *tapRecorder) tail(n int) []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.buf) < n {
+		n = len(t.buf)
+	}
+	return append([]byte(nil), t.buf[len(t.buf)-n:]...)
+}
+
+func (t *tapRecorder) size() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.buf)
+}
+
+func nonSilent(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// newTappedOrchestrator builds an orchestrator with a tap recorder.
+func newTappedOrchestrator(t *testing.T, eng *enginetest.Mock, sess *session.Session) (*Orchestrator, *tapRecorder) {
+	t.Helper()
+	tap := &tapRecorder{}
+	pl := &capturePlayer{}
+	store := session.NewStore(t.TempDir())
+	builder := prompting.NewBuilder(nil, testLogger())
+	var e engine.Engine
+	if eng != nil {
+		e = eng
+	}
+	o := New(testConfig(), e, builder, store, sess, pl, testLogger())
+	o.Tap = tap
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	o.Start(ctx)
+	t.Cleanup(func() { o.Close() })
+	return o, tap
+}
+
+// The remote stream must carry exactly what the speakers play on every
+// audible path.
+func TestTapCarriesEveryAudiblePath(t *testing.T) {
+	t.Run("silence filler while engine loads", func(t *testing.T) {
+		eng := enginetest.NewMock()
+		eng.SetReady(false)
+		_, tap := newTappedOrchestrator(t, eng, session.New())
+		waitFor(t, 5*time.Second, "tap flowing", func() bool { return tap.size() > 40000 })
+		// Silence phase: the tap must flow (silent bytes are correct here).
+	})
+
+	t.Run("noise mode", func(t *testing.T) {
+		sess := session.New()
+		sess.Mode = session.ModeNoise
+		sess.NoiseColor = "pink"
+		_, tap := newTappedOrchestrator(t, nil, sess)
+		waitFor(t, 5*time.Second, "noise on tap", func() bool {
+			return tap.size() > 40000 && nonSilent(tap.tail(8000))
+		})
+	})
+
+	t.Run("fresh generation", func(t *testing.T) {
+		o, tap := newTappedOrchestrator(t, enginetest.NewMock(), session.New())
+		waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
+		waitFor(t, 10*time.Second, "music on tap", func() bool { return nonSilent(tap.tail(8000)) })
+	})
+
+	t.Run("library track", func(t *testing.T) {
+		dir := t.TempDir()
+		lib := library.New(dir, 100, testLogger())
+		banked := &engine.Track{Samples: make([]int16, audio.SampleRate*2*2), Prompt: "banked"}
+		for i := range banked.Samples {
+			banked.Samples[i] = int16(1500)
+		}
+		sess := session.New()
+		if err := lib.Put(library.Key(sess), banked); err != nil {
+			t.Fatal(err)
+		}
+		eng := enginetest.NewMock()
+		eng.Delay = 2 * time.Second
+		tap := &tapRecorder{}
+		o := New(testConfig(), eng, prompting.NewBuilder(nil, testLogger()),
+			session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
+		o.Tap = tap
+		o.Library = lib
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		o.Start(ctx)
+		t.Cleanup(func() { o.Close() })
+		waitFor(t, 5*time.Second, "library audio on tap", func() bool {
+			return strings.Contains(o.Status().Source, "[library]") && nonSilent(tap.tail(8000))
+		})
+	})
+
+	t.Run("loop-last-track fallback", func(t *testing.T) {
+		old := failureBackoffBase
+		failureBackoffBase = 50 * time.Millisecond
+		t.Cleanup(func() { failureBackoffBase = old })
+		eng := enginetest.NewMock()
+		o, tap := newTappedOrchestrator(t, eng, session.New())
+		// One good track, then the engine goes down hard.
+		waitFor(t, 10*time.Second, "first track playing", func() bool { return o.Status().State == "playing" })
+		eng.FailErr = errors.New("engine down")
+		eng.SetReady(false)
+		// Ride past the end of the first track into the loop fallback.
+		waitFor(t, 20*time.Second, "loop fallback active", func() bool {
+			return strings.Contains(o.Status().Source, "looping")
+		})
+		before := tap.size()
+		waitFor(t, 5*time.Second, "loop audio still on tap", func() bool {
+			return tap.size() > before+40000 && nonSilent(tap.tail(8000))
+		})
+	})
+
+	t.Run("paused plays silence on both", func(t *testing.T) {
+		o, tap := newTappedOrchestrator(t, enginetest.NewMock(), session.New())
+		waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
+		o.Pause()
+		time.Sleep(400 * time.Millisecond) // flush in-flight chunks
+		before := tap.size()
+		waitFor(t, 5*time.Second, "tap still flowing while paused", func() bool { return tap.size() > before+20000 })
+		if nonSilent(tap.tail(4000)) {
+			t.Fatal("paused output must be silent on the tap, matching the speakers")
+		}
+	})
+}

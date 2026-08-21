@@ -156,14 +156,17 @@ func (l *Library) ids(dir string) []string {
 	return out
 }
 
-// evict removes the oldest tracks (library-wide) until under the cap.
+// evict trims the library under its size cap. Eviction is fair across
+// vibes: it always removes the oldest track of the key holding the MOST
+// tracks, so one long listening session cannot silently wipe out every
+// other vibe's instant-start tracks.
 func (l *Library) evict() {
 	type file struct {
 		wav, json string
 		size      int64
 		mod       time.Time
 	}
-	var files []file
+	byKey := map[string][]file{}
 	var total int64
 	keyDirs, err := os.ReadDir(l.dir)
 	if err != nil {
@@ -180,18 +183,38 @@ func (l *Library) evict() {
 			if err != nil {
 				continue
 			}
-			files = append(files, file{wav: wav, json: filepath.Join(dir, id+".json"), size: fi.Size(), mod: fi.ModTime()})
+			byKey[kd.Name()] = append(byKey[kd.Name()],
+				file{wav: wav, json: filepath.Join(dir, id+".json"), size: fi.Size(), mod: fi.ModTime()})
 			total += fi.Size()
 		}
 	}
-	if total <= l.maxBytes {
-		return
+	for key := range byKey {
+		files := byKey[key]
+		sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+		byKey[key] = files
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
-	for _, f := range files {
-		if total <= l.maxBytes {
-			break
+	for total > l.maxBytes {
+		// The key with the most tracks loses its oldest one; ties go to
+		// the key with the oldest candidate.
+		victim := ""
+		for key, files := range byKey {
+			if len(files) == 0 {
+				continue
+			}
+			switch {
+			case victim == "":
+				victim = key
+			case len(files) > len(byKey[victim]):
+				victim = key
+			case len(files) == len(byKey[victim]) && files[0].mod.Before(byKey[victim][0].mod):
+				victim = key
+			}
 		}
+		if victim == "" {
+			return
+		}
+		f := byKey[victim][0]
+		byKey[victim] = byKey[victim][1:]
 		os.Remove(f.wav)
 		os.Remove(f.json)
 		total -= f.size
