@@ -67,6 +67,8 @@ type ACEStep struct {
 	// defaults otherwise; "vllm" and "pt" force a backend.
 	LMBackend string `json:"lm_backend"`
 	// InferenceSteps is the diffusion step count (turbo model: 1-20).
+	// Higher values render more spectral detail; on strong GPUs the
+	// speed cost is negligible because other pipeline stages dominate.
 	InferenceSteps int `json:"inference_steps"`
 	// Thinking enables the engine's planner LM for higher quality output.
 	Thinking bool `json:"thinking"`
@@ -104,7 +106,7 @@ func Default() Config {
 			IdleMinutes:    15,
 			LMModelPath:    "",
 			LMBackend:      "auto",
-			InferenceSteps: 8,
+			InferenceSteps: 12,
 			Thinking:       true,
 			RepoURL:        "https://github.com/ace-step/ACE-Step-1.5",
 			Tag:            "v0.1.8",
@@ -162,7 +164,7 @@ func (c *Config) sanitize() {
 		c.Volume = 100
 	}
 	if c.ACEStep.InferenceSteps < 1 || c.ACEStep.InferenceSteps > 20 {
-		c.ACEStep.InferenceSteps = 8
+		c.ACEStep.InferenceSteps = 12
 	}
 	if c.ACEStep.IdleMinutes < 1 {
 		c.ACEStep.IdleMinutes = 15

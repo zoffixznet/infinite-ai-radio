@@ -47,7 +47,7 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Engine != "acestep" || cfg.TrackSeconds != 150 || cfg.ACEStep.InferenceSteps != 8 {
+	if cfg.Engine != "acestep" || cfg.TrackSeconds != 150 || cfg.ACEStep.InferenceSteps != 12 {
 		t.Fatalf("defaults wrong: %+v", cfg)
 	}
 }

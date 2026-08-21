@@ -14,12 +14,17 @@ everything else keeps its default.
   "buffer_tracks": 2,
   "volume": 80,
   "bed_while_waiting": false,
+  "pipe_latency_ms": 200,
+  "normalize_loudness": true,
+  "mp3_quality": 0,
+  "snippets_dir": "",
+  "library_max_mb": 600,
   "acestep": {
     "port": 0,
     "idle_minutes": 15,
     "lm_model_path": "",
     "lm_backend": "auto",
-    "inference_steps": 8,
+    "inference_steps": 12,
     "thinking": true,
     "repo_url": "https://github.com/ace-step/ACE-Step-1.5",
     "tag": "v0.1.8"
@@ -49,6 +54,17 @@ everything else keeps its default.
 - `volume` (0-100): initial output volume.
 - `bed_while_waiting`: when true, a quiet noise bed plays while the
   first track is prepared instead of the default silence-with-progress.
+- `pipe_latency_ms` (20-2000): how much buffering the system audio
+  player is asked for. Larger values ride out heavy system load at the
+  cost of a slightly slower response to volume/pause.
+- `normalize_loudness`: level every generated track to a consistent
+  loudness (peak-safe) before playback and banking.
+- `mp3_quality` (0-9): libmp3lame VBR quality for exports and snippets;
+  0 is best (the default), 9 is smallest.
+- `snippets_dir`: where the in-app `save` command writes captured
+  tracks. Empty means `snippets/` under the data directory.
+- `library_max_mb`: total size cap for the on-disk track library that
+  powers instant starts (0 disables the library).
 
 ## acestep
 
@@ -67,8 +83,11 @@ everything else keeps its default.
   default on larger ones. `"vllm"` or `"pt"` force a backend. If you see
   CUDA out-of-memory errors because other applications share the GPU,
   `"pt"` is the safe choice.
-- `inference_steps` (1-20): diffusion steps for the turbo model. 8 is the
-  sweet spot; more is slower with mild quality gains.
+- `inference_steps` (1-20): diffusion steps for the turbo model. The
+  default 12 renders audibly more high-end detail than the model's
+  quick-start 8; on a strong GPU the speed difference is negligible
+  because planning and decoding dominate generation time. 20 adds a
+  little more brightness.
 - `thinking`: when true, the engine's planner LM sketches the track
   before synthesis, which improves musical coherence at some speed cost.
 - `repo_url`, `tag`: which engine version `bgm setup` installs. Change
@@ -94,6 +113,8 @@ everything else keeps its default.
   sink (used by tests to play into a null sink).
 - `BGM_PLAYER_SPEED`: speed multiplier for the null and file backends
   (testing only).
+- `BGM_TEE_PCM`: path of a file to append every PCM byte sent to the
+  audio backend (diagnostic; useful for verifying digital output).
 
 ## Data layout
 
@@ -102,6 +123,8 @@ Inside the data directory:
 - `engine/` - the music engine checkout, its Python environment and model
   checkpoints
 - `sessions/` - one JSON file per saved session
+- `library/` - banked tracks for instant starts (size-capped)
+- `snippets/` - tracks captured with the save command (default location)
 - `exports/` - MP3 exports
 - `logs/bgm.log` - structured JSON log of the player
 - `logs/engine-daemon.log` - the shared engine daemon's log

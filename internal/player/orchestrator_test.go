@@ -261,7 +261,8 @@ func TestSaveSnippetDuringPlayback(t *testing.T) {
 	}
 	eng := enginetest.NewMock()
 	o, _ := newTestOrchestrator(t, eng, session.New())
-	o.SnippetsDir = t.TempDir()
+	// A directory that does not exist yet: save must create it.
+	o.SnippetsDir = t.TempDir() + "/music/bgm-snippets"
 
 	// Nothing to save before a generated track plays.
 	if ack := o.SaveSnippet(""); !strings.Contains(ack, "nothing to save") {

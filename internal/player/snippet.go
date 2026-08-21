@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -54,6 +55,11 @@ func (o *Orchestrator) SaveSnippet(which string) string {
 			o.saving = false
 			o.mu.Unlock()
 		}()
+		if err := os.MkdirAll(o.SnippetsDir, 0o755); err != nil {
+			o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
+			o.emit("saving the track failed: " + err.Error())
+			return
+		}
 		err := export.EncodeMP3(ctx, track.Samples, path, export.MP3Options{
 			Quality: o.cfg.MP3Quality,
 			Title:   prompt,

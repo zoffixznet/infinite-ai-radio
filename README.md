@@ -16,11 +16,14 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
 - [Requirements](#requirements)
 - [Install](#install)
 - [Running](#running)
+- [Starting from a prompt](#starting-from-a-prompt)
 - [Steering the music](#steering-the-music)
 - [Commands](#commands)
 - [Sessions](#sessions)
 - [Presets](#presets)
 - [MP3 export](#mp3-export)
+- [Saving tracks you like](#saving-tracks-you-like)
+- [Desktop integration](#desktop-integration)
 - [What the music sounds like](#what-the-music-sounds-like)
 - [Configuration](#configuration)
 - [Models and licensing](#models-and-licensing)
@@ -62,17 +65,23 @@ user directories. `make install` copies the binary to `~/.local/bin`.
 ./bgm
 ```
 
-That is all. While the engine starts and the first track generates, bgm
-shows live progress (what phase it is in, how long it has been running,
-and how long it usually takes); music begins as soon as the first track
-is ready (the very first track is generated a bit shorter so it arrives
-sooner). The engine keeps running in the background between launches, so
-after the first start, relaunching bgm reaches music in well under a
-minute.
+That is all. Setup pre-generates a small library of starter tracks, so a
+launch begins playing one within a few seconds and crossfades to freshly
+generated music as soon as it is ready. While anything loads, bgm shows
+live progress: which phase it is in, how long it has been running, and
+how long it usually takes.
+
+Behind the scenes the engine runs as a shared background process. Three
+numbers matter: launch with banked tracks, audio in seconds; fresh
+generation ready in under a minute while the engine is warm, or a couple
+of minutes after a cold engine start; and the idle engine shuts itself
+down 15 minutes after the last bgm process exits (that number is a
+memory-saver, not a boot time).
 
 Useful variants:
 
 ```sh
+./bgm "dark techno"           # start straight from a prompt
 ./bgm --preset lofi-study     # start from a built-in preset
 ./bgm --session gym-grind     # resume a saved session
 ./bgm --engine noise          # noise only, no GPU needed
@@ -91,6 +100,20 @@ warm so the next launch starts making music almost immediately, and it
 shuts itself down after 15 minutes without a bgm process using it
 (tunable via `idle_minutes`). Only one interactive bgm player runs at a
 time; a second one tells you where the first is.
+
+## Starting from a prompt
+
+You do not need a preset; describe what you want:
+
+```sh
+./bgm "dark techno"
+./bgm --prompt "energetic rock with vocals about winning"
+```
+
+Inside the player, `new <prompt>` drops the current steering context and
+starts a fresh session seeded with the prompt (auto-persisted like any
+session, name it with `name`). Vocal requests in the prompt work the
+same way they do in steering.
 
 ## Steering the music
 
@@ -122,6 +145,8 @@ Enter:
 | Command | Effect |
 | --- | --- |
 | `clear` | wipe the steering context |
+| `new <prompt>` | fresh session from a prompt |
+| `save [prev]` | save the playing (or previous) track as MP3 |
 | `name <name>` | save the current session under a name |
 | `sessions` | list presets and saved sessions |
 | `load <name>` | resume a saved session |
@@ -185,6 +210,40 @@ subcommand:
 
 Exports are capped at 180 minutes per run.
 
+## Saving tracks you like
+
+When a track lands just right, type:
+
+```
+save
+```
+
+and the currently playing track is written as a high-quality MP3 (with
+the prompt in its tags) into the snippets folder, path shown in the
+acknowledgment. `save prev` captures the previous track instead, for
+when it clicks a moment too late. Saving never interrupts playback. The
+folder is configurable via `snippets_dir`.
+
+## Desktop integration
+
+bgm shows up as a regular media player (MPRIS) on the desktop bus, so
+media keys, KDE's media controls, KDE Connect and `playerctl` all work:
+
+```sh
+playerctl --player bgm play-pause
+playerctl --player bgm next
+playerctl --player bgm volume 0.5
+playerctl --player bgm metadata xesam:title
+```
+
+PipeWire/PulseAudio per-stream volume also works independently of bgm
+(the playback stream belongs to `pw-play`):
+
+```sh
+pactl set-sink-input-volume "$(pactl list sink-inputs \
+  | awk '/^Sink Input #/{id=substr($3,2)} /application.name = "pw-play"/{print id; exit}')" 50%
+```
+
 ## What the music sounds like
 
 The default engine is ACE-Step 1.5, a full-song generation model.
@@ -210,6 +269,14 @@ Honestly, by style:
   track length while doing so).
 - Every generation has some luck involved; a weak track is usually
   followed by a better one, and `skip` is always there.
+- Tracks are loudness-normalized to a consistent level, and the whole
+  pipeline is lossless (48 kHz WAV from the engine, raw PCM to your
+  speakers); only exports and snippets are encoded, at top MP3 quality.
+  The remaining quality ceiling is the model itself: `inference_steps`
+  defaults to 12 (measurably more spectral detail than the model's
+  quick-start 8, at no meaningful speed cost on a strong GPU) and can
+  be raised to 20 for a little more brightness, but no setting turns
+  the model into a mastering studio.
 
 If you run [Ollama](https://ollama.com), bgm uses it in the background to
 polish prompts and write themed lyrics; it never delays the music, and
@@ -232,12 +299,17 @@ usually `~/.config/bgm/config.json`) with these defaults:
   "buffer_tracks": 2,
   "volume": 80,
   "bed_while_waiting": false,
+  "pipe_latency_ms": 200,
+  "normalize_loudness": true,
+  "mp3_quality": 0,
+  "snippets_dir": "",
+  "library_max_mb": 600,
   "acestep": {
     "port": 0,
     "idle_minutes": 15,
     "lm_model_path": "",
     "lm_backend": "auto",
-    "inference_steps": 8,
+    "inference_steps": 12,
     "thinking": true
   },
   "ollama": {
@@ -289,6 +361,17 @@ Common cases:
 - **Generation failures**: the stream degrades gracefully (buffer, then
   looping the last track, then a noise bed) while the engine restarts;
   check the log for the engine's error output.
+- **Buzz or static from the speakers while a track generates**: heavy
+  GPU load can induce electrical interference in analog audio chains
+  (laptop headphone out, unbalanced cables into a mixer) that sounds
+  like cell-phone buzz and follows the GPU's duty cycle, not the audio
+  data. Check the underrun counter in the interface header and in
+  `bgm doctor`: if it stays at zero while you hear the noise, the audio
+  stream itself is clean and the interference is happening after the
+  digital output. Mitigations that work: cap the GPU's power draw
+  (`sudo nvidia-smi -pl <watts>`), use shielded or shorter audio
+  cables, ground the laptop's power supply, or switch to a digital
+  output (USB DAC/interface, HDMI audio).
 
 ## Known limitations
 
