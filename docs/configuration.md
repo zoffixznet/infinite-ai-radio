@@ -23,7 +23,7 @@ everything else keeps its default.
     "enabled": false,
     "port": 8246,
     "token": "",
-    "bind": "",
+    "bind": [],
     "allowed_hosts": []
   },
   "acestep": {
@@ -84,12 +84,14 @@ from your phone" section for the full flow.
 - `token`: optional shared secret; when set, every request must carry it
   (`?token=...` or an Authorization bearer header). The private tailnet
   is the default trust boundary, so this is off by default.
-- `bind`: overrides the bind addresses. Leave empty: the default binds
-  localhost plus the machine's Tailscale address only. Setting this (for
-  example to `"0.0.0.0"`) exposes the remote to every network the
-  machine is on - only do that on networks you fully trust, and never
-  expose the port to the public internet. Any non-localhost override
-  refuses to start unless `token` is also set.
+- `bind`: extra addresses to listen on, as a list (a plain string also
+  works and means a one-element list). Binding is additive: localhost
+  and the machine's Tailscale address are always kept, and every
+  address you bind is automatically accepted in URLs. `"0.0.0.0"`
+  listens on every network the machine is on and auto-allows the
+  machine's own interface addresses. Any entry beyond localhost refuses
+  to start unless `token` is also set - only expose the remote on
+  networks you fully trust, and never on the public internet.
 - `allowed_hosts`: extra hostnames or IPs clients may use in the URL
   (the remote rejects unknown Host and Origin values as a
   DNS-rebinding/cross-site defense). Localhost and the tailnet address

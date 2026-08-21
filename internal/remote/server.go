@@ -36,9 +36,9 @@ type Config struct {
 	Port int
 	// Token, when non-empty, is required on every request.
 	Token string
-	// BindOverride replaces the default localhost+tailnet binding. Any
-	// non-loopback override requires Token.
-	BindOverride string
+	// Binds lists extra addresses to listen on (additive to localhost
+	// and the tailnet address). Any non-loopback entry requires Token.
+	Binds []string
 	// AllowedHosts adds hostnames/IPs to the Host-header allowlist.
 	AllowedHosts []string
 }
@@ -66,31 +66,35 @@ const csrfHeader = "X-BGM-Remote"
 // tokenCookie carries the shared secret after the first ?token= visit.
 const tokenCookie = "bgm_token"
 
-// ValidateBind rejects insecure combinations before anything listens: a
-// bind override beyond loopback makes the remote reachable by hosts
-// outside the default trust boundary, so it requires a token.
-func ValidateBind(override, token string) error {
-	if override == "" || token != "" {
+// ValidateBinds rejects insecure combinations before anything listens:
+// bind entries beyond loopback make the remote reachable by hosts
+// outside the default trust boundary, so they require a token.
+func ValidateBinds(binds []string, token string) error {
+	if token != "" {
 		return nil
 	}
-	ip := net.ParseIP(override)
-	if override == "localhost" || (ip != nil && ip.IsLoopback()) {
-		return nil
+	for _, b := range binds {
+		b = strings.TrimSpace(b)
+		if b == "" || isLoopbackHost(b) {
+			continue
+		}
+		return fmt.Errorf("remote.bind entry %q may expose the remote beyond localhost and your tailnet; set remote.token to protect it, or remove the entry", b)
 	}
-	return fmt.Errorf("remote.bind=%q may expose the remote beyond localhost and your tailnet; set remote.token to protect it, or remove the bind override", override)
+	return nil
 }
 
 // Start resolves bind addresses, starts the shared encoder and serves on
 // every address. It returns after the listeners are accepting.
 func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (*Server, error) {
-	if err := ValidateBind(cfg.BindOverride, cfg.Token); err != nil {
+	if err := ValidateBinds(cfg.Binds, cfg.Token); err != nil {
 		return nil, err
 	}
 	s := &Server{cfg: cfg, ctl: ctl, streamer: streamer, log: log}
 
-	addrs, tailnetIP := BindAddrs(cfg.BindOverride, cfg.Port)
-	s.TailnetIP = tailnetIP
-	s.buildAllowedHosts()
+	binding := ResolveBinding(cfg.Binds, cfg.Port)
+	addrs := binding.Addrs
+	s.TailnetIP = binding.TailnetIP
+	s.buildAllowedHosts(binding.ExtraHosts)
 	handler := s.buildHandler()
 
 	if err := streamer.Start(ctx); err != nil {
@@ -119,14 +123,14 @@ func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, lo
 		defer cancel()
 		srv.Shutdown(shutCtx)
 	}()
-	log.Info("remote listening", "event", "remote_up", "addrs", strings.Join(s.Addrs, ","), "tailnet_ip", tailnetIP, "token", cfg.Token != "")
+	log.Info("remote listening", "event", "remote_up", "addrs", strings.Join(s.Addrs, ","), "tailnet_ip", s.TailnetIP, "token", cfg.Token != "")
 	return s, nil
 }
 
 // buildAllowedHosts assembles the hostname allowlist: loopback names,
-// the tailnet address, an explicit bind override address, and configured
-// extras.
-func (s *Server) buildAllowedHosts() {
+// the tailnet address, every explicitly bound address (or, for wildcard
+// binds, all machine interface addresses), and configured extras.
+func (s *Server) buildAllowedHosts(bound []string) {
 	s.allowedHosts = map[string]bool{
 		"localhost": true,
 		"127.0.0.1": true,
@@ -135,8 +139,10 @@ func (s *Server) buildAllowedHosts() {
 	if s.TailnetIP != "" {
 		s.allowedHosts[s.TailnetIP] = true
 	}
-	if o := s.cfg.BindOverride; o != "" && o != "0.0.0.0" && o != "::" {
-		s.allowedHosts[strings.ToLower(o)] = true
+	for _, h := range bound {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			s.allowedHosts[h] = true
+		}
 	}
 	for _, h := range s.cfg.AllowedHosts {
 		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {

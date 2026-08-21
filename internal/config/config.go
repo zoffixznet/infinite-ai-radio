@@ -51,6 +51,29 @@ type Config struct {
 	Remote  Remote  `json:"remote"`
 }
 
+// BindList is a list of bind addresses that also unmarshals from a
+// plain JSON string (treated as a one-element list).
+type BindList []string
+
+// UnmarshalJSON accepts either "addr" or ["addr", ...].
+func (b *BindList) UnmarshalJSON(data []byte) error {
+	var one string
+	if err := json.Unmarshal(data, &one); err == nil {
+		if one == "" {
+			*b = nil
+		} else {
+			*b = BindList{one}
+		}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	*b = BindList(many)
+	return nil
+}
+
 // Remote configures the built-in phone remote (HTTP page + MP3 stream).
 type Remote struct {
 	// Enabled turns the remote server on (also via the --remote flag).
@@ -61,11 +84,12 @@ type Remote struct {
 	// (Authorization bearer or ?token= query). Empty disables the gate;
 	// the private tailnet is the default trust boundary.
 	Token string `json:"token"`
-	// Bind overrides the bind addresses. Empty (the default) binds
-	// localhost plus the machine's Tailscale address when one exists.
-	// Setting this (e.g. "0.0.0.0") exposes the remote to every network
-	// the machine is on; it then refuses to start without a Token.
-	Bind string `json:"bind"`
+	// Bind lists EXTRA addresses to listen on (a JSON string is also
+	// accepted as a one-element list). Localhost and the machine's
+	// Tailscale address are always bound regardless; a wildcard entry
+	// ("0.0.0.0") covers everything by itself. Any non-loopback entry
+	// requires Token.
+	Bind BindList `json:"bind"`
 	// AllowedHosts lists extra hostnames or IPs clients may use to reach
 	// the remote (Host-header allowlist). Localhost and the tailnet
 	// address are always allowed; only needed with a Bind override.

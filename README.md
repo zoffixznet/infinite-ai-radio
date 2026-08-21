@@ -260,6 +260,21 @@ network between your computer and phone:
    shows it under the remote section.
 4. Open that URL in the phone's browser and tap play.
 
+To also reach the remote on your home LAN (say your laptop is
+192.168.1.20), add that address to `remote.bind` and set a token; bgm
+keeps listening on localhost and the tailnet as well, and addresses you
+bind are automatically accepted in URLs:
+
+```json
+{ "remote": { "enabled": true, "token": "pick-a-long-secret",
+              "bind": ["192.168.1.20"] } }
+```
+
+Then open `http://192.168.1.20:8246/?token=pick-a-long-secret` from any
+device on that network. `"bind": ["0.0.0.0"]` listens on every network
+the machine is on; a token is required either way, and the public
+internet is never a sensible place for this port.
+
 The stream is MP3 at ~192 kbps and runs a few seconds behind the
 machine's speakers; steering, starting fresh and saving act instantly
 and show up in the terminal UI too. If you want a shared secret on top
@@ -407,8 +422,12 @@ Common cases:
   usually takes. While the engine stays warm (see `bgm engine status`),
   later launches skip the load entirely.
 - **Generation failures**: the stream degrades gracefully (buffer, then
-  looping the last track, then a noise bed) while the engine restarts;
-  check the log for the engine's error output.
+  looping the last track, then a noise bed). The engine restarts itself
+  after repeated failures, and instantly on known-fatal faults, even
+  when its health endpoint still claims everything is fine; expect at
+  most a couple of minutes of looped music while it reloads. The
+  interface and `bgm doctor` show the current failure streak and the
+  last reason.
 - **Buzz or static from the speakers while a track generates**: heavy
   GPU load can induce electrical interference in analog audio chains
   (laptop headphone out, unbalanced cables into a mixer) that sounds

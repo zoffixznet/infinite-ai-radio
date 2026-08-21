@@ -83,3 +83,39 @@ func TestLoadRejectsMalformedFile(t *testing.T) {
 		t.Fatal("malformed config accepted")
 	}
 }
+
+func TestBindListAcceptsStringAndList(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvDataDir, filepath.Join(dir, "data"))
+	t.Setenv(EnvConfigDir, dir)
+
+	// A plain string (the shape of existing config files) is one entry.
+	os.WriteFile(filepath.Join(dir, "config.json"),
+		[]byte(`{"remote":{"bind":"0.0.0.0","token":"x","allowed_hosts":["192.168.8.187"]}}`), 0o644)
+	p, _ := ResolvePaths()
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Remote.Bind) != 1 || cfg.Remote.Bind[0] != "0.0.0.0" {
+		t.Fatalf("string bind = %v", cfg.Remote.Bind)
+	}
+
+	// A list works too.
+	os.WriteFile(filepath.Join(dir, "config.json"),
+		[]byte(`{"remote":{"bind":["192.168.1.5","10.0.0.2"],"token":"x"}}`), 0o644)
+	cfg, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Remote.Bind) != 2 || cfg.Remote.Bind[1] != "10.0.0.2" {
+		t.Fatalf("list bind = %v", cfg.Remote.Bind)
+	}
+
+	// Empty string means no extra binds.
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"remote":{"bind":""}}`), 0o644)
+	cfg, _ = Load(p)
+	if len(cfg.Remote.Bind) != 0 {
+		t.Fatalf("empty bind = %v", cfg.Remote.Bind)
+	}
+}

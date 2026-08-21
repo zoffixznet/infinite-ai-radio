@@ -10,19 +10,46 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 )
 
 // tailnetPrefix is the CGNAT range Tailscale assigns addresses from.
 var tailnetPrefix = netip.MustParsePrefix("100.64.0.0/10")
 
+// interfaceAddrs is swappable so tests can feed fake interface lists.
+var interfaceAddrs = net.InterfaceAddrs
+
 // TailnetAddr returns the machine's Tailscale IPv4 address, or ok=false
 // when no tailnet interface exists.
 func TailnetAddr() (string, bool) {
-	addrs, err := net.InterfaceAddrs()
+	addrs, err := interfaceAddrs()
 	if err != nil {
 		return "", false
 	}
 	return tailnetAddrIn(addrs)
+}
+
+// MachineAddrs lists every IP address of the machine's interfaces (used
+// to auto-allow Host values when binding a wildcard).
+func MachineAddrs() []string {
+	addrs, err := interfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		default:
+			continue
+		}
+		out = append(out, ip.String())
+	}
+	return out
 }
 
 // tailnetAddrIn scans an address list for a Tailscale-range IPv4 address.
@@ -53,17 +80,72 @@ func tailnetAddrIn(addrs []net.Addr) (string, bool) {
 	return "", false
 }
 
-// BindAddrs resolves the listen addresses: an explicit override wins;
-// otherwise localhost plus the tailnet address when present. tailnetIP is
-// the detected address ("" when absent).
-func BindAddrs(override string, port int) (addrs []string, tailnetIP string) {
-	if override != "" {
-		return []string{net.JoinHostPort(override, strconv.Itoa(port))}, ""
-	}
-	out := []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}
+// Binding is the resolved listen plan: which addresses to listen on and
+// which host names those imply for the allowlist.
+type Binding struct {
+	// Addrs are host:port listen addresses.
+	Addrs []string
+	// TailnetIP is the detected Tailscale address ("" when absent).
+	TailnetIP string
+	// ExtraHosts are hostnames/IPs implied by the binding that clients
+	// may legitimately use in URLs (explicit bind entries; with a
+	// wildcard, every machine interface address).
+	ExtraHosts []string
+	// Exposed reports whether any bound address is reachable beyond
+	// loopback and the tailnet (which makes a token mandatory).
+	Exposed bool
+}
+
+// ResolveBinding turns the configured extra binds into the listen plan.
+// Binding is additive: localhost is always kept and the tailnet address
+// is always detected and bound when present. A wildcard entry replaces
+// the individual listens (it already covers them all).
+func ResolveBinding(binds []string, port int) Binding {
+	var b Binding
 	if ip, ok := TailnetAddr(); ok {
-		out = append(out, net.JoinHostPort(ip, strconv.Itoa(port)))
-		tailnetIP = ip
+		b.TailnetIP = ip
 	}
-	return out, tailnetIP
+	seen := map[string]bool{}
+	add := func(host string) {
+		if host != "" && !seen[host] {
+			seen[host] = true
+			b.Addrs = append(b.Addrs, net.JoinHostPort(host, strconv.Itoa(port)))
+		}
+	}
+	wildcard := false
+	for _, raw := range binds {
+		host := strings.TrimSpace(raw)
+		if host == "0.0.0.0" || host == "::" || host == "*" {
+			wildcard = true
+			continue
+		}
+		if host == "" {
+			continue
+		}
+		if !isLoopbackHost(host) {
+			b.Exposed = true
+		}
+		b.ExtraHosts = append(b.ExtraHosts, host)
+	}
+	if wildcard {
+		b.Exposed = true
+		b.Addrs = []string{net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}
+		b.ExtraHosts = append(b.ExtraHosts, MachineAddrs()...)
+		return b
+	}
+	add("127.0.0.1")
+	add(b.TailnetIP)
+	for _, h := range b.ExtraHosts {
+		add(h)
+	}
+	return b
+}
+
+// isLoopbackHost reports whether a bind entry stays on this machine.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

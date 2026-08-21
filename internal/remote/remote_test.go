@@ -60,14 +60,92 @@ func TestTailnetAddrDetection(t *testing.T) {
 	}
 }
 
-func TestBindAddrsOverride(t *testing.T) {
-	addrs, ip := BindAddrs("0.0.0.0", 9999)
-	if len(addrs) != 1 || addrs[0] != "0.0.0.0:9999" || ip != "" {
-		t.Fatalf("override binding = %v / %q", addrs, ip)
+// withFakeInterfaces swaps the interface enumeration for a test.
+func withFakeInterfaces(t *testing.T, addrs []net.Addr) {
+	t.Helper()
+	old := interfaceAddrs
+	interfaceAddrs = func() ([]net.Addr, error) { return addrs, nil }
+	t.Cleanup(func() { interfaceAddrs = old })
+}
+
+func TestResolveBindingAdditive(t *testing.T) {
+	withFakeInterfaces(t, []net.Addr{
+		addr("127.0.0.1/8"), addr("192.168.8.187/24"), addr("100.101.102.103/32"),
+	})
+
+	// Default: localhost plus the detected tailnet address.
+	b := ResolveBinding(nil, 9999)
+	if len(b.Addrs) != 2 || b.Addrs[0] != "127.0.0.1:9999" || b.Addrs[1] != "100.101.102.103:9999" {
+		t.Fatalf("default binding = %v", b.Addrs)
 	}
-	addrs, _ = BindAddrs("", 9999)
-	if addrs[0] != "127.0.0.1:9999" {
-		t.Fatalf("default binding must start with localhost: %v", addrs)
+	if b.TailnetIP != "100.101.102.103" || b.Exposed {
+		t.Fatalf("default binding meta = %+v", b)
+	}
+
+	// An extra LAN entry is ADDITIVE: localhost and tailnet stay bound,
+	// the entry is exposed and auto-allowed.
+	b = ResolveBinding([]string{"192.168.8.187"}, 9999)
+	want := []string{"127.0.0.1:9999", "100.101.102.103:9999", "192.168.8.187:9999"}
+	if strings.Join(b.Addrs, " ") != strings.Join(want, " ") {
+		t.Fatalf("additive binding = %v; want %v", b.Addrs, want)
+	}
+	if !b.Exposed {
+		t.Fatal("LAN entry must count as exposed")
+	}
+	found := false
+	for _, h := range b.ExtraHosts {
+		if h == "192.168.8.187" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bound entry not auto-allowed: %v", b.ExtraHosts)
+	}
+
+	// A wildcard collapses the listens (it covers everything) and
+	// auto-allows every machine interface address.
+	b = ResolveBinding([]string{"0.0.0.0"}, 9999)
+	if len(b.Addrs) != 1 || b.Addrs[0] != "0.0.0.0:9999" || !b.Exposed {
+		t.Fatalf("wildcard binding = %+v", b)
+	}
+	allowed := strings.Join(b.ExtraHosts, " ")
+	if !strings.Contains(allowed, "192.168.8.187") || !strings.Contains(allowed, "100.101.102.103") {
+		t.Fatalf("wildcard must auto-allow machine addresses: %v", b.ExtraHosts)
+	}
+	// The tailnet is still detected under a wildcard, so its allowlist
+	// entry survives overrides.
+	if b.TailnetIP != "100.101.102.103" {
+		t.Fatalf("tailnet detection lost under wildcard: %+v", b)
+	}
+
+	// A loopback-only extra entry stays unexposed.
+	b = ResolveBinding([]string{"127.0.0.1", "localhost"}, 9999)
+	if b.Exposed {
+		t.Fatalf("loopback entries flagged exposed: %+v", b)
+	}
+}
+
+func TestValidateBinds(t *testing.T) {
+	cases := []struct {
+		binds   []string
+		token   string
+		wantErr bool
+	}{
+		{nil, "", false},
+		{[]string{"127.0.0.1"}, "", false},
+		{[]string{"localhost", "::1"}, "", false},
+		{[]string{"0.0.0.0"}, "", true},
+		{[]string{"192.168.1.10"}, "", true},
+		{[]string{"127.0.0.1", "192.168.1.10"}, "", true},
+		{[]string{"0.0.0.0"}, "secret", false},
+		{[]string{"192.168.1.10"}, "secret", false},
+	}
+	for _, tc := range cases {
+		err := ValidateBinds(tc.binds, tc.token)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("ValidateBinds(%v, token=%v) err=%v want error=%v",
+				tc.binds, tc.token != "", err, tc.wantErr)
+		}
 	}
 }
 
@@ -205,7 +283,7 @@ func testServer(t *testing.T, token string) (*httptest.Server, *fakeCtl, *Server
 	t.Helper()
 	ctl := &fakeCtl{}
 	s := &Server{cfg: Config{Token: token}, ctl: ctl, streamer: NewStreamer(testLog()), log: testLog()}
-	s.buildAllowedHosts()
+	s.buildAllowedHosts(nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.buildHandler().ServeHTTP(w, r)
 	}))
@@ -427,25 +505,18 @@ func TestMutationsRequireCustomHeaderAndCleanOrigin(t *testing.T) {
 	}
 }
 
-func TestValidateBindRequiresTokenBeyondLoopback(t *testing.T) {
-	cases := []struct {
-		override, token string
-		wantErr         bool
+func TestValidateBindRequiresTokenBeyondLoopbackLegacyShapes(t *testing.T) {
+	// The one-element shapes that used to be a single override string.
+	for _, tc := range []struct {
+		entry   string
+		wantErr bool
 	}{
-		{"", "", false},
-		{"127.0.0.1", "", false},
-		{"localhost", "", false},
-		{"::1", "", false},
-		{"0.0.0.0", "", true},
-		{"192.168.1.10", "", true},
-		{"0.0.0.0", "secret", false},
-		{"192.168.1.10", "secret", false},
-	}
-	for _, tc := range cases {
-		err := ValidateBind(tc.override, tc.token)
+		{"127.0.0.1", false}, {"localhost", false}, {"::1", false},
+		{"0.0.0.0", true}, {"192.168.1.10", true},
+	} {
+		err := ValidateBinds([]string{tc.entry}, "")
 		if (err != nil) != tc.wantErr {
-			t.Errorf("ValidateBind(%q, token=%v) err=%v want error=%v",
-				tc.override, tc.token != "", err, tc.wantErr)
+			t.Errorf("legacy shape %q: err=%v want error=%v", tc.entry, err, tc.wantErr)
 		}
 	}
 }

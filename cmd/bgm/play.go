@@ -86,7 +86,7 @@ func runPlay(pf playFlags) error {
 		rs, err := remote.Start(ctx, remote.Config{
 			Port:         a.cfg.Remote.Port,
 			Token:        a.cfg.Remote.Token,
-			BindOverride: a.cfg.Remote.Bind,
+			Binds:        a.cfg.Remote.Bind,
 			AllowedHosts: a.cfg.Remote.AllowedHosts,
 		}, orch, streamer, a.log)
 		if err != nil {
