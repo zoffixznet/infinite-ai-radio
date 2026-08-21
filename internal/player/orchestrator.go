@@ -157,6 +157,11 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	o.phaseStart = now
 	o.mu.Unlock()
 	o.seedFromLibrary()
+	// Prime the ring with a little silence: the output pump's first reads
+	// fill the system player's buffer in a burst, and without priming
+	// that burst can outrun the mixer's first write and be counted (and
+	// heard) as an underrun right at launch.
+	o.ring.Write(make([]byte, audio.DurationToBytes(300*time.Millisecond)))
 	o.wg.Add(4)
 	go func() { defer o.wg.Done(); o.genLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()

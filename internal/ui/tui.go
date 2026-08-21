@@ -89,7 +89,11 @@ type tuiModel struct {
 	styles styles
 	msgs   []string
 	width  int
+	height int
 	ticks  int
+	// scroll is how many lines the backlog view is scrolled up from the
+	// bottom; 0 means pinned to the latest output.
+	scroll int
 }
 
 // Messages driving periodic refresh and stream events.
@@ -124,6 +128,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		// Guard against tiny or unreported terminal sizes; a negative
 		// width makes the text input unusable.
 		if w := msg.Width - 4; w >= 10 {
@@ -141,21 +146,44 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
 			return m, tea.Quit
+		case "pgup":
+			m.scroll += m.viewportSize() - 1
+			m.clampScroll()
+			return m, nil
+		case "pgdown":
+			m.scroll -= m.viewportSize() - 1
+			m.clampScroll()
+			return m, nil
+		case "home":
+			m.scroll = len(m.msgs) // clamped in View
+			m.clampScroll()
+			return m, nil
+		case "end", "esc":
+			m.scroll = 0
+			return m, nil
 		case "enter":
 			line := m.input.Value()
 			m.input.Reset()
 			if strings.TrimSpace(line) == "" {
 				return m, nil
 			}
+			m.scroll = 0
 			m.push("> " + line)
+			pushed := 1
 			resp, quit := m.c.Handle(line)
 			if resp != "" {
 				for _, l := range strings.Split(resp, "\n") {
 					m.push("  " + l)
+					pushed++
 				}
 			}
 			if quit {
 				return m, tea.Quit
+			}
+			// A response taller than the view starts at its top with a
+			// "more below" indicator, instead of showing only its tail.
+			if vp := m.viewportSize(); pushed > vp {
+				m.scroll = pushed - vp
 			}
 			m.status = m.c.O.Status()
 			return m, nil
@@ -166,11 +194,47 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// push appends a message line, keeping a small scrollback.
+// push appends a message line, keeping a small scrollback. While the
+// user is scrolled up, arriving lines do not yank the view.
 func (m *tuiModel) push(line string) {
 	m.msgs = append(m.msgs, line)
-	if len(m.msgs) > 200 {
-		m.msgs = m.msgs[len(m.msgs)-200:]
+	if m.scroll > 0 {
+		m.scroll++
+	}
+	if len(m.msgs) > 400 {
+		drop := len(m.msgs) - 400
+		m.msgs = m.msgs[drop:]
+		if m.scroll > len(m.msgs) {
+			m.scroll = len(m.msgs)
+		}
+	}
+}
+
+// viewportSize is how many backlog lines fit between the chrome and the
+// input line at the current terminal size.
+func (m *tuiModel) viewportSize() int {
+	if m.height <= 0 {
+		return 10
+	}
+	chrome := strings.Count(m.renderChrome(), "\n")
+	vp := m.height - chrome - 3 // indicator/blank + input + safety
+	if vp < 3 {
+		vp = 3
+	}
+	return vp
+}
+
+// clampScroll keeps the scroll offset inside the backlog.
+func (m *tuiModel) clampScroll() {
+	maxScroll := len(m.msgs) - m.viewportSize()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.scroll > maxScroll {
+		m.scroll = maxScroll
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
 	}
 }
 
@@ -204,7 +268,9 @@ func (m tuiModel) pulseBar(width int) string {
 	return b.String()
 }
 
-func (m tuiModel) View() tea.View {
+// renderChrome renders everything above the message backlog: header,
+// now-playing panel, phase/generation/buffer gauges and the separator.
+func (m *tuiModel) renderChrome() string {
 	st := m.status
 	s := m.styles
 	var b strings.Builder
@@ -276,14 +342,39 @@ func (m tuiModel) View() tea.View {
 	}
 
 	b.WriteString(s.muted.Render(strings.Repeat("─", max(20, min(m.width, 78)))) + "\n")
+	return b.String()
+}
 
-	// Recent messages: last 10 lines.
+func (m tuiModel) View() tea.View {
+	var b strings.Builder
+	b.WriteString(m.renderChrome())
+
+	// Backlog window: the last viewport lines, or wherever the user
+	// scrolled to, with a position indicator when not pinned.
+	m.clampScroll()
+	vp := m.viewportSize()
 	msgs := m.msgs
-	if len(msgs) > 10 {
-		msgs = msgs[len(msgs)-10:]
+	total := len(msgs)
+	showIndicator := m.scroll > 0
+	lines := vp
+	if showIndicator {
+		lines = vp - 1
 	}
-	for _, l := range msgs {
+	start := total - lines - m.scroll
+	if start < 0 {
+		start = 0
+	}
+	end := start + lines
+	if end > total {
+		end = total
+	}
+	for _, l := range msgs[start:end] {
 		b.WriteString(l + "\n")
+	}
+	if showIndicator {
+		below := total - end
+		b.WriteString(m.styles.warn.Render(fmt.Sprintf(
+			"▼ %d more line(s) below - PgDn or End to return ▼", below)) + "\n")
 	}
 	b.WriteString("\n" + m.input.View() + "\n")
 	return tea.NewView(b.String())

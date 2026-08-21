@@ -193,20 +193,15 @@ func fmtDur(d time.Duration) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
-const helpText = `steering: just type what you want, e.g.
-  make it more energetic | calmer | faster | add vocals about winning
-  switch to piano | generate pink noise
+// helpText is kept compact (two command columns) so the whole block fits
+// a standard 80x24 terminal's message area in one screen.
+const helpText = `steer with plain text: "more energetic", "calmer", "switch to piano",
+  "add vocals about winning", "pink noise" - each shapes the next track
 commands (leading / optional):
-  clear                wipe the steering context
-  new <prompt>         fresh session from a prompt (e.g. new dark techno)
-  save [prev]          save the playing (or previous) track as MP3
-  name <name>          save this session under a name
-  sessions             list presets and saved sessions
-  load <name>          resume a saved session
-  preset <name>        switch to a built-in preset
-  mp3 <minutes> [file] export minutes of this vibe to an MP3
-  skip                 jump to the next track
-  pause | resume       pause or continue playback
-  volume <0-100>       set output volume
-  status               show engine and buffer status
-  quit                 exit`
+  clear             wipe steering        name <name>      save this session
+  new <prompt>      fresh session        sessions         list saved + presets
+  save [prev]       track -> MP3         load <name>      resume a session
+  mp3 <min> [file]  export MP3           preset <name>    switch preset
+  skip              next track           pause | resume   pause / continue
+  volume <0-100>    set volume           status | engine  show status
+  help              this list            quit             exit`

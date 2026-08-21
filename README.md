@@ -160,6 +160,10 @@ Enter:
 | `help` | list commands |
 | `quit` | exit |
 
+Longer output than fits on screen starts at its top with a "more below"
+marker; PgUp/PgDn scroll the message backlog and End (or Esc) returns to
+the live view.
+
 ## Sessions
 
 Everything you type is persisted automatically; you never have to save.
