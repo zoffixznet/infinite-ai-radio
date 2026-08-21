@@ -176,6 +176,23 @@ func (s *Sidecar) LastError() error {
 	return s.lastErr
 }
 
+// Client returns the REST client for this server.
+func (s *Sidecar) Client() *Client { return s.client }
+
+// Phase implements Backend for progress displays.
+func (s *Sidecar) Phase() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.ready:
+		return "ready"
+	case s.starting:
+		return "loading models"
+	default:
+		return "starting engine"
+	}
+}
+
 // Tail returns the most recent lines of the child's output, newest last.
 func (s *Sidecar) Tail() []string {
 	s.mu.Lock()

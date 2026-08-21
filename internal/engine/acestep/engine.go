@@ -15,33 +15,49 @@ type Options struct {
 	Thinking bool
 }
 
-// Engine adapts the ACE-Step client and sidecar to the engine.Engine
-// interface.
-type Engine struct {
-	client  *Client
-	sidecar *Sidecar
-	opts    Options
+// Backend is the connection to a running (or starting) ACE-Step API
+// server: either an in-process supervised child (Sidecar) or a shared
+// engine daemon from a previous run (Remote).
+type Backend interface {
+	// Ready reports whether the server answers with models loaded.
+	Ready() bool
+	// Client returns the REST client for the server's current address.
+	Client() *Client
+	// Phase names what the server is doing: "starting engine",
+	// "loading models", "ready" or "unavailable".
+	Phase() string
+	// Tail returns recent server output lines for diagnostics.
+	Tail() []string
 }
 
-// NewEngine wires a client and its supervised sidecar into an Engine.
-func NewEngine(client *Client, sidecar *Sidecar, opts Options) *Engine {
+// Engine adapts an ACE-Step backend to the engine.Engine interface.
+type Engine struct {
+	be   Backend
+	opts Options
+}
+
+// NewEngine wraps a backend into an Engine.
+func NewEngine(be Backend, opts Options) *Engine {
 	if opts.InferenceSteps <= 0 {
 		opts.InferenceSteps = 8
 	}
-	return &Engine{client: client, sidecar: sidecar, opts: opts}
+	return &Engine{be: be, opts: opts}
 }
 
 // Name implements engine.Engine.
 func (e *Engine) Name() string { return "acestep" }
 
 // Ready implements engine.Engine.
-func (e *Engine) Ready() bool { return e.sidecar.Ready() }
+func (e *Engine) Ready() bool { return e.be.Ready() }
 
-// Sidecar exposes the supervisor for status displays and diagnostics.
-func (e *Engine) Sidecar() *Sidecar { return e.sidecar }
+// Phase reports the backend's startup phase for progress displays.
+func (e *Engine) Phase() string { return e.be.Phase() }
+
+// Backend exposes the underlying backend for diagnostics.
+func (e *Engine) Backend() Backend { return e.be }
 
 // Tail returns recent engine output lines for diagnostics.
-func (e *Engine) Tail() []string { return e.sidecar.Tail() }
+func (e *Engine) Tail() []string { return e.be.Tail() }
 
 // Generate implements engine.Engine.
 func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track, error) {
@@ -66,7 +82,7 @@ func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track,
 		req.Prompt = spec.Prompt
 		req.Lyrics = spec.Lyrics
 	}
-	res, err := e.client.Generate(ctx, req)
+	res, err := e.be.Client().Generate(ctx, req)
 	if err != nil {
 		return nil, err
 	}

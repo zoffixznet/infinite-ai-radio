@@ -160,7 +160,7 @@ func TestEngineMapsSpecs(t *testing.T) {
 	sidecar.mu.Lock()
 	sidecar.ready = true
 	sidecar.mu.Unlock()
-	eng := NewEngine(client, sidecar, Options{InferenceSteps: 8, Thinking: true})
+	eng := NewEngine(sidecar, Options{InferenceSteps: 8, Thinking: true})
 
 	// Instrumental spec.
 	_, err := eng.Generate(context.Background(), engine.Spec{
