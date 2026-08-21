@@ -89,6 +89,9 @@ func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
 	cmd.Env = append(os.Environ(),
 		"ACESTEP_API_HOST=127.0.0.1",
 		fmt.Sprintf("ACESTEP_API_PORT=%d", s.cfg.Port),
+		// Load models eagerly at startup so readiness means ready;
+		// the server otherwise lazy-loads on the first request.
+		"ACESTEP_NO_INIT=false",
 		"PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
 	)
 	if s.cfg.LMModelPath != "" {

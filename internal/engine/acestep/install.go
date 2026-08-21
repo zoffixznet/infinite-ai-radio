@@ -159,7 +159,13 @@ func (ins *Installer) ensureWeights(ctx context.Context) error {
 	if err := ins.runStreaming(cmd); err != nil {
 		return err
 	}
-	if lm := ins.cfg.LMModelPath; lm != "" && lm != "acestep-5Hz-lm-1.7B" {
+	// The engine auto-selects the small planner LM on GPUs with less
+	// memory; pre-fetch it so the first play never stalls on a download.
+	lm := ins.cfg.LMModelPath
+	if lm == "" {
+		lm = "acestep-5Hz-lm-0.6B"
+	}
+	if lm != "acestep-5Hz-lm-1.7B" { // 1.7B ships in the main bundle
 		ins.progress("downloading planner LM " + lm)
 		cmd := exec.CommandContext(ctx, uv, "run", "acestep-download", "--model", lm)
 		cmd.Dir = ins.cfg.EngineDir
