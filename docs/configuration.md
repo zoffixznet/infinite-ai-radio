@@ -13,8 +13,10 @@ everything else keeps its default.
   "crossfade_seconds": 3,
   "buffer_tracks": 2,
   "volume": 80,
+  "bed_while_waiting": false,
   "acestep": {
-    "port": 8451,
+    "port": 0,
+    "idle_minutes": 15,
     "lm_model_path": "",
     "lm_backend": "auto",
     "inference_steps": 8,
@@ -45,10 +47,17 @@ everything else keeps its default.
   of playback. Higher survives longer engine stalls, uses more memory
   (about 28 MB per 150-second track).
 - `volume` (0-100): initial output volume.
+- `bed_while_waiting`: when true, a quiet noise bed plays while the
+  first track is prepared instead of the default silence-with-progress.
 
 ## acestep
 
-- `port`: localhost port for the engine's API server.
+- `port`: pins the engine API to a fixed localhost port. The default 0
+  allocates a free port for each engine daemon (the port is recorded in
+  the state directory and shown by `bgm engine status`).
+- `idle_minutes`: the shared engine daemon shuts down after this long
+  with no bgm process using it, freeing GPU memory. Restarting bgm
+  within the window reuses the warm engine instantly.
 - `lm_model_path`: pins the engine's internal planner language model
   (e.g. `"acestep-5Hz-lm-0.6B"` or `"acestep-5Hz-lm-1.7B"`). Empty lets
   the engine pick one that fits your GPU.
@@ -94,4 +103,6 @@ Inside the data directory:
   checkpoints
 - `sessions/` - one JSON file per saved session
 - `exports/` - MP3 exports
-- `logs/bgm.log` - structured JSON log
+- `logs/bgm.log` - structured JSON log of the player
+- `logs/engine-daemon.log` - the shared engine daemon's log
+- `state/` - engine daemon state, locks, and phase-duration records

@@ -188,6 +188,13 @@ func (o *Orchestrator) chooseNext(cur source) source {
 // installs next as current. Chunked so shutdown stays responsive.
 func (o *Orchestrator) crossfade(ctx context.Context, cur, next source, fadeFrames, chunkFrames int) {
 	fade := fadeFrames
+	if _, silent := cur.(silenceSource); silent {
+		// Fading out of silence needs no long blend; a short fade-in
+		// gets music to the ears sooner.
+		if max := 3 * audio.SampleRate / 10; fade > max {
+			fade = max
+		}
+	}
 	if rem := cur.remaining(); rem >= 0 && rem < fade {
 		fade = rem
 	}

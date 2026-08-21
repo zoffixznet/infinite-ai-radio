@@ -218,7 +218,16 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			continue
 		}
 		epoch, sess := o.snapshotSession()
-		spec := o.builder.BuildSpec(ctx, sess, o.cfg.TrackSeconds)
+		seconds := o.cfg.TrackSeconds
+		o.mu.Lock()
+		firstTrack := o.genCount == 0 && o.lastGood == nil
+		o.mu.Unlock()
+		if firstTrack && seconds > 60 {
+			// A shorter first track gets music playing sooner; later
+			// tracks use the configured length.
+			seconds = 60
+		}
+		spec := o.builder.BuildSpec(ctx, sess, seconds)
 		o.mu.Lock()
 		o.genBusy = true
 		o.mu.Unlock()

@@ -122,8 +122,11 @@ func (b *Builder) buildPrompt(s *session.Session) string {
 	if v, ok := b.lookup(key); ok {
 		return v
 	}
+	// Snapshot now: the caller may keep mutating the session while the
+	// background rewrite runs.
+	snap := s.Snapshot()
 	b.fillAsync(key, func(ctx context.Context) (string, error) {
-		return b.rewrite(ctx, s.Snapshot())
+		return b.rewrite(ctx, snap)
 	})
 	return merged
 }

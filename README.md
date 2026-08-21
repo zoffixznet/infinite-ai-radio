@@ -62,10 +62,13 @@ user directories. `make install` copies the binary to `~/.local/bin`.
 ./bgm
 ```
 
-That is all. Playback starts immediately with a gentle noise bed and
-crossfades into generated music as soon as the first track is ready. On the
-very first run the engine loads models for a few minutes; the status line
-shows what is happening.
+That is all. While the engine starts and the first track generates, bgm
+shows live progress (what phase it is in, how long it has been running,
+and how long it usually takes); music begins as soon as the first track
+is ready (the very first track is generated a bit shorter so it arrives
+sooner). The engine keeps running in the background between launches, so
+after the first start, relaunching bgm reaches music in well under a
+minute.
 
 Useful variants:
 
@@ -74,11 +77,20 @@ Useful variants:
 ./bgm --session gym-grind     # resume a saved session
 ./bgm --engine noise          # noise only, no GPU needed
 ./bgm --plain                 # line-based interface (also used automatically in pipes)
+./bgm presets                 # list the built-in presets
 ./bgm doctor                  # check your environment
+./bgm engine status           # is the shared engine running and ready?
+./bgm engine stop             # stop the engine now and free GPU memory
 ```
 
 Quit with `quit` (or Ctrl+C). Music generation runs a few times faster than
 realtime on a modern GPU, so the stream stays ahead of playback.
+
+The engine runs as a shared background process: quitting bgm leaves it
+warm so the next launch starts making music almost immediately, and it
+shuts itself down after 15 minutes without a bgm process using it
+(tunable via `idle_minutes`). Only one interactive bgm player runs at a
+time; a second one tells you where the first is.
 
 ## Steering the music
 
@@ -96,6 +108,8 @@ generate pink noise
 
 Each input is acknowledged with how it was understood and shapes the next
 generated track (the current track finishes playing; use `skip` to jump).
+If the engine is still loading when you type, the acknowledgment says so
+and estimates how long until your steering can be heard.
 Steering accumulates: "calmer" then "no drums" gives you calm, drumless
 music. `clear` wipes the accumulated steering and returns to the session's
 base sound.
@@ -197,6 +211,10 @@ Honestly, by style:
 - Every generation has some luck involved; a weak track is usually
   followed by a better one, and `skip` is always there.
 
+If you run [Ollama](https://ollama.com), bgm uses it in the background to
+polish prompts and write themed lyrics; it never delays the music, and
+bgm quietly stops asking if the model is slow or failing.
+
 Track-to-track transitions are equal-power crossfades (about 3 seconds by
 default), which suits continuous background listening.
 
@@ -213,8 +231,10 @@ usually `~/.config/bgm/config.json`) with these defaults:
   "crossfade_seconds": 3,
   "buffer_tracks": 2,
   "volume": 80,
+  "bed_while_waiting": false,
   "acestep": {
-    "port": 8451,
+    "port": 0,
+    "idle_minutes": 15,
     "lm_model_path": "",
     "lm_backend": "auto",
     "inference_steps": 8,
@@ -262,8 +282,10 @@ Common cases:
 - **"music engine not installed"**: run `make setup`.
 - **No sound**: confirm `pw-play` or `pacat` exists and plays something;
   try `./bgm --player pipe`.
-- **First track takes long**: initial model load takes a few minutes; the
-  noise bed plays meanwhile. Subsequent starts are much faster.
+- **First track takes long**: the initial model load takes a few minutes;
+  the progress display shows which phase is running and how long it
+  usually takes. While the engine stays warm (see `bgm engine status`),
+  later launches skip the load entirely.
 - **Generation failures**: the stream degrades gracefully (buffer, then
   looping the last track, then a noise bed) while the engine restarts;
   check the log for the engine's error output.

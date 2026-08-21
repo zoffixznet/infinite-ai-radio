@@ -41,6 +41,13 @@ func NewRemote(dir state.Dir, exe, daemonLog string, log *slog.Logger) *Remote {
 // heartbeat loops. It returns quickly; readiness is reported by Ready.
 func (r *Remote) Start(ctx context.Context) {
 	r.ensureDaemon()
+	// Probe immediately so an adopted, already-ready daemon is usable
+	// without waiting for the first poll tick.
+	if phase := r.probe(ctx); phase != "" {
+		r.mu.Lock()
+		r.phase = phase
+		r.mu.Unlock()
+	}
 	go r.pollLoop(ctx)
 	go r.heartbeatLoop(ctx)
 }

@@ -24,8 +24,10 @@ default path requires no account, token, or license click-through.
   instrumental tracks are requested with the engine's `[Instrumental]`
   lyrics convention.
 
-The engine runs as a local API server child process that bgm starts,
-supervises and restarts as needed. It listens on localhost only.
+The engine runs as a local API server managed by a shared background
+daemon that bgm starts, supervises and restarts as needed; it stays warm
+between bgm runs and shuts down after a few idle minutes ('bgm engine
+status' / 'bgm engine stop'). It listens on localhost only.
 
 ## Ollama models (optional)
 
