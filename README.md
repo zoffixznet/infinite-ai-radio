@@ -67,7 +67,8 @@ user directories. `make install` copies the binary to `~/.local/bin`.
 
 That is all. Setup pre-generates a small library of starter tracks, so a
 launch begins playing one within a few seconds and crossfades to freshly
-generated music as soon as it is ready. While anything loads, bgm shows
+generated music as soon as it is ready (each generation is independent,
+so playing a banked track never changes what gets generated). While anything loads, bgm shows
 live progress: which phase it is in, how long it has been running, and
 how long it usually takes.
 
