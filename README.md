@@ -263,8 +263,13 @@ network between your computer and phone:
 The stream is MP3 at ~192 kbps and runs a few seconds behind the
 machine's speakers; steering, starting fresh and saving act instantly
 and show up in the terminal UI too. If you want a shared secret on top
-of the tailnet, set `remote.token` in the config and open the page as
-`http://<ip>:8246/?token=<your-token>`.
+of the tailnet, set `remote.token` in the config and open the page once
+as `http://<ip>:8246/?token=<your-token>`; the page stores the secret
+in a cookie and removes it from the address bar. The remote also
+refuses requests whose Host or Origin is not localhost, your tailnet
+address, or an entry you added to `remote.allowed_hosts`, and if you
+override `remote.bind` beyond localhost it will not start without a
+token.
 
 ## Desktop integration
 

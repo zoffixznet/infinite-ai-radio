@@ -165,7 +165,10 @@
   function post(path, body, done) {
     fetch(url(path), {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-BGM-Remote": "1"
+      },
       body: body
     }).then(function (r) { return r.json(); })
       .then(function (d) { ack(d.ack || "done"); if (done) done(d); })

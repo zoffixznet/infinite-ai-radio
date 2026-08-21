@@ -23,7 +23,8 @@ everything else keeps its default.
     "enabled": false,
     "port": 8246,
     "token": "",
-    "bind": ""
+    "bind": "",
+    "allowed_hosts": []
   },
   "acestep": {
     "port": 0,
@@ -87,7 +88,13 @@ from your phone" section for the full flow.
   localhost plus the machine's Tailscale address only. Setting this (for
   example to `"0.0.0.0"`) exposes the remote to every network the
   machine is on - only do that on networks you fully trust, and never
-  expose the port to the public internet.
+  expose the port to the public internet. Any non-localhost override
+  refuses to start unless `token` is also set.
+- `allowed_hosts`: extra hostnames or IPs clients may use in the URL
+  (the remote rejects unknown Host and Origin values as a
+  DNS-rebinding/cross-site defense). Localhost and the tailnet address
+  are always allowed; you only need this together with a `bind`
+  override.
 
 ## acestep
 

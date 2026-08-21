@@ -64,8 +64,12 @@ type Remote struct {
 	// Bind overrides the bind addresses. Empty (the default) binds
 	// localhost plus the machine's Tailscale address when one exists.
 	// Setting this (e.g. "0.0.0.0") exposes the remote to every network
-	// the machine is on; leave it empty unless you understand that.
+	// the machine is on; it then refuses to start without a Token.
 	Bind string `json:"bind"`
+	// AllowedHosts lists extra hostnames or IPs clients may use to reach
+	// the remote (Host-header allowlist). Localhost and the tailnet
+	// address are always allowed; only needed with a Bind override.
+	AllowedHosts []string `json:"allowed_hosts"`
 }
 
 // ACEStep configures the default music engine and its sidecar process.

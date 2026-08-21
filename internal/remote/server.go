@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,8 +36,11 @@ type Config struct {
 	Port int
 	// Token, when non-empty, is required on every request.
 	Token string
-	// BindOverride replaces the default localhost+tailnet binding.
+	// BindOverride replaces the default localhost+tailnet binding. Any
+	// non-loopback override requires Token.
 	BindOverride string
+	// AllowedHosts adds hostnames/IPs to the Host-header allowlist.
+	AllowedHosts []string
 }
 
 // Server is the running remote.
@@ -44,6 +49,9 @@ type Server struct {
 	ctl      Controls
 	streamer *Streamer
 	log      *slog.Logger
+	// allowedHosts is the lowercase hostname allowlist for the Host
+	// header and Origin checks (DNS-rebinding defense).
+	allowedHosts map[string]bool
 
 	// Addrs are the addresses actually listening; TailnetIP is the
 	// detected Tailscale address ("" when absent).
@@ -51,22 +59,39 @@ type Server struct {
 	TailnetIP string
 }
 
+// csrfHeader must accompany every mutating request. Cross-site senders
+// cannot add it without a CORS preflight, which is never granted.
+const csrfHeader = "X-BGM-Remote"
+
+// tokenCookie carries the shared secret after the first ?token= visit.
+const tokenCookie = "bgm_token"
+
+// ValidateBind rejects insecure combinations before anything listens: a
+// bind override beyond loopback makes the remote reachable by hosts
+// outside the default trust boundary, so it requires a token.
+func ValidateBind(override, token string) error {
+	if override == "" || token != "" {
+		return nil
+	}
+	ip := net.ParseIP(override)
+	if override == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("remote.bind=%q may expose the remote beyond localhost and your tailnet; set remote.token to protect it, or remove the bind override", override)
+}
+
 // Start resolves bind addresses, starts the shared encoder and serves on
 // every address. It returns after the listeners are accepting.
 func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (*Server, error) {
+	if err := ValidateBind(cfg.BindOverride, cfg.Token); err != nil {
+		return nil, err
+	}
 	s := &Server{cfg: cfg, ctl: ctl, streamer: streamer, log: log}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handlePage)
-	mux.HandleFunc("GET /stream.mp3", s.handleStream)
-	mux.HandleFunc("GET /state", s.handleState)
-	mux.HandleFunc("POST /steer", s.handleSteer)
-	mux.HandleFunc("POST /new", s.handleNew)
-	mux.HandleFunc("POST /save", s.handleSave)
-
-	handler := s.gate(mux)
 	addrs, tailnetIP := BindAddrs(cfg.BindOverride, cfg.Port)
 	s.TailnetIP = tailnetIP
+	s.buildAllowedHosts()
+	handler := s.buildHandler()
 
 	if err := streamer.Start(ctx); err != nil {
 		return nil, err
@@ -98,21 +123,119 @@ func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, lo
 	return s, nil
 }
 
-// gate enforces the shared-secret token when one is configured.
+// buildAllowedHosts assembles the hostname allowlist: loopback names,
+// the tailnet address, an explicit bind override address, and configured
+// extras.
+func (s *Server) buildAllowedHosts() {
+	s.allowedHosts = map[string]bool{
+		"localhost": true,
+		"127.0.0.1": true,
+		"::1":       true,
+	}
+	if s.TailnetIP != "" {
+		s.allowedHosts[s.TailnetIP] = true
+	}
+	if o := s.cfg.BindOverride; o != "" && o != "0.0.0.0" && o != "::" {
+		s.allowedHosts[strings.ToLower(o)] = true
+	}
+	for _, h := range s.cfg.AllowedHosts {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			s.allowedHosts[h] = true
+		}
+	}
+}
+
+// buildHandler wires the route mux behind the security middleware.
+func (s *Server) buildHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.handlePage)
+	mux.HandleFunc("GET /stream.mp3", s.handleStream)
+	mux.HandleFunc("GET /state", s.handleState)
+	mux.HandleFunc("POST /steer", s.handleSteer)
+	mux.HandleFunc("POST /new", s.handleNew)
+	mux.HandleFunc("POST /save", s.handleSave)
+	return s.gate(mux)
+}
+
+// hostAllowed validates the Host header against the allowlist (DNS
+// rebinding defense: a foreign hostname pointed at this machine must
+// never reach the handlers).
+func (s *Server) hostAllowed(hostHeader string) bool {
+	host := hostHeader
+	if h, p, err := net.SplitHostPort(hostHeader); err == nil {
+		if p != strconv.Itoa(s.cfg.Port) {
+			return false
+		}
+		host = h
+	}
+	return s.allowedHosts[strings.ToLower(strings.Trim(host, "[]"))]
+}
+
+// originAllowed validates an Origin header value (empty is allowed: not
+// all requests carry one).
+func (s *Server) originAllowed(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	return s.hostAllowed(u.Host)
+}
+
+// gate applies, in order: the Host allowlist, the Origin check, the CSRF
+// header requirement on mutations, and the shared-secret token.
 func (s *Server) gate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hostAllowed(r.Host) {
+			s.log.Warn("remote request rejected: host not allowed", "event", "remote_host_rejected", "host", r.Host, "from", r.RemoteAddr)
+			http.Error(w, "host not allowed", http.StatusForbidden)
+			return
+		}
+		if origin := r.Header.Get("Origin"); !s.originAllowed(origin) {
+			s.log.Warn("remote request rejected: origin not allowed", "event", "remote_origin_rejected", "origin", origin, "from", r.RemoteAddr)
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Header.Get(csrfHeader) == "" {
+			s.log.Warn("remote request rejected: missing header", "event", "remote_csrf_rejected", "path", r.URL.Path, "from", r.RemoteAddr)
+			http.Error(w, "missing "+csrfHeader+" header", http.StatusForbidden)
+			return
+		}
 		if s.cfg.Token != "" {
-			got := r.URL.Query().Get("token")
-			if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-				got = strings.TrimPrefix(h, "Bearer ")
-			}
-			if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) != 1 {
+			if !s.tokenOK(r) {
 				http.Error(w, "missing or wrong token", http.StatusUnauthorized)
+				return
+			}
+			// First visit with ?token= in the URL: move the secret
+			// into a cookie and strip it from the address bar.
+			if r.Method == http.MethodGet && r.URL.Query().Get("token") != "" && r.URL.Path == "/" {
+				http.SetCookie(w, &http.Cookie{
+					Name: tokenCookie, Value: r.URL.Query().Get("token"),
+					Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+				})
+				http.Redirect(w, r, r.URL.Path, http.StatusFound)
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// tokenOK checks the shared secret from, in order of preference, the
+// Authorization header, the cookie, or a token query parameter. Values
+// are never logged.
+func (s *Server) tokenOK(r *http.Request) bool {
+	got := ""
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		got = strings.TrimPrefix(h, "Bearer ")
+	} else if c, err := r.Cookie(tokenCookie); err == nil {
+		got = c.Value
+	} else {
+		got = r.URL.Query().Get("token")
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
 }
 
 func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {

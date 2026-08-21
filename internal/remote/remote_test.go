@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -200,24 +201,32 @@ func (f *fakeCtl) Announce(text string) {
 	f.notes = append(f.notes, text)
 }
 
-func testServer(t *testing.T, token string) (*httptest.Server, *fakeCtl) {
+func testServer(t *testing.T, token string) (*httptest.Server, *fakeCtl, *Server) {
 	t.Helper()
 	ctl := &fakeCtl{}
 	s := &Server{cfg: Config{Token: token}, ctl: ctl, streamer: NewStreamer(testLog()), log: testLog()}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handlePage)
-	mux.HandleFunc("GET /state", s.handleState)
-	mux.HandleFunc("POST /steer", s.handleSteer)
-	mux.HandleFunc("POST /new", s.handleNew)
-	mux.HandleFunc("POST /save", s.handleSave)
-	srv := httptest.NewServer(s.gate(mux))
+	s.buildAllowedHosts()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.buildHandler().ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
-	return srv, ctl
+	// The middleware validates Host:port, so align the config port with
+	// the ephemeral httptest port.
+	u, _ := url.Parse(srv.URL)
+	s.cfg.Port, _ = strconv.Atoi(u.Port())
+	return srv, ctl, s
 }
 
+// postForm sends a form POST the way the page does: with the CSRF header.
 func postForm(t *testing.T, u string, vals url.Values) (*http.Response, string) {
 	t.Helper()
-	resp, err := http.PostForm(u, vals)
+	req, err := http.NewRequest("POST", u, strings.NewReader(vals.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(csrfHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +236,7 @@ func postForm(t *testing.T, u string, vals url.Values) (*http.Response, string) 
 }
 
 func TestHandlersRoundTrip(t *testing.T) {
-	srv, ctl := testServer(t, "")
+	srv, ctl, _ := testServer(t, "")
 
 	resp, body := postForm(t, srv.URL+"/steer", url.Values{"text": {"calmer"}})
 	if resp.StatusCode != 200 || !strings.Contains(body, "steering with: calmer") {
@@ -278,7 +287,7 @@ func TestHandlersRoundTrip(t *testing.T) {
 }
 
 func TestTokenGate(t *testing.T) {
-	srv, _ := testServer(t, "sesame")
+	srv, _, _ := testServer(t, "sesame")
 
 	resp, _ := http.Get(srv.URL + "/state")
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -340,5 +349,141 @@ func TestStreamerEncodesRealMP3(t *testing.T) {
 	}
 	if idx := strings.Index(string(got), "\xff"); idx < 0 {
 		t.Fatal("no MP3 sync byte in output")
+	}
+}
+
+// --- security middleware ---
+
+func TestHostAllowlistRejectsForeignHosts(t *testing.T) {
+	srv, _, s := testServer(t, "")
+	port := strconv.Itoa(s.cfg.Port)
+
+	req, _ := http.NewRequest("GET", srv.URL+"/state", nil)
+	req.Host = "evil.example.com:" + port // DNS-rebinding shape
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign host accepted: %d", resp.StatusCode)
+	}
+
+	// Wrong port on an allowed name is rejected too.
+	req, _ = http.NewRequest("GET", srv.URL+"/state", nil)
+	req.Host = "127.0.0.1:1"
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong-port host accepted: %d", resp.StatusCode)
+	}
+
+	// The legit host works (exercised implicitly everywhere else too).
+	resp, _ = http.Get(srv.URL + "/state")
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("legit host rejected: %d", resp.StatusCode)
+	}
+}
+
+func TestMutationsRequireCustomHeaderAndCleanOrigin(t *testing.T) {
+	srv, ctl, s := testServer(t, "")
+	port := strconv.Itoa(s.cfg.Port)
+
+	// A plain cross-site-style POST (no custom header) is refused.
+	resp, err := http.Post(srv.URL+"/steer", "application/x-www-form-urlencoded",
+		strings.NewReader("text=evil"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("headerless POST accepted: %d", resp.StatusCode)
+	}
+
+	// A foreign Origin is refused even with the header.
+	req, _ := http.NewRequest("POST", srv.URL+"/steer", strings.NewReader("text=evil"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(csrfHeader, "1")
+	req.Header.Set("Origin", "http://evil.example.com")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign-origin POST accepted: %d", resp.StatusCode)
+	}
+
+	// The page's own shape (same-origin Origin + header) works.
+	req, _ = http.NewRequest("POST", srv.URL+"/steer", strings.NewReader("text=calmer"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(csrfHeader, "1")
+	req.Header.Set("Origin", "http://127.0.0.1:"+port)
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("legit POST rejected: %d", resp.StatusCode)
+	}
+	if len(ctl.steers) != 1 || ctl.steers[0] != "calmer" {
+		t.Fatalf("only the legit steer may reach the controller: %v", ctl.steers)
+	}
+}
+
+func TestValidateBindRequiresTokenBeyondLoopback(t *testing.T) {
+	cases := []struct {
+		override, token string
+		wantErr         bool
+	}{
+		{"", "", false},
+		{"127.0.0.1", "", false},
+		{"localhost", "", false},
+		{"::1", "", false},
+		{"0.0.0.0", "", true},
+		{"192.168.1.10", "", true},
+		{"0.0.0.0", "secret", false},
+		{"192.168.1.10", "secret", false},
+	}
+	for _, tc := range cases {
+		err := ValidateBind(tc.override, tc.token)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("ValidateBind(%q, token=%v) err=%v want error=%v",
+				tc.override, tc.token != "", err, tc.wantErr)
+		}
+	}
+}
+
+func TestTokenInURLBecomesCookieAndIsStripped(t *testing.T) {
+	srv, _, _ := testServer(t, "sesame")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	resp, err := client.Get(srv.URL + "/?token=sesame")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("token URL not redirected: %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); strings.Contains(loc, "token") {
+		t.Fatalf("redirect keeps the token in the URL: %q", loc)
+	}
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == tokenCookie {
+			cookie = c
+		}
+	}
+	if cookie == nil || cookie.Value != "sesame" || !cookie.HttpOnly {
+		t.Fatalf("token cookie wrong: %+v", cookie)
+	}
+
+	// The cookie alone now authorizes requests.
+	req, _ := http.NewRequest("GET", srv.URL+"/state", nil)
+	req.AddCookie(cookie)
+	resp, _ = http.DefaultClient.Do(req)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "playing") {
+		t.Fatalf("cookie auth failed: %d %s", resp.StatusCode, body)
 	}
 }

@@ -87,6 +87,7 @@ func runPlay(pf playFlags) error {
 			Port:         a.cfg.Remote.Port,
 			Token:        a.cfg.Remote.Token,
 			BindOverride: a.cfg.Remote.Bind,
+			AllowedHosts: a.cfg.Remote.AllowedHosts,
 		}, orch, streamer, a.log)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "bgm: remote could not start:", err)
