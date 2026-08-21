@@ -216,6 +216,7 @@ usually `~/.config/bgm/config.json`) with these defaults:
   "acestep": {
     "port": 8451,
     "lm_model_path": "",
+    "lm_backend": "auto",
     "inference_steps": 8,
     "thinking": true
   },

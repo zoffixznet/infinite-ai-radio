@@ -77,6 +77,7 @@ func New() *Session {
 // read-only.
 func FromPreset(p *Preset) *Session {
 	s := New()
+	s.Name = p.Name + "-" + s.Created.Format("20060102-150405")
 	s.Preset = p.Name
 	s.Mode = p.Mode
 	s.BasePrompt = p.Prompt
