@@ -18,6 +18,9 @@ func RunTUI(ctx context.Context, c *Controller) error {
 	input := textinput.New()
 	input.Placeholder = "type steering text or a command ('help')"
 	input.CharLimit = 200
+	// Focus here: Init works on a copy of the model, so focusing there
+	// would be lost.
+	input.Focus()
 	m := tuiModel{c: c, input: input}
 	prog := tea.NewProgram(m, tea.WithContext(ctx))
 	_, err := prog.Run()
@@ -44,7 +47,7 @@ type (
 
 func (m tuiModel) Init() tea.Cmd {
 	return tea.Batch(
-		m.input.Focus(),
+		textinput.Blink,
 		tickCmd(),
 		listenEvents(m.c.O.Events()),
 	)
@@ -68,7 +71,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.input.SetWidth(msg.Width - 4)
+		// Guard against tiny or unreported terminal sizes; a negative
+		// width makes the text input unusable.
+		if w := msg.Width - 4; w >= 10 {
+			m.input.SetWidth(w)
+		}
 		return m, nil
 	case tickMsg:
 		m.status = m.c.O.Status()
