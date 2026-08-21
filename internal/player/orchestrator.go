@@ -86,6 +86,7 @@ type Orchestrator struct {
 	wake   chan struct{}
 
 	genMu  sync.Mutex // serializes engine use between playback and export
+	runCtx context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -116,6 +117,7 @@ func (o *Orchestrator) Events() <-chan Event { return o.events }
 // session's noise bed and crossfades into generated music when ready.
 func (o *Orchestrator) Start(ctx context.Context) {
 	ctx, o.cancel = context.WithCancel(ctx)
+	o.runCtx = ctx
 	o.wg.Add(3)
 	go func() { defer o.wg.Done(); o.genLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
