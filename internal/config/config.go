@@ -48,6 +48,24 @@ type Config struct {
 
 	ACEStep ACEStep `json:"acestep"`
 	Ollama  Ollama  `json:"ollama"`
+	Remote  Remote  `json:"remote"`
+}
+
+// Remote configures the built-in phone remote (HTTP page + MP3 stream).
+type Remote struct {
+	// Enabled turns the remote server on (also via the --remote flag).
+	Enabled bool `json:"enabled"`
+	// Port is the HTTP port the remote listens on.
+	Port int `json:"port"`
+	// Token, when set, is a shared secret required on every request
+	// (Authorization bearer or ?token= query). Empty disables the gate;
+	// the private tailnet is the default trust boundary.
+	Token string `json:"token"`
+	// Bind overrides the bind addresses. Empty (the default) binds
+	// localhost plus the machine's Tailscale address when one exists.
+	// Setting this (e.g. "0.0.0.0") exposes the remote to every network
+	// the machine is on; leave it empty unless you understand that.
+	Bind string `json:"bind"`
 }
 
 // ACEStep configures the default music engine and its sidecar process.
@@ -116,6 +134,10 @@ func Default() Config {
 			URL:     "http://127.0.0.1:11434",
 			Model:   "",
 		},
+		Remote: Remote{
+			Enabled: false,
+			Port:    8246,
+		},
 	}
 }
 
@@ -177,5 +199,8 @@ func (c *Config) sanitize() {
 	}
 	if c.LibraryMaxMB < 0 {
 		c.LibraryMaxMB = 0
+	}
+	if c.Remote.Port < 1 || c.Remote.Port > 65535 {
+		c.Remote.Port = 8246
 	}
 }

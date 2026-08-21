@@ -15,6 +15,7 @@ import (
 
 	"bgm/internal/engine/acestep"
 	"bgm/internal/prompting"
+	"bgm/internal/remote"
 	"bgm/internal/state"
 )
 
@@ -117,6 +118,32 @@ func runDoctor() error {
 			detail = fmt.Sprintf("%d underrun event(s) in the recent log (last total %d); if you hear glitches, see the README troubleshooting section", n, total)
 		}
 		check("underruns", n == 0, detail)
+	}
+
+	// Phone remote.
+	fmt.Println()
+	if a.cfg.Remote.Enabled {
+		check("remote", true, fmt.Sprintf("enabled on port %d (config remote.enabled)", a.cfg.Remote.Port))
+	} else {
+		check("remote", true, "off (enable with --remote or config remote.enabled)")
+	}
+	addrs, tailnetIP := remote.BindAddrs(a.cfg.Remote.Bind, a.cfg.Remote.Port)
+	if a.cfg.Remote.Bind != "" {
+		check("remote bind", true, fmt.Sprintf("OVERRIDDEN to %s - make sure that network is trusted", strings.Join(addrs, ", ")))
+	} else {
+		check("remote bind", true, "would bind "+strings.Join(addrs, ", "))
+	}
+	tsBin := which("tailscale")
+	switch {
+	case tailnetIP != "":
+		check("tailnet", true, fmt.Sprintf("detected %s; on the phone open http://%s:%d", tailnetIP, tailnetIP, a.cfg.Remote.Port))
+	case tsBin != "":
+		check("tailnet", true, "tailscale installed but no tailnet address; run 'sudo tailscale up', then re-check")
+	default:
+		check("tailnet", true, "not installed; remote stays localhost-only (see the README for the phone setup)")
+	}
+	if a.cfg.Remote.Token != "" {
+		check("remote token", true, "shared-secret token required on every request")
 	}
 
 	// Ollama.

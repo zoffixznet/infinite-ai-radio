@@ -93,6 +93,10 @@ type Orchestrator struct {
 	Library *library.Library
 	// SnippetsDir is where the save command writes captured tracks.
 	SnippetsDir string
+	// Tap, when set before Start, receives a copy of every PCM chunk
+	// sent to the audio backend (the mastered stream). Its Write must
+	// never block.
+	Tap interface{ Write(p []byte) (int, error) }
 
 	mu         sync.Mutex
 	sess       *session.Session
@@ -357,6 +361,9 @@ func (o *Orchestrator) pumpLoop(ctx context.Context) {
 				audio.ApplyGain(samples, vol*vol) // perceptual taper
 				out = audio.SamplesToBytes(samples)
 			}
+		}
+		if o.Tap != nil {
+			o.Tap.Write(out)
 		}
 		if _, err := o.player.Write(out); err != nil {
 			if ctx.Err() != nil {

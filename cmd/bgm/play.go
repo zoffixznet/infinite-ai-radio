@@ -10,6 +10,7 @@ import (
 	"bgm/internal/audio"
 	"bgm/internal/mpris"
 	"bgm/internal/player"
+	"bgm/internal/remote"
 	"bgm/internal/session"
 	"bgm/internal/state"
 	"bgm/internal/ui"
@@ -70,8 +71,33 @@ func runPlay(pf playFlags) error {
 	orch.Timings = a.timings
 	orch.Library = a.library()
 	orch.SnippetsDir = a.snippetsDir()
+
+	// The phone remote taps the mastered PCM, so it must be wired
+	// before the stream starts.
+	var streamer *remote.Streamer
+	if pf.remote || a.cfg.Remote.Enabled {
+		streamer = remote.NewStreamer(a.log)
+		orch.Tap = streamer
+	}
 	orch.Start(ctx)
 	defer orch.Close()
+
+	if streamer != nil {
+		rs, err := remote.Start(ctx, remote.Config{
+			Port:         a.cfg.Remote.Port,
+			Token:        a.cfg.Remote.Token,
+			BindOverride: a.cfg.Remote.Bind,
+		}, orch, streamer, a.log)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "bgm: remote could not start:", err)
+		} else if rs.TailnetIP != "" {
+			fmt.Fprintf(os.Stderr, "bgm: remote at http://%s:%d (phone) and http://127.0.0.1:%d\n",
+				rs.TailnetIP, a.cfg.Remote.Port, a.cfg.Remote.Port)
+		} else {
+			fmt.Fprintf(os.Stderr, "bgm: remote at http://127.0.0.1:%d (no Tailscale interface found; see 'bgm doctor')\n",
+				a.cfg.Remote.Port)
+		}
+	}
 
 	// Desktop integration: optional, never fatal (headless setups have
 	// no session bus).

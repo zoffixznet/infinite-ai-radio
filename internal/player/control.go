@@ -271,3 +271,10 @@ func (o *Orchestrator) Snapshot() (paused bool, volume int, title string) {
 	o.mu.Unlock()
 	return paused, int(o.volume.Load()), title
 }
+
+// Announce surfaces a message from an external control surface (the phone
+// remote) in the interactive UI and the log.
+func (o *Orchestrator) Announce(text string) {
+	o.log.Info("remote action", "event", "remote_action", "text", text)
+	o.emit(text)
+}
