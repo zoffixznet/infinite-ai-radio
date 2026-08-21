@@ -103,14 +103,17 @@ func (o *Orchestrator) SetVolume(v int) string {
 
 // NameSession renames the current session so it can be resumed later.
 func (o *Orchestrator) NameSession(name string) string {
+	newName := session.SanitizeName(name)
 	o.mu.Lock()
-	sess := o.sess
+	oldName := o.sess.Name
+	o.sess.Name = newName
 	o.mu.Unlock()
-	if err := o.store.Rename(sess, name); err != nil {
-		return "could not save session: " + err.Error()
+	o.saveSession()
+	if oldName != newName {
+		o.store.Delete(oldName)
 	}
-	o.log.Info("session named", "event", "session_named", "name", sess.Name)
-	return "session saved as " + sess.Name + " (resume with: bgm --session " + sess.Name + ")"
+	o.log.Info("session named", "event", "session_named", "name", newName)
+	return "session saved as " + newName + " (resume with: bgm --session " + newName + ")"
 }
 
 // LoadPreset switches the stream to a built-in preset, seeding a fresh

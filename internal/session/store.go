@@ -33,17 +33,18 @@ func SanitizeName(name string) string {
 	return name
 }
 
-// Save writes the session atomically (temp file + rename).
+// Save writes the session atomically (temp file + rename). The session is
+// stored under its sanitized name; the session itself is not modified.
 func (st *Store) Save(s *Session) error {
 	if err := os.MkdirAll(st.dir, 0o755); err != nil {
 		return err
 	}
-	s.Name = SanitizeName(s.Name)
+	name := SanitizeName(s.Name)
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	final := st.path(s.Name)
+	final := st.path(name)
 	tmp, err := os.CreateTemp(st.dir, ".tmp-*")
 	if err != nil {
 		return err
@@ -84,17 +85,9 @@ func (st *Store) Load(name string) (*Session, error) {
 	return &s, nil
 }
 
-// Rename saves the session under a new name and removes the old file.
-func (st *Store) Rename(s *Session, newName string) error {
-	old := SanitizeName(s.Name)
-	s.Name = SanitizeName(newName)
-	if err := st.Save(s); err != nil {
-		return err
-	}
-	if old != s.Name {
-		os.Remove(st.path(old))
-	}
-	return nil
+// Delete removes a saved session file if it exists.
+func (st *Store) Delete(name string) {
+	os.Remove(st.path(SanitizeName(name)))
 }
 
 // List returns the names of all readable saved sessions, newest first.

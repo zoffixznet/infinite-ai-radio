@@ -158,12 +158,10 @@ func (o *Orchestrator) kickGen() {
 	}
 }
 
-// saveSession persists the current session, logging failures.
+// saveSession persists a snapshot of the current session, logging failures.
 func (o *Orchestrator) saveSession() {
-	o.mu.Lock()
-	sess := o.sess
-	o.mu.Unlock()
-	if err := o.store.Save(sess); err != nil {
+	_, cp := o.snapshotSession()
+	if err := o.store.Save(cp); err != nil {
 		o.log.Error("session save failed", "event", "session_save_failed", "error", err.Error())
 	}
 }
@@ -175,6 +173,7 @@ func (o *Orchestrator) snapshotSession() (int, *session.Session) {
 	defer o.mu.Unlock()
 	cp := *o.sess
 	cp.Tweaks = append([]session.Entry(nil), o.sess.Tweaks...)
+	cp.History = append([]session.Entry(nil), o.sess.History...)
 	return o.epoch, &cp
 }
 

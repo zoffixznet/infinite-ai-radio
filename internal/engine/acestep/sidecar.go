@@ -26,6 +26,12 @@ type SidecarConfig struct {
 	// FirstLoadBudget is how long to wait for readiness before declaring
 	// startup failed. First runs download models and can take a long time.
 	FirstLoadBudget time.Duration
+	// InitialBackoff is the first restart delay after a crash; it doubles
+	// up to a cap. Zero means five seconds.
+	InitialBackoff time.Duration
+	// PollInterval is how often health is polled during startup. Zero
+	// means one second.
+	PollInterval time.Duration
 }
 
 // Sidecar supervises the ACE-Step API server as a child process: it starts
@@ -46,6 +52,9 @@ type Sidecar struct {
 	lastErr  error
 	tail     []string // ring of recent child output lines
 
+	// newCmd builds the child process command; tests replace it.
+	newCmd func(ctx context.Context) (*exec.Cmd, error)
+
 	done chan struct{}
 }
 
@@ -58,7 +67,34 @@ func NewSidecar(cfg SidecarConfig, client *Client, log *slog.Logger) *Sidecar {
 	if cfg.FirstLoadBudget <= 0 {
 		cfg.FirstLoadBudget = 45 * time.Minute
 	}
-	return &Sidecar{cfg: cfg, log: log, client: client, done: make(chan struct{})}
+	if cfg.InitialBackoff <= 0 {
+		cfg.InitialBackoff = 5 * time.Second
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = time.Second
+	}
+	s := &Sidecar{cfg: cfg, log: log, client: client, done: make(chan struct{})}
+	s.newCmd = s.serverCommand
+	return s
+}
+
+// serverCommand builds the real API server child process.
+func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
+	uv, err := findUV()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, uv, "run", "--project", s.cfg.EngineDir, "acestep-api")
+	cmd.Dir = s.cfg.EngineDir
+	cmd.Env = append(os.Environ(),
+		"ACESTEP_API_HOST=127.0.0.1",
+		fmt.Sprintf("ACESTEP_API_PORT=%d", s.cfg.Port),
+		"PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+	)
+	if s.cfg.LMModelPath != "" {
+		cmd.Env = append(cmd.Env, "ACESTEP_LM_MODEL_PATH="+s.cfg.LMModelPath)
+	}
+	return cmd, nil
 }
 
 // Start launches the supervision loop. It returns immediately; readiness is
@@ -130,7 +166,7 @@ func (s *Sidecar) WaitReady(ctx context.Context) error {
 // superviseLoop keeps one child process alive until ctx ends.
 func (s *Sidecar) superviseLoop(ctx context.Context) {
 	defer close(s.done)
-	backoff := 5 * time.Second
+	backoff := s.cfg.InitialBackoff
 	const maxBackoff = 5 * time.Minute
 	for ctx.Err() == nil {
 		err := s.runOnce(ctx)
@@ -160,19 +196,9 @@ func (s *Sidecar) superviseLoop(ctx context.Context) {
 // runOnce starts the child, polls health until ready, then waits for the
 // child to exit. It returns the reason the child is no longer usable.
 func (s *Sidecar) runOnce(ctx context.Context) error {
-	uv, err := findUV()
+	cmd, err := s.newCmd(ctx)
 	if err != nil {
 		return err
-	}
-	cmd := exec.CommandContext(ctx, uv, "run", "--project", s.cfg.EngineDir, "acestep-api")
-	cmd.Dir = s.cfg.EngineDir
-	cmd.Env = append(os.Environ(),
-		"ACESTEP_API_HOST=127.0.0.1",
-		fmt.Sprintf("ACESTEP_API_PORT=%d", s.cfg.Port),
-		"PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
-	)
-	if s.cfg.LMModelPath != "" {
-		cmd.Env = append(cmd.Env, "ACESTEP_LM_MODEL_PATH="+s.cfg.LMModelPath)
 	}
 	configureSidecar(cmd)
 	cmd.Cancel = func() error {
@@ -213,7 +239,7 @@ func (s *Sidecar) runOnce(ctx context.Context) error {
 	// Poll health until ready, while watching for early exit.
 	budget := time.NewTimer(s.cfg.FirstLoadBudget)
 	defer budget.Stop()
-	poll := time.NewTicker(time.Second)
+	poll := time.NewTicker(s.cfg.PollInterval)
 	defer poll.Stop()
 waitReady:
 	for {
