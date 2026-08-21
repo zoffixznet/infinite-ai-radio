@@ -40,6 +40,10 @@ type ACEStep struct {
 	// for planning ("acestep-5Hz-lm-0.6B" or "acestep-5Hz-lm-1.7B").
 	// Empty lets the engine pick one matching the GPU.
 	LMModelPath string `json:"lm_model_path"`
+	// LMBackend selects the planner LM runtime: "auto" (default) uses a
+	// memory-friendly configuration on GPUs under 16 GB and the engine's
+	// defaults otherwise; "vllm" and "pt" force a backend.
+	LMBackend string `json:"lm_backend"`
 	// InferenceSteps is the diffusion step count (turbo model: 1-20).
 	InferenceSteps int `json:"inference_steps"`
 	// Thinking enables the engine's planner LM for higher quality output.
@@ -72,6 +76,7 @@ func Default() Config {
 		ACEStep: ACEStep{
 			Port:           8451,
 			LMModelPath:    "",
+			LMBackend:      "auto",
 			InferenceSteps: 8,
 			Thinking:       true,
 			RepoURL:        "https://github.com/ace-step/ACE-Step-1.5",

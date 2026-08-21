@@ -70,8 +70,8 @@ func spectralSlope(t *testing.T, color NoiseColor) float64 {
 
 func TestNoiseSpectralSlopes(t *testing.T) {
 	cases := []struct {
-		color    NoiseColor
-		want     float64
+		color     NoiseColor
+		want      float64
 		tolerance float64
 	}{
 		{NoiseWhite, 0, 1.0},

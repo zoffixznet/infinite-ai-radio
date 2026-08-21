@@ -16,6 +16,7 @@ everything else keeps its default.
   "acestep": {
     "port": 8451,
     "lm_model_path": "",
+    "lm_backend": "auto",
     "inference_steps": 8,
     "thinking": true,
     "repo_url": "https://github.com/ace-step/ACE-Step-1.5",
@@ -51,6 +52,12 @@ everything else keeps its default.
 - `lm_model_path`: pins the engine's internal planner language model
   (e.g. `"acestep-5Hz-lm-0.6B"` or `"acestep-5Hz-lm-1.7B"`). Empty lets
   the engine pick one that fits your GPU.
+- `lm_backend`: `"auto"` (default) runs the planner LM in a
+  memory-friendly way (PyTorch backend, released from GPU memory between
+  generations) on GPUs under 16 GB, and leaves the engine's faster vLLM
+  default on larger ones. `"vllm"` or `"pt"` force a backend. If you see
+  CUDA out-of-memory errors because other applications share the GPU,
+  `"pt"` is the safe choice.
 - `inference_steps` (1-20): diffusion steps for the turbo model. 8 is the
   sweet spot; more is slower with mild quality gains.
 - `thinking`: when true, the engine's planner LM sketches the track

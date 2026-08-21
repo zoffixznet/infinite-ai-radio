@@ -66,6 +66,7 @@ func (a *app) buildEngine(ctx context.Context) (engine.Engine, string) {
 			EngineDir:   a.paths.EngineDir(),
 			Port:        a.cfg.ACEStep.Port,
 			LMModelPath: a.cfg.ACEStep.LMModelPath,
+			LMBackend:   a.cfg.ACEStep.LMBackend,
 		}, client, a.log)
 		sidecar.Start(ctx)
 		eng := acestep.NewEngine(client, sidecar, acestep.Options{

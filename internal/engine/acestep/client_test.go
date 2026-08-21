@@ -17,14 +17,14 @@ import (
 // fakeServer mimics the ACE-Step API: release_task, query_result (pending
 // once, then done) and audio download.
 type fakeServer struct {
-	t         *testing.T
-	polls     int
-	pending   int  // how many times to report pending before success
-	failTask  bool // report status 2
-	lastReq   GenerateRequest
-	wavBytes  []byte
-	prompt    string
-	lyrics    string
+	t        *testing.T
+	polls    int
+	pending  int  // how many times to report pending before success
+	failTask bool // report status 2
+	lastReq  GenerateRequest
+	wavBytes []byte
+	prompt   string
+	lyrics   string
 }
 
 func wrap(data any) map[string]any {

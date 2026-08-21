@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,9 @@ type SidecarConfig struct {
 	// LMModelPath optionally pins the planner LM checkpoint; empty lets
 	// the engine choose by GPU tier.
 	LMModelPath string
+	// LMBackend selects the planner LM runtime: "auto" (default) picks a
+	// memory-friendly setup on GPUs under 16 GB, "vllm"/"pt" force one.
+	LMBackend string
 	// FirstLoadBudget is how long to wait for readiness before declaring
 	// startup failed. First runs download models and can take a long time.
 	FirstLoadBudget time.Duration
@@ -84,7 +88,9 @@ func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, uv, "run", "--project", s.cfg.EngineDir, "acestep-api")
+	// --no-sync: the environment was built by setup; skipping the sync
+	// check keeps startup fast and independent of the network.
+	cmd := exec.CommandContext(ctx, uv, "run", "--no-sync", "--project", s.cfg.EngineDir, "acestep-api")
 	cmd.Dir = s.cfg.EngineDir
 	cmd.Env = append(os.Environ(),
 		"ACESTEP_API_HOST=127.0.0.1",
@@ -97,7 +103,42 @@ func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
 	if s.cfg.LMModelPath != "" {
 		cmd.Env = append(cmd.Env, "ACESTEP_LM_MODEL_PATH="+s.cfg.LMModelPath)
 	}
+	cmd.Env = append(cmd.Env, s.lmBackendEnv()...)
 	return cmd, nil
+}
+
+// lmBackendEnv resolves the planner LM runtime settings. On GPUs under
+// 16 GB the vLLM backend's memory reservation competes badly with the
+// diffusion model (and with anything else using the GPU), so "auto" runs
+// the LM on the plain PyTorch backend with CPU offload there: slightly
+// slower planning, far smaller and fully released between generations.
+func (s *Sidecar) lmBackendEnv() []string {
+	backend := s.cfg.LMBackend
+	if backend == "" || backend == "auto" {
+		vram, err := totalVRAMGB()
+		if err != nil || vram < 15.5 {
+			return []string{"ACESTEP_LM_BACKEND=pt", "ACESTEP_LM_OFFLOAD_TO_CPU=true"}
+		}
+		return nil // engine defaults
+	}
+	return []string{"ACESTEP_LM_BACKEND=" + backend}
+}
+
+// totalVRAMGB reports the GPU's total memory via nvidia-smi.
+func totalVRAMGB() (float64, error) {
+	out, err := exec.Command("nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("no output from nvidia-smi")
+	}
+	mib, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, err
+	}
+	return mib / 1024, nil
 }
 
 // Start launches the supervision loop. It returns immediately; readiness is

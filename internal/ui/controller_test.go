@@ -19,9 +19,12 @@ import (
 // discardPlayer swallows audio with light pacing.
 type discardPlayer struct{ mu sync.Mutex }
 
-func (d *discardPlayer) Write(b []byte) (int, error) { time.Sleep(time.Millisecond); return len(b), nil }
-func (d *discardPlayer) Close() error                { return nil }
-func (d *discardPlayer) Name() string                { return "discard" }
+func (d *discardPlayer) Write(b []byte) (int, error) {
+	time.Sleep(time.Millisecond)
+	return len(b), nil
+}
+func (d *discardPlayer) Close() error { return nil }
+func (d *discardPlayer) Name() string { return "discard" }
 
 func newController(t *testing.T) *Controller {
 	t.Helper()

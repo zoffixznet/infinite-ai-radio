@@ -36,8 +36,8 @@ deps: ## Check required system tools; if any are missing, print and run the apt-
 	command -v git     >/dev/null 2>&1 || missing="$$missing git"; \
 	command -v gcc     >/dev/null 2>&1 || missing="$$missing build-essential"; \
 	if [ -n "$$missing" ]; then \
-		pkgs=$$(echo $$missing | tr ' ' '\n' | sort -u | tr '\n' ' '); \
-		echo "Missing system packages:$$missing"; \
+		pkgs=$$(echo $$missing | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $$//'); \
+		echo "Missing system packages: $$pkgs"; \
 		echo "Running: sudo apt-get install -y $$pkgs"; \
 		sudo apt-get install -y $$pkgs; \
 	else \
