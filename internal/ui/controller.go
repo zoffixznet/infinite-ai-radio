@@ -149,6 +149,10 @@ func presetsText() string {
 func statusText(st player.Status) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "state:    %s\n", st.State)
+	if st.Phase != "" && st.Phase != "playing" {
+		fmt.Fprintf(&b, "phase:    %s (%s elapsed, usually ~%s)\n",
+			st.Phase, st.PhaseElapsed.Round(time.Second), st.PhaseExpected.Round(time.Second))
+	}
 	fmt.Fprintf(&b, "source:   %s\n", st.Source)
 	if st.Duration > 0 {
 		fmt.Fprintf(&b, "position: %s / %s\n", fmtDur(st.Elapsed), fmtDur(st.Duration))

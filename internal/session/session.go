@@ -140,3 +140,11 @@ func (s *Session) Describe() string {
 		return strings.Join(parts, " ")
 	}
 }
+
+// Snapshot returns a copy safe to read from another goroutine.
+func (s *Session) Snapshot() *Session {
+	cp := *s
+	cp.Tweaks = append([]Entry(nil), s.Tweaks...)
+	cp.History = append([]Entry(nil), s.History...)
+	return &cp
+}

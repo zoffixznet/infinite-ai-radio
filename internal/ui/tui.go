@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"bgm/internal/player"
+	"bgm/internal/session"
 )
 
 // RunTUI runs the full-screen terminal interface until the user quits or
@@ -22,6 +23,11 @@ func RunTUI(ctx context.Context, c *Controller) error {
 	// would be lost.
 	input.Focus()
 	m := tuiModel{c: c, input: input}
+	m.push("built-in presets (switch with 'preset NAME'):")
+	for _, p := range session.Presets() {
+		m.push(fmt.Sprintf("  %-12s %s", p.Name, p.Description))
+	}
+	m.push("type steering text ('calmer', 'add vocals about winning') or 'help'")
 	prog := tea.NewProgram(m, tea.WithContext(ctx))
 	_, err := prog.Run()
 	if err != nil && ctx.Err() != nil {
@@ -148,6 +154,16 @@ func (m tuiModel) View() tea.View {
 		genLine = ", generating"
 	}
 	fmt.Fprintf(&b, "  engine:  %s (buffer %d%s)\n", engineLine, st.Queued, genLine)
+	if st.Phase != "" && st.Phase != "playing" {
+		phaseLine := fmt.Sprintf("  status:  %s... %s elapsed", st.Phase, st.PhaseElapsed.Round(time.Second))
+		if st.PhaseExpected > 0 {
+			phaseLine += fmt.Sprintf(" (usually ~%s)", st.PhaseExpected.Round(time.Second))
+		}
+		if st.PhaseSlow {
+			phaseLine += " - longer than usual, see 'bgm doctor'"
+		}
+		b.WriteString(phaseLine + "\n")
+	}
 	if st.Exporting != "" {
 		fmt.Fprintf(&b, "  export:  %s running\n", st.Exporting)
 	}

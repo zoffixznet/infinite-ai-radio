@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
+
+	"bgm/internal/player"
 )
 
 // RunPlain drives the stream with a plain line-based interface: events and
@@ -13,7 +16,7 @@ import (
 // interface used over pipes and in scripts, and works with nothing but
 // typed words and Enter.
 func RunPlain(ctx context.Context, c *Controller, r io.Reader, w io.Writer) error {
-	fmt.Fprintln(w, "bgm: type steering text or commands; 'help' lists them; 'quit' exits.")
+	fmt.Fprintln(w, "bgm: type steering text or commands; 'help' lists them, 'presets' lists presets; 'quit' exits.")
 
 	// Print stream events as they arrive.
 	go func() {
@@ -27,6 +30,22 @@ func RunPlain(ctx context.Context, c *Controller, r io.Reader, w io.Writer) erro
 				}
 				fmt.Fprintln(w, "* "+ev.Text)
 			}
+		}
+	}()
+
+	// Keep startup progress visible until music plays: first line right
+	// away, then every two seconds while a startup phase is active.
+	go func() {
+		printProgress(w, c.O.Status())
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			printProgress(w, c.O.Status())
 		}
 	}()
 
@@ -66,4 +85,19 @@ func RunPlain(ctx context.Context, c *Controller, r io.Reader, w io.Writer) erro
 			}
 		}
 	}
+}
+
+// printProgress writes one startup progress line when a phase is active.
+func printProgress(w io.Writer, st player.Status) {
+	if st.Phase == "" || st.Phase == "playing" {
+		return
+	}
+	line := fmt.Sprintf("... %s - %s elapsed", st.Phase, st.PhaseElapsed.Round(time.Second))
+	if st.PhaseExpected > 0 {
+		line += fmt.Sprintf(" (usually ~%s)", st.PhaseExpected.Round(time.Second))
+	}
+	if st.PhaseSlow {
+		line += " - taking longer than usual, see 'bgm doctor'"
+	}
+	fmt.Fprintln(w, line)
 }

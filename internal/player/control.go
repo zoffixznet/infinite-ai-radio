@@ -16,6 +16,7 @@ import (
 func (o *Orchestrator) Steer(text string) string {
 	o.mu.Lock()
 	ack := prompting.Steer(o.sess, text)
+	musicMode := o.sess.Mode == session.ModeMusic
 	if ack.ContextChanged {
 		o.epoch++
 		dropped := len(o.queue)
@@ -30,8 +31,33 @@ func (o *Orchestrator) Steer(text string) string {
 	o.mu.Unlock()
 	o.saveSession()
 	o.kickGen()
-	o.log.Info("steering accepted", "event", "steering", "input", text, "ack", ack.Text)
-	return ack.Text
+	response := ack.Text
+	if musicMode {
+		response += o.steerContextNote(text)
+	}
+	o.log.Info("steering accepted", "event", "steering", "input", text, "ack", response)
+	return response
+}
+
+// steerContextNote appends honesty about when a steering input can be
+// heard, plus a hint when the input names a preset.
+func (o *Orchestrator) steerContextNote(text string) string {
+	note := ""
+	if p, err := session.LookupPreset(text); err == nil {
+		note += " (tip: type 'preset " + p.Name + "' to switch to that preset)"
+	}
+	switch {
+	case o.eng == nil:
+		note += "; note: the music engine is unavailable (run 'bgm setup')"
+	case !o.eng.Ready():
+		phase, elapsed, expected, _ := o.PhaseInfo()
+		remaining := expected - elapsed
+		if remaining < 5*time.Second {
+			remaining = 5 * time.Second
+		}
+		note += fmt.Sprintf("; queued - engine %s, about %s left", phase, remaining.Round(time.Second))
+	}
+	return note
 }
 
 // Clear wipes the accumulated steering context.
@@ -203,6 +229,9 @@ func (o *Orchestrator) Status() Status {
 		}
 	}
 	st.State = o.stateLocked()
+	o.mu.Unlock()
+	st.Phase, st.PhaseElapsed, st.PhaseExpected, st.PhaseSlow = o.PhaseInfo()
+	o.mu.Lock()
 	return st
 }
 
@@ -216,7 +245,10 @@ func (o *Orchestrator) stateLocked() string {
 	case o.sess.Mode == session.ModeNoise:
 		return "noise"
 	default:
-		if _, isNoise := o.cur.(*noiseSource); isNoise {
+		switch o.cur.(type) {
+		case silenceSource:
+			return "preparing"
+		case *noiseSource:
 			if o.eng == nil || !o.eng.Ready() {
 				return "waiting for engine (noise bed)"
 			}

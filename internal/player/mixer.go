@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"time"
 
 	"bgm/internal/audio"
 	"bgm/internal/engine"
@@ -69,7 +70,10 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 	}
 }
 
-// startupSource picks the very first audio source for the session.
+// startupSource picks the very first audio source for the session. The
+// default for music sessions is silence with visible progress; the noise
+// bed plays only for noise sessions, on explicit opt-in, or when the
+// engine is unavailable (with a prominent explanation).
 func (o *Orchestrator) startupSource() source {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -77,13 +81,17 @@ func (o *Orchestrator) startupSource() source {
 		color := audio.ParseNoiseColor(o.sess.NoiseColor)
 		return newNoiseSource(color, noiseAmp, string(color)+" noise")
 	}
-	if o.eng != nil {
-		o.emit("starting with a gentle noise bed while the first track generates")
-	} else {
-		o.emit("music engine unavailable; playing the session's noise bed (run 'bgm setup' or see 'bgm doctor')")
+	if o.eng == nil {
+		o.emit("MUSIC ENGINE UNAVAILABLE: run 'bgm setup' to install it (details: 'bgm doctor'). Playing the session's noise bed instead.")
+		color := audio.ParseNoiseColor(o.sess.NoiseBed)
+		return newNoiseSource(color, bedAmp, string(color)+" noise bed")
 	}
-	color := audio.ParseNoiseColor(o.sess.NoiseBed)
-	return newNoiseSource(color, bedAmp, string(color)+" noise bed")
+	if o.cfg.BedWhileWaiting {
+		o.emit("noise bed while the first track is prepared (bed_while_waiting is on)")
+		color := audio.ParseNoiseColor(o.sess.NoiseBed)
+		return newNoiseSource(color, bedAmp, string(color)+" noise bed")
+	}
+	return silenceSource{}
 }
 
 // bedSource returns the session's fallback noise bed.
@@ -94,8 +102,19 @@ func (o *Orchestrator) bedSource() source {
 	return newNoiseSource(color, bedAmp, string(color)+" noise bed")
 }
 
-// fallbackShouldYield reports whether cur is a stopgap (bed or loop) that
-// should hand over to real queued content.
+// isStopgap reports whether a source is a placeholder (silence or a noise
+// bed) rather than real content.
+func isStopgap(s source) bool {
+	switch s.(type) {
+	case silenceSource, *noiseSource:
+		return true
+	default:
+		return false
+	}
+}
+
+// fallbackShouldYield reports whether cur is a stopgap that should hand
+// over to real queued content.
 func (o *Orchestrator) fallbackShouldYield(cur source) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -106,7 +125,7 @@ func (o *Orchestrator) fallbackShouldYield(cur source) bool {
 		}
 		return true // wrong source for noise mode; switch
 	}
-	if _, isNoise := cur.(*noiseSource); isNoise {
+	if isStopgap(cur) {
 		return len(o.queue) > 0
 	}
 	return false
@@ -138,7 +157,7 @@ func (o *Orchestrator) chooseNext(cur source) source {
 
 	// Nothing queued. Keep an endless source running rather than
 	// restarting it.
-	if _, isNoise := cur.(*noiseSource); isNoise {
+	if isStopgap(cur) {
 		return nil
 	}
 
@@ -148,8 +167,19 @@ func (o *Orchestrator) chooseNext(cur source) source {
 		return newTrackSource(o.lastGood, summarize(o.lastGood)+" (looping)")
 	}
 
-	o.log.Warn("queue empty with no last track, noise bed fallback", "event", "bed_fallback")
-	o.emit("no generated music available; playing the noise bed")
+	// A finite source ended with nothing to play and no last track. With
+	// a working engine this is a brief wait: stay silent with progress.
+	// Only an unavailable/failed engine gets the audible noise bed, and
+	// it is announced prominently.
+	o.mu.Unlock()
+	failed := o.engineFailed()
+	o.mu.Lock()
+	if !failed {
+		o.log.Info("queue empty with no last track, waiting in silence", "event", "silence_wait")
+		return silenceSource{}
+	}
+	o.log.Warn("engine unavailable with nothing to play, noise bed fallback", "event", "bed_fallback")
+	o.emit("ENGINE UNAVAILABLE: no music can be generated (see 'bgm doctor' and the log). Playing the noise bed instead.")
 	color := audio.ParseNoiseColor(o.sess.NoiseBed)
 	return newNoiseSource(color, bedAmp, string(color)+" noise bed")
 }
@@ -214,8 +244,19 @@ func mixSegment(tail, head []int16, frames, offset, total int) []int16 {
 func (o *Orchestrator) setCurrent(s source) {
 	o.mu.Lock()
 	o.cur = s
+	_, isTrack := s.(*trackSource)
+	firstMusic := isTrack && !o.firstMusic
+	if firstMusic {
+		o.firstMusic = true
+	}
+	started := o.started
 	o.mu.Unlock()
 	o.log.Info("now playing", "event", "now_playing", "source", s.label())
+	if firstMusic {
+		seconds := time.Since(started).Seconds()
+		o.log.Info("first music playing", "event", "first_music", "seconds_since_start", seconds)
+		o.emit("music started")
+	}
 }
 
 // summarize renders a short now-playing description of a track.

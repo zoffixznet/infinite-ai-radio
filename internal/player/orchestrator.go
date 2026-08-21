@@ -12,6 +12,7 @@ import (
 	"bgm/internal/engine"
 	"bgm/internal/prompting"
 	"bgm/internal/session"
+	"bgm/internal/state"
 )
 
 // Event is a transient user-facing message from the stream machinery.
@@ -58,6 +59,15 @@ type Status struct {
 	// EngineTail holds recent engine output lines, newest last, when the
 	// engine exposes them.
 	EngineTail []string
+	// Phase names the current startup phase ("starting engine",
+	// "loading models", "generating first track") or "playing".
+	Phase string
+	// PhaseElapsed is how long the current phase has been running;
+	// PhaseExpected is its usual duration from past measurements.
+	PhaseElapsed  time.Duration
+	PhaseExpected time.Duration
+	// PhaseSlow reports the phase has exceeded ~2.5x its usual duration.
+	PhaseSlow bool
 }
 
 // Orchestrator owns the stream: session state, generation queue, mixing and
@@ -71,18 +81,26 @@ type Orchestrator struct {
 	player  audio.Player
 	ring    *audio.Ring
 
-	mu        sync.Mutex
-	sess      *session.Session
-	queue     []*engine.Track
-	epoch     int
-	lastGood  *engine.Track
-	cur       source
-	switchReq bool
-	paused    bool
-	genBusy   bool
-	genCount  int
-	lastGen   time.Duration
-	exporting string
+	// Timings records how long startup phases take across runs; set it
+	// before Start. Nil disables persistence (estimates use defaults).
+	Timings *state.Timings
+
+	mu         sync.Mutex
+	sess       *session.Session
+	queue      []*engine.Track
+	epoch      int
+	lastGood   *engine.Track
+	cur        source
+	switchReq  bool
+	paused     bool
+	genBusy    bool
+	genCount   int
+	lastGen    time.Duration
+	exporting  string
+	phase      string
+	phaseStart time.Time
+	started    time.Time
+	firstMusic bool
 
 	volume atomic.Int32
 	events chan Event
@@ -121,10 +139,16 @@ func (o *Orchestrator) Events() <-chan Event { return o.events }
 func (o *Orchestrator) Start(ctx context.Context) {
 	ctx, o.cancel = context.WithCancel(ctx)
 	o.runCtx = ctx
-	o.wg.Add(3)
+	now := time.Now()
+	o.mu.Lock()
+	o.started = now
+	o.phaseStart = now
+	o.mu.Unlock()
+	o.wg.Add(4)
 	go func() { defer o.wg.Done(); o.genLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.pumpLoop(ctx) }()
+	go func() { defer o.wg.Done(); o.phaseLoop(ctx) }()
 }
 
 // Close stops all goroutines, saves the session and releases the player.
@@ -199,7 +223,8 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		o.genBusy = true
 		o.mu.Unlock()
 		o.log.Info("generation started", "event", "generation_started",
-			"prompt", spec.Prompt, "vocal", spec.Vocal(), "seconds", spec.Seconds, "epoch", epoch)
+			"prompt", specPromptForLog(spec), "lyric_mode", lyricMode(spec),
+			"vocal", spec.Vocal(), "seconds", spec.Seconds, "epoch", epoch)
 		start := time.Now()
 		o.genMu.Lock()
 		track, err := o.eng.Generate(ctx, spec)
@@ -305,4 +330,125 @@ func (o *Orchestrator) pumpLoop(ctx context.Context) {
 			o.player = np
 		}
 	}
+}
+
+// specPromptForLog returns the text that actually drives generation.
+func specPromptForLog(spec engine.Spec) string {
+	if spec.SampleQuery != "" {
+		return spec.SampleQuery
+	}
+	return spec.Prompt
+}
+
+// lyricMode names how lyrics are produced for a spec.
+func lyricMode(spec engine.Spec) string {
+	switch {
+	case spec.SampleQuery != "":
+		return "engine-planned"
+	case spec.Lyrics == engine.InstrumentalLyrics || spec.Lyrics == "":
+		return "instrumental"
+	default:
+		return "custom-lyrics"
+	}
+}
+
+// phaseKeys maps display phases to timing-store keys.
+var phaseKeys = map[string]string{
+	"starting engine":        state.PhaseEngineStart,
+	"loading models":         state.PhaseModelLoad,
+	"generating first track": state.PhaseFirstTrack,
+}
+
+// phaseLoop tracks the startup phase for progress displays, records phase
+// durations for future estimates, and logs transitions.
+func (o *Orchestrator) phaseLoop(ctx context.Context) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		next := o.currentPhase()
+		o.mu.Lock()
+		prev := o.phase
+		if prev == next {
+			o.mu.Unlock()
+			continue
+		}
+		elapsed := time.Since(o.phaseStart)
+		o.phase = next
+		o.phaseStart = time.Now()
+		o.mu.Unlock()
+		if key, ok := phaseKeys[prev]; ok && elapsed > 2*time.Second {
+			o.Timings.Record(key, elapsed)
+		}
+		o.log.Info("phase changed", "event", "phase_changed",
+			"from", prev, "to", next, "prev_seconds", elapsed.Seconds())
+	}
+}
+
+// currentPhase derives the user-visible startup phase.
+func (o *Orchestrator) currentPhase() string {
+	o.mu.Lock()
+	mode := o.sess.Mode
+	genCount := o.genCount
+	queued := len(o.queue)
+	last := o.lastGood
+	o.mu.Unlock()
+	if mode == session.ModeNoise {
+		return "playing"
+	}
+	if o.eng == nil {
+		return "engine unavailable"
+	}
+	if !o.eng.Ready() {
+		if p, ok := o.eng.(interface{ Phase() string }); ok {
+			switch ph := p.Phase(); ph {
+			case "ready":
+				return "generating first track"
+			case "":
+				return "starting engine"
+			default:
+				return ph
+			}
+		}
+		return "starting engine"
+	}
+	if genCount == 0 && queued == 0 && last == nil {
+		return "generating first track"
+	}
+	return "playing"
+}
+
+// PhaseInfo reports the current phase with elapsed and expected durations
+// for progress displays.
+func (o *Orchestrator) PhaseInfo() (phase string, elapsed, expected time.Duration, slow bool) {
+	o.mu.Lock()
+	phase = o.phase
+	start := o.phaseStart
+	o.mu.Unlock()
+	if phase == "" {
+		phase = o.currentPhase()
+		start = time.Now()
+	}
+	elapsed = time.Since(start)
+	if key, ok := phaseKeys[phase]; ok {
+		expected = o.Timings.Expected(key)
+		slow = elapsed > expected*5/2
+	}
+	return phase, elapsed, expected, slow
+}
+
+// engineFailed reports whether the engine is in a failed/unavailable state
+// (as opposed to still starting).
+func (o *Orchestrator) engineFailed() bool {
+	if o.eng == nil {
+		return true
+	}
+	if p, ok := o.eng.(interface{ Phase() string }); ok {
+		return p.Phase() == "unavailable"
+	}
+	return false
 }

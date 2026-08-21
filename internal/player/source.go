@@ -76,3 +76,11 @@ func newNoiseSource(color audio.NoiseColor, amp float64, name string) *noiseSour
 func (s *noiseSource) read(frames int) []int16 { return s.gen.Generate(frames) }
 func (s *noiseSource) remaining() int          { return -1 }
 func (s *noiseSource) label() string           { return s.name }
+
+// silenceSource produces endless silence: the default startup sound while
+// the first track is prepared (progress is shown instead of audio).
+type silenceSource struct{}
+
+func (silenceSource) read(frames int) []int16 { return make([]int16, frames*audio.Channels) }
+func (silenceSource) remaining() int          { return -1 }
+func (silenceSource) label() string           { return "silence (preparing music)" }

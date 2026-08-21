@@ -91,21 +91,22 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func TestStreamStartsOnBedThenPlaysGeneratedMusic(t *testing.T) {
+func TestStreamStartsSilentThenPlaysGeneratedMusic(t *testing.T) {
 	eng := enginetest.NewMock()
 	o, pl := newTestOrchestrator(t, eng, session.New())
 
-	// Instant audio: bytes must flow immediately (noise bed).
-	waitFor(t, 3*time.Second, "instant audio", func() bool { return pl.bytes() > 0 })
+	// The stream starts immediately, but with silence (no noise bed).
+	waitFor(t, 3*time.Second, "output flowing", func() bool { return pl.bytes() > 0 })
+	if src := o.Status().Source; !strings.Contains(src, "silence") {
+		t.Fatalf("startup source = %q; want silence", src)
+	}
 
-	// Generated music takes over.
+	// Generated music takes over and becomes audible.
 	waitFor(t, 10*time.Second, "playing state", func() bool {
 		st := o.Status()
 		return st.State == "playing" && st.GenCount >= 1
 	})
-	if !pl.nonSilentTail() {
-		t.Fatal("output is silent while playing")
-	}
+	waitFor(t, 10*time.Second, "audible output", pl.nonSilentTail)
 	st := o.Status()
 	if st.Queued > testConfig().BufferTracks {
 		t.Fatalf("queue overfilled: %d", st.Queued)
@@ -144,21 +145,54 @@ func TestNoiseModeSwitch(t *testing.T) {
 	})
 }
 
-func TestEngineNotReadyFallsBackToBed(t *testing.T) {
+func TestEngineNotReadyStaysSilentWithProgress(t *testing.T) {
 	eng := enginetest.NewMock()
 	eng.SetReady(false)
 	o, pl := newTestOrchestrator(t, eng, session.New())
-	waitFor(t, 3*time.Second, "audio flows", func() bool { return pl.bytes() > 0 })
+	waitFor(t, 3*time.Second, "output flows", func() bool { return pl.bytes() > 0 })
 	st := o.Status()
-	if !strings.Contains(st.Source, "noise bed") {
-		t.Fatalf("source = %q; want noise bed", st.Source)
+	if !strings.Contains(st.Source, "silence") {
+		t.Fatalf("source = %q; want silence while the engine loads", st.Source)
 	}
 	if st.GenCount != 0 {
 		t.Fatal("generated without a ready engine")
 	}
-	// Engine comes up; music follows.
+	waitFor(t, 3*time.Second, "startup phase reported", func() bool {
+		return o.Status().Phase == "starting engine"
+	})
+	// Engine comes up; music follows without any noise in between.
 	eng.SetReady(true)
 	waitFor(t, 10*time.Second, "recovery to music", func() bool { return o.Status().State == "playing" })
+}
+
+func TestNoEngineFallsBackToBedWithProminentError(t *testing.T) {
+	pl := &capturePlayer{}
+	store := session.NewStore(t.TempDir())
+	builder := prompting.NewBuilder(nil, testLogger())
+	o := New(testConfig(), nil, builder, store, session.New(), pl, testLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	o.Start(ctx)
+	t.Cleanup(func() { o.Close() })
+
+	var errEvent string
+	waitFor(t, 3*time.Second, "prominent error event", func() bool {
+		select {
+		case ev := <-o.Events():
+			if strings.Contains(ev.Text, "bgm setup") {
+				errEvent = ev.Text
+				return true
+			}
+		default:
+		}
+		return false
+	})
+	if !strings.Contains(strings.ToUpper(errEvent), "UNAVAILABLE") {
+		t.Fatalf("error event not prominent: %q", errEvent)
+	}
+	waitFor(t, 3*time.Second, "noise bed playing", func() bool {
+		return strings.Contains(o.Status().Source, "noise bed")
+	})
 }
 
 func TestVolumeAndPause(t *testing.T) {

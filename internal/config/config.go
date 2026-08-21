@@ -27,6 +27,9 @@ type Config struct {
 	BufferTracks int `json:"buffer_tracks"`
 	// Volume is the output volume in percent (0-100).
 	Volume int `json:"volume"`
+	// BedWhileWaiting plays a quiet noise bed while the first track is
+	// prepared instead of the default silence-with-progress.
+	BedWhileWaiting bool `json:"bed_while_waiting"`
 
 	ACEStep ACEStep `json:"acestep"`
 	Ollama  Ollama  `json:"ollama"`
@@ -34,8 +37,12 @@ type Config struct {
 
 // ACEStep configures the default music engine and its sidecar process.
 type ACEStep struct {
-	// Port is the localhost port the sidecar API server listens on.
+	// Port pins the engine API to a fixed localhost port; zero (the
+	// default) allocates a free port per engine daemon.
 	Port int `json:"port"`
+	// IdleMinutes shuts the shared engine daemon down after this long
+	// with no bgm process using it.
+	IdleMinutes int `json:"idle_minutes"`
 	// LMModelPath names the 5Hz language-model checkpoint the engine uses
 	// for planning ("acestep-5Hz-lm-0.6B" or "acestep-5Hz-lm-1.7B").
 	// Empty lets the engine pick one matching the GPU.
@@ -74,7 +81,8 @@ func Default() Config {
 		BufferTracks:     2,
 		Volume:           80,
 		ACEStep: ACEStep{
-			Port:           8451,
+			Port:           0,
+			IdleMinutes:    15,
 			LMModelPath:    "",
 			LMBackend:      "auto",
 			InferenceSteps: 8,
@@ -136,5 +144,8 @@ func (c *Config) sanitize() {
 	}
 	if c.ACEStep.InferenceSteps < 1 || c.ACEStep.InferenceSteps > 20 {
 		c.ACEStep.InferenceSteps = 8
+	}
+	if c.ACEStep.IdleMinutes < 1 {
+		c.ACEStep.IdleMinutes = 15
 	}
 }
