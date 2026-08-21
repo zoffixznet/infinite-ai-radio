@@ -30,10 +30,7 @@ func (c *Controller) Handle(line string) (string, bool) {
 	if line == "" {
 		return "", false
 	}
-	cmd := line
-	if strings.HasPrefix(cmd, "/") {
-		cmd = cmd[1:]
-	}
+	cmd := strings.TrimPrefix(line, "/")
 	fields := strings.Fields(cmd)
 	if len(fields) == 0 {
 		return "", false

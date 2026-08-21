@@ -51,7 +51,6 @@ type Sidecar struct {
 	cmd      *exec.Cmd
 	ready    bool
 	starting bool
-	stopped  bool
 	restarts int
 	lastErr  error
 	tail     []string // ring of recent child output lines

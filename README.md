@@ -187,11 +187,13 @@ Honestly, by style:
 - **Solo piano** comes out convincingly piano-like, though more "produced
   piano track" than "microphone in a quiet room".
 - **Vocals** are genuinely supported: tracks come with sung lyrics in a
-  pop/rock delivery. Intelligibility is good on choruses and varies on
-  fast verses; the occasional artifact or garbled word happens. The
-  `grind` preset gives a fair picture of vocal quality. With Ollama
+  pop/rock delivery, and the singing follows the written lyrics closely
+  enough that speech recognition can transcribe most lines back. The
+  occasional garbled word or artifact happens, especially on fast verses.
+  The `grind` preset gives a fair picture of vocal quality. With Ollama
   installed the lyrics follow your theme closely; without it the engine's
-  own planner writes them from a description.
+  own planner writes them from a description (and typically picks its own
+  track length while doing so).
 - Every generation has some luck involved; a weak track is usually
   followed by a better one, and `skip` is always there.
 

@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 )
 
 // discardPlayer swallows audio with light pacing.
-type discardPlayer struct{ mu sync.Mutex }
+type discardPlayer struct{}
 
 func (d *discardPlayer) Write(b []byte) (int, error) {
 	time.Sleep(time.Millisecond)
