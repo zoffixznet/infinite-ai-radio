@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -135,6 +136,10 @@ func TestMigrationFromOldName(t *testing.T) {
 	os.MkdirAll(filepath.Join(oldData, "logs"), 0o755)
 	os.MkdirAll(oldConfig, 0o755)
 	os.WriteFile(filepath.Join(oldData, "engine", "checkpoints", "weights.bin"), []byte("payload"), 0o644)
+	// A venv entry point with an absolute shebang into the old path.
+	os.MkdirAll(filepath.Join(oldData, "engine", ".venv", "bin"), 0o755)
+	os.WriteFile(filepath.Join(oldData, "engine", ".venv", "bin", "engine-api"),
+		[]byte("#!"+filepath.Join(oldData, "engine", ".venv", "bin", "python")+"\nrun()\n"), 0o755)
 	os.WriteFile(filepath.Join(oldData, "logs", "bgm.log"), []byte("old log"), 0o644)
 	os.WriteFile(filepath.Join(oldConfig, "config.json"), []byte(`{"volume":42}`), 0o644)
 
@@ -151,6 +156,10 @@ func TestMigrationFromOldName(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(p.DataDir, "logs", "iar.log")); err != nil {
 		t.Fatal("log file not renamed")
+	}
+	shebang, _ := os.ReadFile(filepath.Join(p.DataDir, "engine", ".venv", "bin", "engine-api"))
+	if !strings.Contains(string(shebang), p.DataDir) || strings.Contains(string(shebang), oldData) {
+		t.Fatalf("venv shebang not repointed: %q", shebang)
 	}
 	if _, err := os.Stat(oldData); err == nil {
 		t.Fatal("old data dir still present after migration")

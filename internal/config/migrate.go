@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -50,6 +51,10 @@ func migrateOld(p Paths) Paths {
 		if _, err := os.Stat(oldLog); err == nil {
 			os.Rename(oldLog, filepath.Join(p.DataDir, "logs", "iar.log"))
 		}
+		// The engine's Python environment embeds absolute paths (script
+		// shebangs, venv metadata); repoint them at the new location so
+		// the engine starts without a re-install.
+		fixEngineVenv(filepath.Join(p.DataDir, "engine"), oldData, p.DataDir)
 		fmt.Fprintf(os.Stderr, "iar: migrated data (engine, library, sessions) from %s to %s\n", oldData, p.DataDir)
 	}
 	if configNeeded {
@@ -86,6 +91,53 @@ func oldInstallBusy(oldData string) bool {
 		lock.Release()
 	}
 	return false
+}
+
+// fixEngineVenv rewrites absolute-path references inside the engine's
+// virtualenv (entry-point shebangs and venv metadata) after the data
+// directory moved. Only small text files in the venv root and bin/ are
+// touched.
+func fixEngineVenv(engineDir, oldDataDir, newDataDir string) {
+	venv := filepath.Join(engineDir, ".venv")
+	targets := []string{filepath.Join(venv, "pyvenv.cfg")}
+	if entries, err := os.ReadDir(filepath.Join(venv, "bin")); err == nil {
+		for _, e := range entries {
+			if e.Type().IsRegular() {
+				targets = append(targets, filepath.Join(venv, "bin", e.Name()))
+			}
+		}
+	}
+	// Editable installs and install metadata under site-packages also
+	// embed the absolute project path.
+	if libs, err := filepath.Glob(filepath.Join(venv, "lib", "python*", "site-packages")); err == nil {
+		for _, sp := range libs {
+			if pths, err := filepath.Glob(filepath.Join(sp, "*.pth")); err == nil {
+				targets = append(targets, pths...)
+			}
+			if urls, err := filepath.Glob(filepath.Join(sp, "*", "direct_url.json")); err == nil {
+				targets = append(targets, urls...)
+			}
+		}
+	}
+	oldB := []byte(oldDataDir)
+	newB := []byte(newDataDir)
+	fixed := 0
+	for _, path := range targets {
+		fi, err := os.Stat(path)
+		if err != nil || fi.Size() > 1<<20 {
+			continue // scripts and metadata are small; skip anything else
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(data, oldB) {
+			continue
+		}
+		if err := os.WriteFile(path, bytes.ReplaceAll(data, oldB, newB), fi.Mode()); err == nil {
+			fixed++
+		}
+	}
+	if fixed > 0 {
+		fmt.Fprintf(os.Stderr, "iar: repointed %d engine environment file(s) to the new location\n", fixed)
+	}
 }
 
 func dirExists(path string) bool {
