@@ -1,0 +1,7 @@
+{
+  "name": "pink-noise",
+  "description": "Steady pink noise, no music",
+  "mode": "noise",
+  "noise_color": "pink",
+  "noise_bed": "pink"
+}
