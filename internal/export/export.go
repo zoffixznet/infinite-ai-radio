@@ -22,6 +22,16 @@ import (
 // MaxMinutes caps a single export.
 const MaxMinutes = 180
 
+// MP3Options tunes the MP3 encode.
+type MP3Options struct {
+	// Quality is libmp3lame VBR quality: 0 best to 9 smallest.
+	Quality int
+	// Title, Artist and Comment become ID3 tags when non-empty.
+	Title   string
+	Artist  string
+	Comment string
+}
+
 // Renderer renders exports. Engine may be nil for noise-mode sessions.
 type Renderer struct {
 	// Engine generates music tracks (unused for noise sessions).
@@ -32,6 +42,8 @@ type Renderer struct {
 	TrackSeconds int
 	// CrossfadeSeconds is the overlap between joined tracks.
 	CrossfadeSeconds float64
+	// MP3Quality is the libmp3lame VBR quality (0 best .. 9 smallest).
+	MP3Quality int
 	// Gate, when set, is awaited before each generation so a live stream
 	// keeps priority over the export.
 	Gate func(ctx context.Context) error
@@ -79,7 +91,11 @@ func (r *Renderer) Render(ctx context.Context, sess *session.Session, minutes in
 		return err
 	}
 	progress("encoding MP3")
-	if err := EncodeMP3(ctx, samples, outPath); err != nil {
+	if err := EncodeMP3(ctx, samples, outPath, MP3Options{
+		Quality: r.MP3Quality,
+		Title:   sess.Describe(),
+		Artist:  "bgm",
+	}); err != nil {
 		return err
 	}
 	log.Info("export finished", "event", "export_done", "path", outPath, "minutes", minutes)
@@ -130,14 +146,27 @@ func (r *Renderer) renderMusic(ctx context.Context, sess *session.Session, total
 }
 
 // EncodeMP3 pipes PCM once through ffmpeg/libmp3lame.
-func EncodeMP3(ctx context.Context, samples []int16, outPath string) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+func EncodeMP3(ctx context.Context, samples []int16, outPath string, opts MP3Options) error {
+	if opts.Quality < 0 || opts.Quality > 9 {
+		opts.Quality = 0
+	}
+	args := []string{
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-f", "s16le", "-ar", fmt.Sprint(audio.SampleRate), "-ac", fmt.Sprint(audio.Channels),
 		"-i", "-",
-		"-codec:a", "libmp3lame", "-q:a", "2",
-		outPath,
-	)
+		"-codec:a", "libmp3lame", "-q:a", fmt.Sprint(opts.Quality),
+	}
+	for tag, v := range map[string]string{
+		"title":   opts.Title,
+		"artist":  opts.Artist,
+		"comment": opts.Comment,
+	} {
+		if v != "" {
+			args = append(args, "-metadata", tag+"="+v)
+		}
+	}
+	args = append(args, "-id3v2_version", "3", outPath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = bytes.NewReader(audio.SamplesToBytes(samples))
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -108,6 +110,15 @@ func runDoctor() error {
 		}
 	}
 
+	// Playback glitches: underruns recorded in the recent log.
+	if n, total := recentUnderruns(a.paths.LogFile()); n >= 0 {
+		detail := "none in the recent log"
+		if n > 0 {
+			detail = fmt.Sprintf("%d underrun event(s) in the recent log (last total %d); if you hear glitches, see the README troubleshooting section", n, total)
+		}
+		check("underruns", n == 0, detail)
+	}
+
 	// Ollama.
 	oll := prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model)
 	octx, ocancel := context.WithTimeout(ctx, 2*time.Second)
@@ -122,6 +133,36 @@ func runDoctor() error {
 		fmt.Println("\nnext step: run 'bgm setup' (or 'make setup') to install the music engine")
 	}
 	return nil
+}
+
+// recentUnderruns counts underrun events in the tail of the log file and
+// returns the last reported running total.
+func recentUnderruns(logFile string) (count, lastTotal int) {
+	f, err := os.Open(logFile)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+	const tailBytes = 256 * 1024
+	if fi, err := f.Stat(); err == nil && fi.Size() > tailBytes {
+		f.Seek(fi.Size()-tailBytes, 0)
+	}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, `"event":"underrun"`) {
+			continue
+		}
+		count++
+		var ev struct {
+			Total int `json:"total"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err == nil {
+			lastTotal = ev.Total
+		}
+	}
+	return count, lastTotal
 }
 
 func which(bin string) string {

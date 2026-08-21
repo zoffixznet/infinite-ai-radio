@@ -84,3 +84,38 @@ func TestApplyGain(t *testing.T) {
 		t.Fatalf("gain result = %v", s)
 	}
 }
+
+func TestNormalizeLoudness(t *testing.T) {
+	// A quiet constant signal gets boosted, but no more than the cap.
+	quiet := constant(48000, 1000)
+	gain := NormalizeLoudness(quiet, DefaultTargetRMS)
+	if gain <= 1 {
+		t.Fatalf("quiet track not boosted (gain %v)", gain)
+	}
+	if quiet[0] < 1500 || quiet[0] > 2100 {
+		t.Fatalf("boost outside the +6dB cap: %d", quiet[0])
+	}
+
+	// A loud signal is attenuated toward the target.
+	loud := constant(48000, 30000)
+	gain = NormalizeLoudness(loud, DefaultTargetRMS)
+	if gain >= 1 {
+		t.Fatalf("hot track not attenuated (gain %v)", gain)
+	}
+
+	// Peaks never clip after normalization.
+	spiky := constant(48000, 500)
+	spiky[100] = 32000
+	NormalizeLoudness(spiky, DefaultTargetRMS)
+	for i, v := range spiky {
+		if v == 32767 || v == -32768 {
+			t.Fatalf("sample %d clipped: %d", i, v)
+		}
+	}
+
+	// Silence is left alone.
+	silence := make([]int16, 1000)
+	if g := NormalizeLoudness(silence, DefaultTargetRMS); g != 1 {
+		t.Fatalf("silence gained %v", g)
+	}
+}

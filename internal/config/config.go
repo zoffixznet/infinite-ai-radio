@@ -30,6 +30,21 @@ type Config struct {
 	// BedWhileWaiting plays a quiet noise bed while the first track is
 	// prepared instead of the default silence-with-progress.
 	BedWhileWaiting bool `json:"bed_while_waiting"`
+	// PipeLatencyMS is how much buffering the system audio player is
+	// asked for; generous values ride out load spikes.
+	PipeLatencyMS int `json:"pipe_latency_ms"`
+	// NormalizeLoudness levels each generated track to a consistent
+	// loudness before playback.
+	NormalizeLoudness bool `json:"normalize_loudness"`
+	// MP3Quality is the libmp3lame VBR quality for exports and snippets
+	// (0 = best, 9 = smallest).
+	MP3Quality int `json:"mp3_quality"`
+	// SnippetsDir is where the in-app save command puts captured tracks.
+	// Empty uses a snippets directory under the data dir.
+	SnippetsDir string `json:"snippets_dir"`
+	// LibraryMaxMB caps the on-disk track library that powers instant
+	// startup. Zero disables the library.
+	LibraryMaxMB int `json:"library_max_mb"`
 
 	ACEStep ACEStep `json:"acestep"`
 	Ollama  Ollama  `json:"ollama"`
@@ -74,12 +89,16 @@ type Ollama struct {
 // Default returns the built-in configuration.
 func Default() Config {
 	return Config{
-		Engine:           "acestep",
-		Player:           "auto",
-		TrackSeconds:     150,
-		CrossfadeSeconds: 3,
-		BufferTracks:     2,
-		Volume:           80,
+		Engine:            "acestep",
+		Player:            "auto",
+		TrackSeconds:      150,
+		CrossfadeSeconds:  3,
+		BufferTracks:      2,
+		Volume:            80,
+		PipeLatencyMS:     200,
+		NormalizeLoudness: true,
+		MP3Quality:        0,
+		LibraryMaxMB:      600,
 		ACEStep: ACEStep{
 			Port:           0,
 			IdleMinutes:    15,
@@ -147,5 +166,14 @@ func (c *Config) sanitize() {
 	}
 	if c.ACEStep.IdleMinutes < 1 {
 		c.ACEStep.IdleMinutes = 15
+	}
+	if c.PipeLatencyMS < 20 || c.PipeLatencyMS > 2000 {
+		c.PipeLatencyMS = 200
+	}
+	if c.MP3Quality < 0 || c.MP3Quality > 9 {
+		c.MP3Quality = 0
+	}
+	if c.LibraryMaxMB < 0 {
+		c.LibraryMaxMB = 0
 	}
 }
