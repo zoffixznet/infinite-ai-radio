@@ -40,6 +40,9 @@ func (e *Engine) Ready() bool { return e.sidecar.Ready() }
 // Sidecar exposes the supervisor for status displays and diagnostics.
 func (e *Engine) Sidecar() *Sidecar { return e.sidecar }
 
+// Tail returns recent engine output lines for diagnostics.
+func (e *Engine) Tail() []string { return e.sidecar.Tail() }
+
 // Generate implements engine.Engine.
 func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track, error) {
 	if !e.Ready() {

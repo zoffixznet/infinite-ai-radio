@@ -81,8 +81,19 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return c.O.LoadPreset(rest), false
 	case "mp3", "export":
 		return c.export(rest), false
-	case "engine", "status":
+	case "status":
 		return statusText(c.O.Status()), false
+	case "engine":
+		st := c.O.Status()
+		out := statusText(st)
+		if n := len(st.EngineTail); n > 0 {
+			tail := st.EngineTail
+			if n > 8 {
+				tail = tail[n-8:]
+			}
+			out += "\nrecent engine output:\n  " + strings.Join(tail, "\n  ")
+		}
+		return out, false
 	default:
 		// Free text: steer the stream.
 		return c.O.Steer(line), false

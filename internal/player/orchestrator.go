@@ -55,6 +55,9 @@ type Status struct {
 	LastGenTime time.Duration
 	// Exporting describes a running export, empty otherwise.
 	Exporting string
+	// EngineTail holds recent engine output lines, newest last, when the
+	// engine exposes them.
+	EngineTail []string
 }
 
 // Orchestrator owns the stream: session state, generation queue, mixing and

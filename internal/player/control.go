@@ -191,6 +191,9 @@ func (o *Orchestrator) Status() Status {
 		st.EngineName = o.eng.Name()
 		st.EngineReady = o.eng.Ready()
 		st.EngineStarting = !st.EngineReady
+		if t, ok := o.eng.(interface{ Tail() []string }); ok {
+			st.EngineTail = t.Tail()
+		}
 	}
 	if o.cur != nil {
 		st.Source = o.cur.label()
