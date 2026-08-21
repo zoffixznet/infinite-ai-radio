@@ -141,7 +141,7 @@ func ResolveBinding(binds []string, port int) Binding {
 	return b
 }
 
-// isLoopbackHost reports whether a bind entry stays on this machine.
+// isLoopbackHost reports whether a bind entry stays on the local machine.
 func isLoopbackHost(host string) bool {
 	if host == "localhost" {
 		return true
