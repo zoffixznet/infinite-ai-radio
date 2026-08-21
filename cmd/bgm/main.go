@@ -39,7 +39,7 @@ func rootCommand() *cobra.Command {
 		Use:   "bgm",
 		Short: "Endless AI background music, generated locally",
 		Long: `bgm plays a continuous stream of AI-generated background music using
-models running entirely on this machine. Run it with no arguments to
+models running entirely on your machine. Run it with no arguments to
 start playing; type plain English while it plays to steer the stream.
 
 Built-in presets (start with --preset, list with 'bgm presets'):
