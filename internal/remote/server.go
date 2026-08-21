@@ -158,7 +158,7 @@ func (s *Server) buildHandler() http.Handler {
 }
 
 // hostAllowed validates the Host header against the allowlist (DNS
-// rebinding defense: a foreign hostname pointed at this machine must
+// rebinding defense: a foreign hostname resolved to the local machine must
 // never reach the handlers).
 func (s *Server) hostAllowed(hostHeader string) bool {
 	host := hostHeader
