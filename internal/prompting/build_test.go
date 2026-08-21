@@ -111,6 +111,34 @@ func TestBuildSpecVocalWithoutOllamaUsesSampleQuery(t *testing.T) {
 	}
 }
 
+func TestBuilderDisablesOllamaAfterRepeatedFailures(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tags") {
+			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "m"}}})
+			return
+		}
+		calls++
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	oll := NewOllama(srv.URL, "")
+	oll.Available(context.Background())
+	b := NewBuilder(oll, nil)
+	s := session.New()
+	Steer(s, "calmer")
+	for i := 0; i < 5; i++ {
+		Steer(s, "tweak number "+string(rune('a'+i)))
+		b.BuildSpec(context.Background(), s, 60)
+	}
+	if calls > maxOllamaFailures {
+		t.Fatalf("ollama called %d times; should be disabled after %d failures", calls, maxOllamaFailures)
+	}
+	if b.ollamaUsable() {
+		t.Fatal("builder should have disabled ollama")
+	}
+}
+
 func TestBuildSpecFallsBackWhenOllamaFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/tags") {

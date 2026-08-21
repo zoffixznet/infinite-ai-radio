@@ -18,9 +18,21 @@ type Builder struct {
 	ollama *Ollama
 	log    *slog.Logger
 
-	mu    sync.Mutex
-	cache map[string]cached
+	mu       sync.Mutex
+	cache    map[string]cached
+	failures int  // consecutive Ollama failures
+	disabled bool // set after too many failures; deterministic from then on
 }
+
+// maxOllamaFailures is how many consecutive failed LLM calls disable the
+// integration for the rest of the run. On machines where the helper model
+// is slow to load (GPU busy with the music engine), repeated timeouts
+// would otherwise delay every generation.
+const maxOllamaFailures = 2
+
+// chatTimeout bounds each helper-model call so a slow or stuck daemon can
+// only briefly delay the next generation.
+const chatTimeout = 30 * time.Second
 
 // cached holds LLM output for one steering context so the model is only
 // consulted when the context actually changes.
@@ -67,7 +79,7 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 // buildPrompt merges base prompt and tweaks, using Ollama when available.
 func (b *Builder) buildPrompt(ctx context.Context, s *session.Session) string {
 	merged := mergePrompt(s)
-	if b.ollama == nil || len(s.Tweaks) == 0 {
+	if !b.ollamaUsable() || len(s.Tweaks) == 0 {
 		return merged
 	}
 	key := "p|" + merged
@@ -76,12 +88,46 @@ func (b *Builder) buildPrompt(ctx context.Context, s *session.Session) string {
 	}
 	rewritten, err := b.rewrite(ctx, s)
 	if err != nil {
-		b.log.Debug("prompt rewrite failed, using deterministic merge", "event", "ollama_fallback", "error", err.Error())
+		b.noteFailure(err)
 		return merged
 	}
+	b.noteSuccess()
 	b.store(key, cached{prompt: rewritten})
 	b.log.Info("prompt rewritten", "event", "prompt_rewritten", "prompt", rewritten)
 	return rewritten
+}
+
+// ollamaUsable reports whether the helper model should still be consulted.
+func (b *Builder) ollamaUsable() bool {
+	if b.ollama == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.disabled
+}
+
+// noteFailure counts a failed helper call and disables the integration
+// after too many in a row.
+func (b *Builder) noteFailure(err error) {
+	b.mu.Lock()
+	b.failures++
+	disable := b.failures >= maxOllamaFailures && !b.disabled
+	if disable {
+		b.disabled = true
+	}
+	b.mu.Unlock()
+	b.log.Debug("helper model call failed, using deterministic path", "event", "ollama_fallback", "error", err.Error())
+	if disable {
+		b.log.Info("helper model disabled after repeated failures", "event", "ollama_disabled")
+	}
+}
+
+// noteSuccess resets the consecutive failure counter.
+func (b *Builder) noteSuccess() {
+	b.mu.Lock()
+	b.failures = 0
+	b.mu.Unlock()
 }
 
 // mergePrompt is the deterministic fallback: base prompt plus tweak
@@ -103,7 +149,7 @@ earlier ones and the base when they conflict. Output ONLY the prompt text,
 no quotes, no explanations.`
 
 func (b *Builder) rewrite(ctx context.Context, s *session.Session) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, chatTimeout)
 	defer cancel()
 	var sb strings.Builder
 	sb.WriteString("Base: " + s.BasePrompt + "\nAdjustments:\n")
@@ -127,9 +173,10 @@ Write 8-14 short lines: a verse and a chorus. Mark sections with [verse]
 and [chorus] on their own lines. Simple, singable, English. Output ONLY the
 lyrics, no title, no explanations.`
 
-// buildLyrics asks Ollama for lyrics; returns "" when unavailable.
+// buildLyrics asks Ollama for lyrics; returns "" when unavailable, in
+// which case the engine's own planner writes them.
 func (b *Builder) buildLyrics(ctx context.Context, s *session.Session, prompt string) string {
-	if b.ollama == nil {
+	if !b.ollamaUsable() {
 		return ""
 	}
 	theme := s.LyricsTheme
@@ -140,14 +187,15 @@ func (b *Builder) buildLyrics(ctx context.Context, s *session.Session, prompt st
 	if c, ok := b.lookup(key); ok {
 		return c.lyrics
 	}
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, chatTimeout)
 	defer cancel()
 	user := "Music style: " + prompt + "\nLyrics theme: " + theme
 	out, err := b.ollama.Chat(cctx, lyricsSystem, user)
 	if err != nil {
-		b.log.Debug("lyric writing failed, deferring to engine", "event", "ollama_fallback", "error", err.Error())
+		b.noteFailure(err)
 		return ""
 	}
+	b.noteSuccess()
 	b.store(key, cached{lyrics: out})
 	return out
 }
