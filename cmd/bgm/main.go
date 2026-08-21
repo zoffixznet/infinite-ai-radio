@@ -47,6 +47,9 @@ Start straight from an idea with a prompt:
   bgm "dark techno"
   bgm --prompt "energetic rock with vocals about winning"
 
+Inside the player, type 'help' to list the interactive commands
+(new <prompt>, save, name, mp3, skip, volume and more).
+
 Built-in presets (start with --preset, list with 'bgm presets'):
 ` + presetLines(),
 		Args:          cobra.MaximumNArgs(1),
