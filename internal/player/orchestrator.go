@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,6 +64,11 @@ type Status struct {
 	// EngineTail holds recent engine output lines, newest last, when the
 	// engine exposes them.
 	EngineTail []string
+	// FailStreak counts consecutive generation failures; LastFailure is
+	// the most recent failure reason ("" when the last generation
+	// succeeded).
+	FailStreak  int
+	LastFailure string
 	// Phase names the current startup phase ("starting engine",
 	// "loading models", "generating first track") or "playing".
 	Phase string
@@ -98,25 +104,27 @@ type Orchestrator struct {
 	// never block.
 	Tap interface{ Write(p []byte) (int, error) }
 
-	mu         sync.Mutex
-	sess       *session.Session
-	queue      []*engine.Track
-	epoch      int
-	lastGood   *engine.Track
-	cur        source
-	switchReq  bool
-	paused     bool
-	genBusy    bool
-	genCount   int
-	lastGen    time.Duration
-	exporting  string
-	phase      string
-	phaseStart time.Time
-	started    time.Time
-	firstMusic bool
-	curTrack   *engine.Track
-	prevTrack  *engine.Track
-	saving     bool
+	mu          sync.Mutex
+	sess        *session.Session
+	queue       []*engine.Track
+	epoch       int
+	lastGood    *engine.Track
+	cur         source
+	switchReq   bool
+	paused      bool
+	genBusy     bool
+	genCount    int
+	lastGen     time.Duration
+	exporting   string
+	phase       string
+	phaseStart  time.Time
+	started     time.Time
+	firstMusic  bool
+	failStreak  int
+	lastFailure string
+	curTrack    *engine.Track
+	prevTrack   *engine.Track
+	saving      bool
 
 	volume atomic.Int32
 	events chan Event
@@ -269,9 +277,32 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		}
 		if err != nil {
 			failures++
-			o.log.Error("generation failed", "event", "generation_failed", "error", err.Error(), "failures", failures)
-			if failures == 1 || failures%5 == 0 {
-				o.emit("generation failed; will keep retrying (see log)")
+			reason := err.Error()
+			deviceFault := isDeviceFault(reason)
+			o.mu.Lock()
+			o.failStreak = failures
+			o.lastFailure = reason
+			o.mu.Unlock()
+			o.log.Error("generation failed", "event", "generation_failed",
+				"error", reason, "failures", failures, "device_fault", deviceFault)
+			// Health checks alone cannot catch a poisoned engine that
+			// still answers /health: restart on a failure streak, and
+			// immediately on the known-fatal device fault.
+			if deviceFault || failures >= restartStreak {
+				if rst, ok := o.eng.(interface{ RestartEngine(string) bool }); ok && rst.RestartEngine(reason) {
+					why := "repeated generation failures"
+					if deviceFault {
+						why = "a device-placement fault (it never recovers on its own)"
+					}
+					o.emit("engine restarting after " + why + "; music keeps playing meanwhile")
+					o.log.Warn("engine restart requested", "event", "engine_restart_requested",
+						"streak", failures, "device_fault", deviceFault)
+					failures = 0
+				} else if failures%5 == 0 || deviceFault {
+					o.emit("generation keeps failing and the engine cannot be restarted from here (see log and 'bgm doctor')")
+				}
+			} else if failures == 1 {
+				o.emit("generation failed; retrying (details in the log)")
 			}
 			select {
 			case <-ctx.Done():
@@ -281,6 +312,10 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			continue
 		}
 		failures = 0
+		o.mu.Lock()
+		o.failStreak = 0
+		o.lastFailure = ""
+		o.mu.Unlock()
 		if o.cfg.NormalizeLoudness {
 			gain := audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
 			if gain != 1 {
@@ -322,13 +357,32 @@ func (o *Orchestrator) wantGeneration() bool {
 	return o.sess.Mode == session.ModeMusic && len(o.queue) < o.cfg.BufferTracks
 }
 
+// failureBackoffBase scales the retry delay after generation failures
+// (a variable so tests can shrink it).
+var failureBackoffBase = 5 * time.Second
+
 // backoff returns the retry delay after n consecutive failures.
 func backoff(n int) time.Duration {
-	d := time.Duration(n) * 5 * time.Second
+	d := time.Duration(n) * failureBackoffBase
 	if d > 2*time.Minute {
 		d = 2 * time.Minute
 	}
 	return d
+}
+
+// restartStreak is how many consecutive generation failures trigger an
+// automatic engine restart even while health checks still pass.
+const restartStreak = 3
+
+// deviceFaultNeedle identifies the known-fatal device-placement fault:
+// once the engine is in that state it never recovers on its own, so it
+// is restarted on the first occurrence.
+const deviceFaultNeedle = "Expected all tensors to be on the same device"
+
+// isDeviceFault reports whether a failure reason is the known-fatal
+// device-placement fault.
+func isDeviceFault(reason string) bool {
+	return strings.Contains(reason, deviceFaultNeedle)
 }
 
 // pumpLoop moves audio from the ring buffer to the playback backend,

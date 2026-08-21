@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -354,5 +355,93 @@ func TestLibraryInstantStart(t *testing.T) {
 	waitFor(t, 10*time.Second, "fresh track takes over", func() bool {
 		st := o.Status()
 		return st.State == "playing" && !strings.Contains(st.Source, "[library]")
+	})
+}
+
+// drainEvents collects events until the predicate matches or timeout.
+func drainEvents(t *testing.T, o *Orchestrator, timeout time.Duration, match func(string) bool) string {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev := <-o.Events():
+			if match(ev.Text) {
+				return ev.Text
+			}
+		case <-deadline:
+			t.Fatal("expected event never arrived")
+		}
+	}
+}
+
+func TestHealthyButFailingEngineRestartsAfterStreak(t *testing.T) {
+	old := failureBackoffBase
+	failureBackoffBase = 10 * time.Millisecond
+	t.Cleanup(func() { failureBackoffBase = old })
+
+	eng := enginetest.NewMock()
+	eng.FailErr = errors.New("some transient-looking engine error")
+	eng.HealOnRestart = true
+	o, _ := newTestOrchestrator(t, eng, session.New())
+
+	msg := drainEvents(t, o, 10*time.Second, func(s string) bool {
+		return strings.Contains(s, "engine restarting")
+	})
+	if !strings.Contains(msg, "repeated generation failures") {
+		t.Fatalf("restart message = %q", msg)
+	}
+	if got := eng.Restarts(); got != 1 {
+		t.Fatalf("restarts = %d; want 1", got)
+	}
+	// The streak threshold, not the first failure, triggered it.
+	specs := eng.Specs()
+	if len(specs) < restartStreak {
+		t.Fatalf("restart before the streak threshold: %d attempts", len(specs))
+	}
+	// Healed engine: music follows and the streak resets.
+	waitFor(t, 10*time.Second, "recovery to playing", func() bool {
+		st := o.Status()
+		return st.State == "playing" && st.FailStreak == 0
+	})
+}
+
+func TestDeviceFaultRestartsImmediately(t *testing.T) {
+	old := failureBackoffBase
+	failureBackoffBase = 10 * time.Millisecond
+	t.Cleanup(func() { failureBackoffBase = old })
+
+	eng := enginetest.NewMock()
+	eng.FailErr = errors.New("generation failed: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!")
+	eng.HealOnRestart = true
+	o, _ := newTestOrchestrator(t, eng, session.New())
+
+	msg := drainEvents(t, o, 10*time.Second, func(s string) bool {
+		return strings.Contains(s, "engine restarting")
+	})
+	if !strings.Contains(msg, "device-placement fault") {
+		t.Fatalf("restart message = %q", msg)
+	}
+	if got := eng.Restarts(); got != 1 {
+		t.Fatalf("restarts = %d; want 1", got)
+	}
+	// Immediately: exactly one failed attempt before the restart.
+	if specs := eng.Specs(); len(specs) < 1 || len(specs) > 2 {
+		t.Fatalf("device fault should restart on first failure; attempts=%d", len(specs))
+	}
+	waitFor(t, 10*time.Second, "recovery to playing", func() bool { return o.Status().State == "playing" })
+}
+
+func TestFailureStreakVisibleInStatus(t *testing.T) {
+	old := failureBackoffBase
+	failureBackoffBase = 20 * time.Millisecond
+	t.Cleanup(func() { failureBackoffBase = old })
+
+	eng := enginetest.NewMock()
+	eng.FailErr = errors.New("boom reason")
+	// No HealOnRestart: the streak keeps climbing across restarts.
+	o, _ := newTestOrchestrator(t, eng, session.New())
+	waitFor(t, 10*time.Second, "streak in status", func() bool {
+		st := o.Status()
+		return st.FailStreak >= 1 && strings.Contains(st.LastFailure, "boom reason")
 	})
 }

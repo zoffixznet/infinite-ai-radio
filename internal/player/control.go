@@ -203,6 +203,8 @@ func (o *Orchestrator) Status() Status {
 	defer o.mu.Unlock()
 	st := Status{
 		BufferTarget: o.cfg.BufferTracks,
+		FailStreak:   o.failStreak,
+		LastFailure:  o.lastFailure,
 		Queued:       len(o.queue),
 		Generating:   o.genBusy,
 		Session:      o.sess.Name,

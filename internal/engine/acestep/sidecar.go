@@ -193,6 +193,14 @@ func (s *Sidecar) Phase() string {
 	}
 }
 
+// RestartEngine kills the supervised child; the supervision loop starts
+// a fresh one. Always initiates (the loop has its own backoff).
+func (s *Sidecar) RestartEngine(reason string) bool {
+	s.log.Warn("forcing sidecar restart", "event", "engine_forced_restart", "reason", reason)
+	s.kill()
+	return true
+}
+
 // Tail returns the most recent lines of the child's output, newest last.
 func (s *Sidecar) Tail() []string {
 	s.mu.Lock()

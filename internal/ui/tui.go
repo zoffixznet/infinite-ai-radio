@@ -329,6 +329,10 @@ func (m *tuiModel) renderChrome() string {
 		b.WriteString(line + "\n")
 	}
 
+	if st.FailStreak > 0 {
+		b.WriteString(s.warn.Render(fmt.Sprintf("%d generation failure(s) in a row - engine will restart itself", st.FailStreak)) + "\n")
+	}
+
 	// Generation activity and buffer gauge.
 	if st.Generating {
 		b.WriteString(s.label.Render(fmt.Sprintf("%-8s", "gen")) + m.pulseBar(24) +

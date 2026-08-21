@@ -99,6 +99,23 @@ type GenerateResult struct {
 	Seed   string `json:"seed_value"`
 }
 
+// TaskError reports a generation job the engine marked failed, carrying
+// the engine's own failure reason when it provided one.
+type TaskError struct {
+	// TaskID identifies the failed job.
+	TaskID string
+	// Reason is the engine's error message ("" when it gave none).
+	Reason string
+}
+
+// Error implements error.
+func (e *TaskError) Error() string {
+	if e.Reason != "" {
+		return "generation failed: " + e.Reason
+	}
+	return "generation task " + e.TaskID + " failed"
+}
+
 // taskStatus values used by the ACE-Step job store.
 const (
 	statusPending   = 0
@@ -194,7 +211,7 @@ func (c *Client) waitForTask(ctx context.Context, taskID string) (*GenerateResul
 			}
 			return &result[0], nil
 		default:
-			return nil, fmt.Errorf("generation task %s failed", taskID)
+			return nil, &TaskError{TaskID: taskID}
 		}
 	}
 }
@@ -219,6 +236,7 @@ func (c *Client) queryResult(ctx context.Context, taskID string) (int, []Generat
 		TaskID string `json:"task_id"`
 		Status int    `json:"status"`
 		Result string `json:"result"`
+		Error  string `json:"error"`
 	}
 	if err := json.Unmarshal(env.Data, &entries); err != nil {
 		return 0, nil, fmt.Errorf("query_result: parsing: %w", err)
@@ -227,6 +245,9 @@ func (c *Client) queryResult(ctx context.Context, taskID string) (int, []Generat
 		return 0, nil, fmt.Errorf("query_result: task %s unknown", taskID)
 	}
 	entry := entries[0]
+	if entry.Status == statusFailed {
+		return entry.Status, nil, &TaskError{TaskID: taskID, Reason: entry.Error}
+	}
 	if entry.Status != statusSucceeded || entry.Result == "" {
 		return entry.Status, nil, nil
 	}

@@ -23,12 +23,14 @@ type Remote struct {
 	exe       string // bgm executable to spawn the daemon with
 	daemonLog string // daemon log file, for Tail
 
-	mu        sync.Mutex
-	st        state.EngineState
-	client    *Client
-	phase     string
-	adopted   bool
-	lastSpawn time.Time
+	mu          sync.Mutex
+	st          state.EngineState
+	client      *Client
+	phase       string
+	adopted     bool
+	lastSpawn   time.Time
+	forcedCount int
+	nextForced  time.Time
 }
 
 // NewRemote returns an unstarted remote handle. exe is the bgm binary
@@ -253,4 +255,53 @@ func (r *Remote) heartbeatLoop(ctx context.Context) {
 			r.dir.Heartbeat()
 		}
 	}
+}
+
+// forcedRestartBackoff schedules how soon another forced restart may
+// happen after each one; poisoned-engine recovery must not turn into a
+// restart storm.
+var forcedRestartBackoff = []time.Duration{0, time.Minute, 2 * time.Minute, 5 * time.Minute}
+
+// RestartEngine force-restarts the engine daemon (used when generations
+// keep failing while health still reports ok). It returns false when a
+// restart is suppressed by the cooldown.
+func (r *Remote) RestartEngine(reason string) bool {
+	r.mu.Lock()
+	now := time.Now()
+	if now.Before(r.nextForced) {
+		r.mu.Unlock()
+		return false
+	}
+	idx := r.forcedCount
+	if idx >= len(forcedRestartBackoff) {
+		idx = len(forcedRestartBackoff) - 1
+	}
+	r.forcedCount++
+	r.nextForced = now.Add(forcedRestartBackoff[idx])
+	pid := r.st.PID
+	r.phase = "starting engine"
+	r.mu.Unlock()
+
+	r.log.Warn("forcing engine daemon restart", "event", "engine_forced_restart",
+		"reason", reason, "pid", pid, "restart_number", idx+1)
+	if state.PIDAlive(pid) {
+		state.Terminate(pid)
+		for i := 0; i < 50 && state.PIDAlive(pid); i++ {
+			time.Sleep(200 * time.Millisecond)
+		}
+		if state.PIDAlive(pid) {
+			r.log.Error("engine daemon ignored SIGTERM", "event", "engine_forced_restart_stuck", "pid", pid)
+		}
+	}
+	r.dir.RemoveEngineState()
+	r.ensureDaemon()
+	return true
+}
+
+// NoteGenerationOK resets the forced-restart backoff after recovery.
+func (r *Remote) NoteGenerationOK() {
+	r.mu.Lock()
+	r.forcedCount = 0
+	r.nextForced = time.Time{}
+	r.mu.Unlock()
 }

@@ -59,6 +59,23 @@ func (e *Engine) Backend() Backend { return e.be }
 // Tail returns recent engine output lines for diagnostics.
 func (e *Engine) Tail() []string { return e.be.Tail() }
 
+// RestartEngine asks the backend to force-restart the engine process.
+// It reports whether a restart was actually initiated.
+func (e *Engine) RestartEngine(reason string) bool {
+	if r, ok := e.be.(interface{ RestartEngine(string) bool }); ok {
+		return r.RestartEngine(reason)
+	}
+	return false
+}
+
+// noteGenerationOK informs the backend that generation works again so
+// forced-restart backoff can reset.
+func (e *Engine) noteGenerationOK() {
+	if n, ok := e.be.(interface{ NoteGenerationOK() }); ok {
+		n.NoteGenerationOK()
+	}
+}
+
 // Generate implements engine.Engine.
 func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track, error) {
 	if !e.Ready() {
@@ -86,6 +103,7 @@ func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track,
 	if err != nil {
 		return nil, err
 	}
+	e.noteGenerationOK()
 	return &engine.Track{
 		Samples: res.Samples,
 		Spec:    spec,

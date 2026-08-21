@@ -21,10 +21,37 @@ type Mock struct {
 	Delay time.Duration
 	// FailNext makes the next Generate call return an error.
 	FailNext bool
+	// FailErr, when set, makes every Generate call fail with it while
+	// Ready still reports true (a poisoned-but-healthy engine).
+	FailErr error
+	// HealOnRestart clears FailErr when RestartEngine is called.
+	HealOnRestart bool
 	// Freq is the tone frequency (default 440 Hz).
 	Freq float64
 
-	specs []engine.Spec
+	restarts       int
+	restartReasons []string
+	specs          []engine.Spec
+}
+
+// RestartEngine records a forced restart request; with HealOnRestart the
+// engine starts succeeding again afterwards.
+func (m *Mock) RestartEngine(reason string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.restarts++
+	m.restartReasons = append(m.restartReasons, reason)
+	if m.HealOnRestart {
+		m.FailErr = nil
+	}
+	return true
+}
+
+// Restarts reports how many forced restarts were requested.
+func (m *Mock) Restarts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.restarts
 }
 
 // NewMock returns a ready mock engine.
@@ -59,6 +86,7 @@ func (m *Mock) Generate(ctx context.Context, spec engine.Spec) (*engine.Track, e
 	m.mu.Lock()
 	fail := m.FailNext
 	m.FailNext = false
+	failErr := m.FailErr
 	delay := m.Delay
 	freq := m.Freq
 	m.specs = append(m.specs, spec)
@@ -70,6 +98,9 @@ func (m *Mock) Generate(ctx context.Context, spec engine.Spec) (*engine.Track, e
 			return nil, ctx.Err()
 		case <-time.After(delay):
 		}
+	}
+	if failErr != nil {
+		return nil, failErr
 	}
 	if fail {
 		return nil, context.DeadlineExceeded

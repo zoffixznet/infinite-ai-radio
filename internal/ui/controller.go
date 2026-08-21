@@ -179,6 +179,9 @@ func statusText(st player.Status) string {
 	if st.GenCount > 0 {
 		fmt.Fprintf(&b, "gen:      %d tracks, last took %s\n", st.GenCount, st.LastGenTime.Round(time.Second))
 	}
+	if st.FailStreak > 0 {
+		fmt.Fprintf(&b, "trouble:  %d generation failure(s) in a row; last: %s\n", st.FailStreak, st.LastFailure)
+	}
 	if st.Exporting != "" {
 		fmt.Fprintf(&b, "export:   %s running\n", st.Exporting)
 	}

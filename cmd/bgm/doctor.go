@@ -111,6 +111,15 @@ func runDoctor() error {
 		}
 	}
 
+	// Generation health: current failure streak from the recent log.
+	streak, lastReason := recentFailureStreak(a.paths.LogFile())
+	switch {
+	case streak == 0:
+		check("generation", true, "no failure streak in the recent log")
+	default:
+		check("generation", false, fmt.Sprintf("%d consecutive failure(s); last reason: %s", streak, lastReason))
+	}
+
 	// Playback glitches: underruns recorded in the recent log.
 	if n, total := recentUnderruns(a.paths.LogFile()); n >= 0 {
 		detail := "none in the recent log"
@@ -127,11 +136,16 @@ func runDoctor() error {
 	} else {
 		check("remote", true, "off (enable with --remote or config remote.enabled)")
 	}
-	addrs, tailnetIP := remote.BindAddrs(a.cfg.Remote.Bind, a.cfg.Remote.Port)
-	if a.cfg.Remote.Bind != "" {
-		check("remote bind", true, fmt.Sprintf("OVERRIDDEN to %s - make sure that network is trusted", strings.Join(addrs, ", ")))
+	binding := remote.ResolveBinding(a.cfg.Remote.Bind, a.cfg.Remote.Port)
+	tailnetIP := binding.TailnetIP
+	if binding.Exposed {
+		note := " - reachable beyond localhost/tailnet; a token is required"
+		if a.cfg.Remote.Token == "" {
+			note = " - EXPOSED without a token: the remote will refuse to start"
+		}
+		check("remote bind", a.cfg.Remote.Token != "", "would bind "+strings.Join(binding.Addrs, ", ")+note)
 	} else {
-		check("remote bind", true, "would bind "+strings.Join(addrs, ", "))
+		check("remote bind", true, "would bind "+strings.Join(binding.Addrs, ", "))
 	}
 	tsBin := which("tailscale")
 	switch {
@@ -139,6 +153,8 @@ func runDoctor() error {
 		check("tailnet", true, fmt.Sprintf("detected %s; on the phone open http://%s:%d", tailnetIP, tailnetIP, a.cfg.Remote.Port))
 	case tsBin != "":
 		check("tailnet", true, "tailscale installed but no tailnet address; run 'sudo tailscale up', then re-check")
+	case binding.Exposed:
+		check("tailnet", true, "not installed (the remote is reachable on the bound addresses above instead)")
 	default:
 		check("tailnet", true, "not installed; remote stays localhost-only (see the README for the phone setup)")
 	}
@@ -190,6 +206,42 @@ func recentUnderruns(logFile string) (count, lastTotal int) {
 		}
 	}
 	return count, lastTotal
+}
+
+// recentFailureStreak scans the log tail for the current run of
+// consecutive generation failures and the most recent failure reason.
+func recentFailureStreak(logFile string) (streak int, lastReason string) {
+	f, err := os.Open(logFile)
+	if err != nil {
+		return 0, ""
+	}
+	defer f.Close()
+	const tailBytes = 256 * 1024
+	if fi, err := f.Stat(); err == nil && fi.Size() > tailBytes {
+		f.Seek(fi.Size()-tailBytes, 0)
+	}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.Contains(line, `"event":"generation_finished"`):
+			streak = 0
+			lastReason = ""
+		case strings.Contains(line, `"event":"generation_failed"`):
+			streak++
+			var ev struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(line), &ev); err == nil && ev.Error != "" {
+				lastReason = ev.Error
+				if len(lastReason) > 120 {
+					lastReason = lastReason[:120] + "..."
+				}
+			}
+		}
+	}
+	return streak, lastReason
 }
 
 func which(bin string) string {
