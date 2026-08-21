@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end smoke test of the built bgm binary.
+# End-to-end smoke test of the built iar binary.
 #
 # Runs the real binary in plain mode with a sandboxed data directory and the
 # null audio backend, so nothing touches real user state and no sound is
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-BIN=./bgm
+BIN=./iar
 [ -x "$BIN" ] || { echo "build first: make build"; exit 1; }
 
 command -v ffmpeg >/dev/null || { echo "ffmpeg required"; exit 1; }
@@ -16,13 +16,13 @@ command -v ffprobe >/dev/null || { echo "ffprobe required"; exit 1; }
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
-export BGM_DATA_DIR="$SANDBOX/data"
-export BGM_CONFIG_DIR="$SANDBOX/config"
-export BGM_PLAYER_SPEED=25   # pace the null player faster than realtime
+export IAR_DATA_DIR="$SANDBOX/data"
+export IAR_CONFIG_DIR="$SANDBOX/config"
+export IAR_PLAYER_SPEED=25   # pace the null player faster than realtime
 
 fail() { echo "SMOKE FAIL: $1"; exit 1; }
 
-log="$BGM_DATA_DIR/logs/bgm.log"
+log="$IAR_DATA_DIR/logs/iar.log"
 out="$SANDBOX/out.txt"
 
 # Drive a full interactive session through the plain interface. The noise
@@ -39,19 +39,19 @@ out="$SANDBOX/out.txt"
   sleep 6
   echo "sessions"
   echo "quit"
-} | "$BIN" --engine noise --player null --plain > "$out" 2>&1 || fail "bgm exited non-zero"
+} | "$BIN" --engine noise --player null --plain > "$out" 2>&1 || fail "iar exited non-zero"
 
 grep -q "switching to pink noise" "$out" || fail "steering acknowledgment missing"
 grep -q "switching to brown noise" "$out" || fail "second steering acknowledgment missing"
 grep -q "session saved as smoke-session" "$out" || fail "session naming failed"
-grep -q "smoke-session" "$BGM_DATA_DIR/sessions/smoke-session.json" || fail "session file missing"
+grep -q "smoke-session" "$IAR_DATA_DIR/sessions/smoke-session.json" || fail "session file missing"
 
 # Playback actually ran: the log must show a noise source playing.
 grep -q '"event":"now_playing"' "$log" || fail "no playback in log"
 grep -q '"event":"steering"' "$log" || fail "no steering event in log"
 
 # The export completed and is a valid MP3 of ~1 minute.
-mp3=$(ls "$BGM_DATA_DIR"/exports/*.mp3 2>/dev/null | head -1)
+mp3=$(ls "$IAR_DATA_DIR"/exports/*.mp3 2>/dev/null | head -1)
 [ -n "$mp3" ] || fail "no exported mp3 found"
 codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$mp3")
 [ "$codec" = "mp3" ] || fail "export codec is $codec"

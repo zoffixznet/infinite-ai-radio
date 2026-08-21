@@ -1,5 +1,5 @@
 // Package mpris exposes the running player on the session D-Bus as an
-// MPRIS media player (org.mpris.MediaPlayer2.bgm), so desktop media keys,
+// MPRIS media player (org.mpris.MediaPlayer2.iar), so desktop media keys,
 // playerctl, KDE Connect and similar tooling can pause, skip and set the
 // volume.
 package mpris
@@ -14,8 +14,8 @@ import (
 	"github.com/godbus/dbus/v5/prop"
 )
 
-// BusName is the well-known MPRIS name bgm claims.
-const BusName = "org.mpris.MediaPlayer2.bgm"
+// BusName is the well-known MPRIS name Infinite AI Radio claims.
+const BusName = "org.mpris.MediaPlayer2.iar"
 
 const objectPath = "/org/mpris/MediaPlayer2"
 
@@ -62,7 +62,7 @@ func Start(ctx context.Context, ctl Controls, log *slog.Logger) (*Server, error)
 	paused, volume, title := ctl.Snapshot()
 	propsSpec := prop.Map{
 		"org.mpris.MediaPlayer2": {
-			"Identity":            {Value: "bgm", Emit: prop.EmitTrue},
+			"Identity":            {Value: "Infinite AI Radio", Emit: prop.EmitTrue},
 			"CanQuit":             {Value: false, Emit: prop.EmitTrue},
 			"CanRaise":            {Value: false, Emit: prop.EmitTrue},
 			"HasTrackList":        {Value: false, Emit: prop.EmitTrue},
@@ -189,9 +189,9 @@ func statusString(paused bool) string {
 
 func metadata(title string) map[string]dbus.Variant {
 	return map[string]dbus.Variant{
-		"mpris:trackid": dbus.MakeVariant(dbus.ObjectPath("/org/bgm/track/current")),
+		"mpris:trackid": dbus.MakeVariant(dbus.ObjectPath("/org/iar/track/current")),
 		"xesam:title":   dbus.MakeVariant(title),
-		"xesam:artist":  dbus.MakeVariant([]string{"bgm"}),
+		"xesam:artist":  dbus.MakeVariant([]string{"Infinite AI Radio"}),
 	}
 }
 

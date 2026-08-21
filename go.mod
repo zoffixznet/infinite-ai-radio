@@ -1,4 +1,4 @@
-module bgm
+module iar
 
 go 1.26
 

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"bgm/internal/engine"
-	"bgm/internal/session"
+	"iar/internal/engine"
+	"iar/internal/session"
 )
 
 // Builder turns a session's steering context into generation specs.

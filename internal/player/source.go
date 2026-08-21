@@ -8,8 +8,8 @@ package player
 import (
 	"sync/atomic"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine"
+	"iar/internal/audio"
+	"iar/internal/engine"
 )
 
 // source produces interleaved stereo samples for the mixer.

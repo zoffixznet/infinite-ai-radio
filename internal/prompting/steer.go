@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"bgm/internal/session"
+	"iar/internal/session"
 )
 
 // Ack describes how a steering input was understood.

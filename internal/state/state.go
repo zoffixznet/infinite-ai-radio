@@ -1,5 +1,5 @@
-// Package state manages the small runtime state files shared between bgm
-// processes: the engine daemon's state file, advisory locks, the client
+// Package state manages the small runtime state files shared between the
+// player's processes: the engine daemon's state file, advisory locks, the client
 // heartbeat that keeps the daemon alive, and rolling phase-duration
 // measurements used for progress estimates.
 package state

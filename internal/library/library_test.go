@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"bgm/internal/engine"
-	"bgm/internal/session"
+	"iar/internal/engine"
+	"iar/internal/session"
 )
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

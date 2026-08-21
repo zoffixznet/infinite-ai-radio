@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"bgm/internal/engine/acestep"
-	"bgm/internal/state"
+	"iar/internal/engine/acestep"
+	"iar/internal/state"
 )
 
 // engineCommand groups the shared engine daemon controls.
@@ -20,7 +20,7 @@ func engineCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "engine",
 		Short: "Manage the shared music engine daemon",
-		Long: `The music engine runs as a shared background daemon so restarting bgm
+		Long: `The music engine runs as a shared background daemon so restarting it
 does not reload models. It shuts down on its own after being idle.`,
 	}
 	cmd.AddCommand(engineStatusCommand(), engineStopCommand(), engineDaemonCommand())
@@ -40,7 +40,7 @@ func engineStatusCommand() *cobra.Command {
 			defer a.close()
 			st, ok := a.stateD.ReadEngineState()
 			if !ok || !state.PIDAlive(st.PID) {
-				fmt.Println("engine daemon: not running (starts automatically with 'bgm')")
+				fmt.Println("engine daemon: not running (starts automatically with 'iar')")
 				return nil
 			}
 			fmt.Printf("engine daemon: running (pid %d, port %d, up %s)\n",
@@ -89,7 +89,7 @@ func engineStopCommand() *cobra.Command {
 				}
 				time.Sleep(500 * time.Millisecond)
 			}
-			return fmt.Errorf("daemon pid %d did not exit; check 'bgm doctor'", st.PID)
+			return fmt.Errorf("daemon pid %d did not exit; check 'iar doctor'", st.PID)
 		},
 	}
 }
@@ -127,7 +127,7 @@ func runEngineDaemon() error {
 	}
 	if !acestep.Installed(paths.EngineDir()) {
 		logger.Error("engine not installed", "event", "daemon_no_install")
-		return fmt.Errorf("music engine not installed; run 'bgm setup' first")
+		return fmt.Errorf("music engine not installed; run 'iar setup' first")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

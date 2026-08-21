@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"bgm/internal/engine"
-	"bgm/internal/session"
+	"iar/internal/engine"
+	"iar/internal/session"
 )
 
 // fakeOllama serves the endpoints the client uses. The probe chat always

@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"bgm/internal/state"
+	"iar/internal/state"
 )
 
 // DaemonConfig configures the shared engine daemon process.

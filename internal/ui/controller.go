@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"bgm/internal/player"
-	"bgm/internal/session"
+	"iar/internal/player"
+	"iar/internal/session"
 )
 
 // Controller interprets user input lines and drives the orchestrator.

@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"bgm/internal/export"
-	"bgm/internal/session"
-	"bgm/internal/state"
+	"iar/internal/export"
+	"iar/internal/session"
+	"iar/internal/state"
 )
 
 // exportCommand renders an MP3 headlessly (no playback).
@@ -31,8 +31,8 @@ func exportCommand() *cobra.Command {
 		Long: `Renders music matching a preset or saved session into an MP3 file
 without playing anything. The engine daemon is started (or reused) as
 needed.`,
-		Example: `  bgm export --minutes 20 --preset sleep
-  bgm export --minutes 30 --session gym-grind --out ~/Music/grind.mp3`,
+		Example: `  iar export --minutes 20 --preset sleep
+  iar export --minutes 30 --session gym-grind --out ~/Music/grind.mp3`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if minutes < 1 {
@@ -88,7 +88,7 @@ needed.`,
 	fl := cmd.Flags()
 	fl.IntVarP(&minutes, "minutes", "m", 0, "how many minutes to render (required)")
 	fl.StringVarP(&out, "out", "o", "", "output MP3 path (default: exports directory)")
-	fl.StringVar(&presetName, "preset", "", "render a built-in preset (see 'bgm presets')")
+	fl.StringVar(&presetName, "preset", "", "render a built-in preset (see 'iar presets')")
 	fl.StringVar(&sessionName, "session", "", "render a saved session")
 	fl.BoolVar(&noLLM, "no-llm", false, "disable Ollama-assisted prompt rewriting")
 	fl.BoolVarP(&verbose, "verbose", "v", false, "mirror logs to stderr")
@@ -109,7 +109,7 @@ func waitEngineReady(ctx context.Context, w engineWaiter, timings *state.Timings
 		fmt.Println("engine ready (reusing the running engine)")
 		return nil
 	}
-	fmt.Println("starting the music engine (reused across runs; stop with 'bgm engine stop')")
+	fmt.Println("starting the music engine (reused across runs; stop with 'iar engine stop')")
 	start := time.Now()
 	deadline := time.Now().Add(engineWaitBudget)
 	lastLine := time.Time{}
@@ -131,7 +131,7 @@ func waitEngineReady(ctx context.Context, w engineWaiter, timings *state.Timings
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("engine did not become ready; check 'bgm doctor'")
+	return fmt.Errorf("engine did not become ready; check 'iar doctor'")
 }
 
 // phaseKey maps a display phase to its timings key.

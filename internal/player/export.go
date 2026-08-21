@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"bgm/internal/engine"
-	"bgm/internal/export"
-	"bgm/internal/session"
+	"iar/internal/engine"
+	"iar/internal/export"
+	"iar/internal/session"
 )
 
 // Export renders minutes of the current session's sound to an MP3 without

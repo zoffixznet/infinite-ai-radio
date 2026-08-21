@@ -22,12 +22,12 @@ type Player interface {
 
 // EnvPlayerSpeed lets tests speed up the pacing of the null and file
 // backends (a float multiplier; 1 is realtime).
-const EnvPlayerSpeed = "BGM_PLAYER_SPEED"
+const EnvPlayerSpeed = "IAR_PLAYER_SPEED"
 
 // EnvPipeTarget selects an explicit output device/sink for the pipe backend
 // (passed to pw-play --target or pacat --device). Tests use it to route
 // audio into a null sink.
-const EnvPipeTarget = "BGM_PIPE_TARGET"
+const EnvPipeTarget = "IAR_PIPE_TARGET"
 
 // PlayerOptions configures NewPlayer.
 type PlayerOptions struct {
@@ -44,7 +44,7 @@ type PlayerOptions struct {
 // EnvTeePCM, when set to a path, makes every player wrap itself in a tee
 // that appends all PCM it plays to that file. Diagnostic: it captures
 // exactly what was sent to the audio backend.
-const EnvTeePCM = "BGM_TEE_PCM"
+const EnvTeePCM = "IAR_TEE_PCM"
 
 // NewPlayer builds a playback backend.
 //
@@ -115,7 +115,7 @@ func (t *teePlayer) Close() error {
 func (t *teePlayer) Name() string { return t.inner.Name() + "+tee" }
 
 // pacer sleeps writers so bytes flow at realtime speed (divided by the
-// BGM_PLAYER_SPEED multiplier).
+// IAR_PLAYER_SPEED multiplier).
 type pacer struct {
 	start   time.Time
 	written int64

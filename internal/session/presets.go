@@ -57,5 +57,5 @@ func LookupPreset(name string) (*Preset, error) {
 			return p, nil
 		}
 	}
-	return nil, fmt.Errorf("unknown preset %q (try: bgm sessions)", name)
+	return nil, fmt.Errorf("unknown preset %q (try: iar sessions)", name)
 }

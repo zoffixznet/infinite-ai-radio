@@ -1,6 +1,6 @@
-# bgm - local AI background music player
+# Infinite AI Radio - endless locally-generated music
 
-BINARY  := bgm
+BINARY  := iar
 GO      ?= go
 PREFIX  ?= $(HOME)/.local
 
@@ -11,17 +11,17 @@ APT_PKGS := ffmpeg git build-essential
 
 .PHONY: help
 help: ## Show this help
-	@echo "bgm - local AI background music player"
+	@echo "Infinite AI Radio - endless locally-generated music"
 	@echo
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
 
 .PHONY: build
-build: ## Build the bgm binary into the repo root
-	$(GO) build -o $(BINARY) ./cmd/bgm
+build: ## Build the iar binary into the repo root
+	$(GO) build -o $(BINARY) ./cmd/iar
 
 .PHONY: run
-run: build ## Build and run bgm (starts playback)
+run: build ## Build and run Infinite AI Radio (starts playback)
 	./$(BINARY)
 
 .PHONY: setup
@@ -71,6 +71,7 @@ lint: ## Run go vet and check gofmt
 install: build ## Install the binary into ~/.local/bin
 	install -d $(PREFIX)/bin
 	install -m 0755 $(BINARY) $(PREFIX)/bin/$(BINARY)
+	@rm -f $(PREFIX)/bin/bgm
 
 .PHONY: clean
 clean: ## Remove build outputs

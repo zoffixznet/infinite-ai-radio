@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"bgm/internal/player"
+	"iar/internal/player"
 )
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

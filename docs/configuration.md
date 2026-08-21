@@ -1,8 +1,8 @@
 # Configuration reference
 
-bgm works with no configuration at all. When you want to tune it, create a
-JSON file at the path shown by `bgm doctor` (usually
-`~/.config/bgm/config.json`). Only include the keys you want to change;
+Infinite AI Radio works with no configuration at all. When you want to tune it, create a
+JSON file at the path shown by `iar doctor` (usually
+`~/.config/iar/config.json`). Only include the keys you want to change;
 everything else keeps its default.
 
 ```json
@@ -102,9 +102,9 @@ from your phone" section for the full flow.
 
 - `port`: pins the engine API to a fixed localhost port. The default 0
   allocates a free port for each engine daemon (the port is recorded in
-  the state directory and shown by `bgm engine status`).
+  the state directory and shown by `iar engine status`).
 - `idle_minutes`: the shared engine daemon shuts down after this long
-  with no bgm process using it, freeing GPU memory. Restarting bgm
+  with nothing using it, freeing GPU memory. Restarting the player
   within the window reuses the warm engine instantly.
 - `lm_model_path`: pins the engine's internal planner language model
   (e.g. `"acestep-5Hz-lm-0.6B"` or `"acestep-5Hz-lm-1.7B"`). Empty lets
@@ -122,12 +122,12 @@ from your phone" section for the full flow.
   little more brightness.
 - `thinking`: when true, the engine's planner LM sketches the track
   before synthesis, which improves musical coherence at some speed cost.
-- `repo_url`, `tag`: which engine version `bgm setup` installs. Change
+- `repo_url`, `tag`: which engine version `iar setup` installs. Change
   only if you know you want a different release.
 
 ## ollama
 
-- `enabled`: when true and a daemon is reachable, bgm asks Ollama to
+- `enabled`: when true and a daemon is reachable, the player asks Ollama to
   rewrite the accumulated steering into a clean prompt and to write
   lyrics for vocal tracks. When false or unreachable, a deterministic
   built-in path is used instead; everything still works.
@@ -137,15 +137,15 @@ from your phone" section for the full flow.
 
 ## Environment variables
 
-- `BGM_DATA_DIR`: relocates all state (engine install, sessions, exports,
-  logs). Defaults to `$XDG_DATA_HOME/bgm` or `~/.local/share/bgm`.
-- `BGM_CONFIG_DIR`: relocates the config file. Defaults to
-  `$XDG_CONFIG_HOME/bgm` or `~/.config/bgm`.
-- `BGM_PIPE_TARGET`: routes the pipe player to a specific PipeWire/Pulse
+- `IAR_DATA_DIR`: relocates all state (engine install, sessions, exports,
+  logs). Defaults to `$XDG_DATA_HOME/iar` or `~/.local/share/iar`.
+- `IAR_CONFIG_DIR`: relocates the config file. Defaults to
+  `$XDG_CONFIG_HOME/iar` or `~/.config/iar`.
+- `IAR_PIPE_TARGET`: routes the pipe player to a specific PipeWire/Pulse
   sink (used by tests to play into a null sink).
-- `BGM_PLAYER_SPEED`: speed multiplier for the null and file backends
+- `IAR_PLAYER_SPEED`: speed multiplier for the null and file backends
   (testing only).
-- `BGM_TEE_PCM`: path of a file to append every PCM byte sent to the
+- `IAR_TEE_PCM`: path of a file to append every PCM byte sent to the
   audio backend (diagnostic; useful for verifying digital output).
 
 ## Data layout
@@ -158,6 +158,6 @@ Inside the data directory:
 - `library/` - banked tracks for instant starts (size-capped)
 - `snippets/` - tracks captured with the save command (default location)
 - `exports/` - MP3 exports
-- `logs/bgm.log` - structured JSON log of the player
+- `logs/iar.log` - structured JSON log of the player
 - `logs/engine-daemon.log` - the shared engine daemon's log
 - `state/` - engine daemon state, locks, and phase-duration records

@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"bgm/internal/audio"
+	"iar/internal/audio"
 )
 
 // InstrumentalLyrics is the lyric value that forces an instrumental track.

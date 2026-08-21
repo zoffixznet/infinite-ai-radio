@@ -11,8 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"bgm/internal/player"
-	"bgm/internal/session"
+	"iar/internal/player"
+	"iar/internal/session"
 )
 
 // RunTUI runs the full-screen terminal interface until the user quits or
@@ -280,7 +280,7 @@ func (m *tuiModel) renderChrome() string {
 	if st.State != "playing" && st.State != "noise" {
 		stateStyle = s.waiting
 	}
-	header := s.title.Render("bgm") + "  " + stateStyle.Render(strings.ToUpper(st.State))
+	header := s.title.Render("Infinite AI Radio") + "  " + stateStyle.Render(strings.ToUpper(st.State))
 	if st.Paused {
 		header += "  " + s.warn.Render("[paused]")
 	}
@@ -324,7 +324,7 @@ func (m *tuiModel) renderChrome() string {
 			line += fmt.Sprintf(" of ~%s", fmtDur(st.PhaseExpected))
 		}
 		if st.PhaseSlow {
-			line += " " + s.warn.Render("(longer than usual - see 'bgm doctor')")
+			line += " " + s.warn.Render("(longer than usual - see 'iar doctor')")
 		}
 		b.WriteString(line + "\n")
 	}

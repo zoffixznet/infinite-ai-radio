@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,10 +31,10 @@ func TestResolvePathsXDGDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.DataDir != filepath.Join("/tmp/xdg-data", "bgm") {
+	if p.DataDir != filepath.Join("/tmp/xdg-data", "iar") {
 		t.Fatalf("data dir = %s", p.DataDir)
 	}
-	if p.ConfigDir != filepath.Join("/tmp/xdg-config", "bgm") {
+	if p.ConfigDir != filepath.Join("/tmp/xdg-config", "iar") {
 		t.Fatalf("config dir = %s", p.ConfigDir)
 	}
 }
@@ -117,5 +118,79 @@ func TestBindListAcceptsStringAndList(t *testing.T) {
 	cfg, _ = Load(p)
 	if len(cfg.Remote.Bind) != 0 {
 		t.Fatalf("empty bind = %v", cfg.Remote.Bind)
+	}
+}
+
+func TestMigrationFromOldName(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(EnvDataDir, "")
+	t.Setenv(EnvConfigDir, "")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+
+	// A previous install: engine payload and a config file.
+	oldData := filepath.Join(root, "data", "bgm")
+	oldConfig := filepath.Join(root, "config", "bgm")
+	os.MkdirAll(filepath.Join(oldData, "engine", "checkpoints"), 0o755)
+	os.MkdirAll(filepath.Join(oldData, "logs"), 0o755)
+	os.MkdirAll(oldConfig, 0o755)
+	os.WriteFile(filepath.Join(oldData, "engine", "checkpoints", "weights.bin"), []byte("payload"), 0o644)
+	os.WriteFile(filepath.Join(oldData, "logs", "bgm.log"), []byte("old log"), 0o644)
+	os.WriteFile(filepath.Join(oldConfig, "config.json"), []byte(`{"volume":42}`), 0o644)
+
+	p, err := ResolvePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.DataDir != filepath.Join(root, "data", "iar") {
+		t.Fatalf("data dir = %s", p.DataDir)
+	}
+	// Everything moved, nothing copied or lost.
+	if _, err := os.Stat(filepath.Join(p.DataDir, "engine", "checkpoints", "weights.bin")); err != nil {
+		t.Fatal("engine payload did not survive migration")
+	}
+	if _, err := os.Stat(filepath.Join(p.DataDir, "logs", "iar.log")); err != nil {
+		t.Fatal("log file not renamed")
+	}
+	if _, err := os.Stat(oldData); err == nil {
+		t.Fatal("old data dir still present after migration")
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Volume != 42 {
+		t.Fatalf("config content lost: volume=%d", cfg.Volume)
+	}
+
+	// Idempotent: a second resolve changes nothing.
+	p2, err := ResolvePaths()
+	if err != nil || p2.DataDir != p.DataDir {
+		t.Fatalf("second resolve: %v %v", p2, err)
+	}
+}
+
+func TestMigrationDefersWhileOldInstallBusy(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(EnvDataDir, "")
+	t.Setenv(EnvConfigDir, "")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+
+	oldData := filepath.Join(root, "data", "bgm")
+	os.MkdirAll(filepath.Join(oldData, "state"), 0o755)
+	// A live engine daemon from the old install (our own pid is alive).
+	os.WriteFile(filepath.Join(oldData, "state", "engine.json"),
+		[]byte(fmt.Sprintf(`{"pid":%d,"port":1}`, os.Getpid())), 0o644)
+
+	p, err := ResolvePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.DataDir != oldData {
+		t.Fatalf("busy old install must keep old paths, got %s", p.DataDir)
+	}
+	if _, err := os.Stat(filepath.Join(root, "data", "iar")); err == nil {
+		t.Fatal("migration ran despite the live old daemon")
 	}
 }

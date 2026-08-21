@@ -9,14 +9,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"bgm/internal/config"
-	"bgm/internal/engine"
-	"bgm/internal/engine/acestep"
-	"bgm/internal/library"
-	"bgm/internal/logging"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
-	"bgm/internal/state"
+	"iar/internal/config"
+	"iar/internal/engine"
+	"iar/internal/engine/acestep"
+	"iar/internal/library"
+	"iar/internal/logging"
+	"iar/internal/prompting"
+	"iar/internal/session"
+	"iar/internal/state"
 )
 
 // app bundles everything the subcommands need.
@@ -80,11 +80,11 @@ func (a *app) buildEngine(ctx context.Context) (engine.Engine, *acestep.Remote, 
 		return nil, nil, ""
 	case "acestep":
 		if !acestep.Installed(a.paths.EngineDir()) {
-			return nil, nil, "music engine not installed; run 'bgm setup' (or 'make setup') first"
+			return nil, nil, "music engine not installed; run 'iar setup' (or 'make setup') first"
 		}
 		exe, err := os.Executable()
 		if err != nil {
-			return nil, nil, fmt.Sprintf("cannot locate the bgm executable: %v", err)
+			return nil, nil, fmt.Sprintf("cannot locate the iar executable: %v", err)
 		}
 		remote := acestep.NewRemote(a.stateD, exe, a.daemonLogFile(), a.log)
 		remote.Start(ctx)

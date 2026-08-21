@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine"
+	"iar/internal/audio"
+	"iar/internal/engine"
 )
 
 // Mock is an engine.Engine that synthesizes a sine tone instantly. It

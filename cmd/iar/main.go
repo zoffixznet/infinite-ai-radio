@@ -1,4 +1,4 @@
-// Command bgm plays a continuous stream of AI-generated background music
+// Command Infinite AI Radio plays a continuous stream of AI-generated background music
 // using models that run entirely on the local machine.
 package main
 
@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"bgm/internal/session"
+	"iar/internal/session"
 )
 
 // version is stamped at build time via -ldflags.
@@ -30,7 +30,7 @@ type playFlags struct {
 
 func main() {
 	if err := rootCommand().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "bgm:", err)
+		fmt.Fprintln(os.Stderr, "iar:", err)
 		os.Exit(1)
 	}
 }
@@ -38,20 +38,20 @@ func main() {
 func rootCommand() *cobra.Command {
 	var pf playFlags
 	root := &cobra.Command{
-		Use:   "bgm [prompt]",
+		Use:   "iar [prompt]",
 		Short: "Endless AI background music, generated locally",
-		Long: `bgm plays a continuous stream of AI-generated background music using
+		Long: `Infinite AI Radio plays a continuous stream of AI-generated background music using
 models running entirely on your machine. Run it with no arguments to
 start playing; type plain English while it plays to steer the stream.
 Start straight from an idea with a prompt:
 
-  bgm "dark techno"
-  bgm --prompt "energetic rock with vocals about winning"
+  iar "dark techno"
+  iar --prompt "energetic rock with vocals about winning"
 
 Inside the player, type 'help' to list the interactive commands
 (new <prompt>, save, name, mp3, skip, volume and more).
 
-Built-in presets (start with --preset, list with 'bgm presets'):
+Built-in presets (start with --preset, list with 'iar presets'):
 ` + presetLines(),
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
@@ -67,7 +67,7 @@ Built-in presets (start with --preset, list with 'bgm presets'):
 		},
 	}
 	fl := root.Flags()
-	fl.StringVar(&pf.preset, "preset", "", "start from a built-in preset (see 'bgm presets')")
+	fl.StringVar(&pf.preset, "preset", "", "start from a built-in preset (see 'iar presets')")
 	fl.StringVar(&pf.session, "session", "", "resume a saved session by name")
 	fl.StringVar(&pf.prompt, "prompt", "", "start a fresh session from a free-text prompt")
 	fl.StringVar(&pf.engine, "engine", "", "generation engine: acestep or noise")
@@ -93,10 +93,10 @@ Built-in presets (start with --preset, list with 'bgm presets'):
 func versionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the bgm version",
+		Short: "Print the Infinite AI Radio version",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("bgm", version)
+			fmt.Println("Infinite AI Radio", version)
 		},
 	}
 }

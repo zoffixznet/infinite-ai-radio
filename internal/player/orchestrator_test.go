@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine"
-	"bgm/internal/library"
+	"iar/internal/audio"
+	"iar/internal/engine"
+	"iar/internal/library"
 
-	"bgm/internal/config"
-	"bgm/internal/engine/enginetest"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
+	"iar/internal/config"
+	"iar/internal/engine/enginetest"
+	"iar/internal/prompting"
+	"iar/internal/session"
 )
 
 // capturePlayer records everything written to it, with light pacing so the
@@ -186,7 +186,7 @@ func TestNoEngineFallsBackToBedWithProminentError(t *testing.T) {
 	waitFor(t, 3*time.Second, "prominent error event", func() bool {
 		select {
 		case ev := <-o.Events():
-			if strings.Contains(ev.Text, "bgm setup") {
+			if strings.Contains(ev.Text, "iar setup") {
 				errEvent = ev.Text
 				return true
 			}
@@ -263,7 +263,7 @@ func TestSaveSnippetDuringPlayback(t *testing.T) {
 	eng := enginetest.NewMock()
 	o, _ := newTestOrchestrator(t, eng, session.New())
 	// A directory that does not exist yet: save must create it.
-	o.SnippetsDir = t.TempDir() + "/music/bgm-snippets"
+	o.SnippetsDir = t.TempDir() + "/music/radio-snippets"
 
 	// Nothing to save before a generated track plays.
 	if ack := o.SaveSnippet(""); !strings.Contains(ack, "nothing to save") {

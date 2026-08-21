@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"bgm/internal/session"
+	"iar/internal/session"
 )
 
 // sessionsCommand lists built-in presets and saved sessions.
@@ -21,7 +21,7 @@ func sessionsCommand() *cobra.Command {
 			}
 			defer a.close()
 
-			fmt.Println("presets (bgm --preset NAME):")
+			fmt.Println("presets (iar --preset NAME):")
 			for _, p := range session.Presets() {
 				fmt.Printf("  %-12s %s\n", p.Name, p.Description)
 			}
@@ -34,7 +34,7 @@ func sessionsCommand() *cobra.Command {
 				fmt.Println("no saved sessions yet (in the player, type: name <something>)")
 				return nil
 			}
-			fmt.Println("saved sessions (bgm --session NAME):")
+			fmt.Println("saved sessions (iar --session NAME):")
 			for _, s := range saved {
 				fmt.Printf("  %-24s %s\n", s.Name, s.Describe())
 			}
@@ -54,9 +54,9 @@ func presetsCommand() *cobra.Command {
 			for _, p := range session.Presets() {
 				fmt.Printf("  %-12s %s\n", p.Name, p.Description)
 			}
-			fmt.Println("\nstart one with: bgm --preset NAME")
+			fmt.Println("\nstart one with: iar --preset NAME")
 			fmt.Println("switch inside the player with: preset NAME")
-			fmt.Println(`or skip presets and start from a prompt: bgm "dark techno"`)
+			fmt.Println(`or skip presets and start from a prompt: iar "dark techno"`)
 		},
 	}
 }

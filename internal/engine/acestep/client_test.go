@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine"
+	"iar/internal/audio"
+	"iar/internal/engine"
 )
 
 // fakeServer mimics the ACE-Step API: release_task, query_result (pending

@@ -8,13 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/config"
-	"bgm/internal/engine"
-	"bgm/internal/library"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
-	"bgm/internal/state"
+	"iar/internal/audio"
+	"iar/internal/config"
+	"iar/internal/engine"
+	"iar/internal/library"
+	"iar/internal/prompting"
+	"iar/internal/session"
+	"iar/internal/state"
 )
 
 // Event is a transient user-facing message from the stream machinery.
@@ -299,7 +299,7 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 						"streak", failures, "device_fault", deviceFault)
 					failures = 0
 				} else if failures%5 == 0 || deviceFault {
-					o.emit("generation keeps failing and the engine cannot be restarted from here (see log and 'bgm doctor')")
+					o.emit("generation keeps failing and the engine cannot be restarted from here (see log and 'iar doctor')")
 				}
 			} else if failures == 1 {
 				o.emit("generation failed; retrying (details in the log)")

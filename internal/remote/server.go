@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"bgm/internal/player"
+	"iar/internal/player"
 )
 
 //go:embed assets/index.html
@@ -61,10 +61,10 @@ type Server struct {
 
 // csrfHeader must accompany every mutating request. Cross-site senders
 // cannot add it without a CORS preflight, which is never granted.
-const csrfHeader = "X-BGM-Remote"
+const csrfHeader = "X-IAR-Remote"
 
 // tokenCookie carries the shared secret after the first ?token= visit.
-const tokenCookie = "bgm_token"
+const tokenCookie = "iar_token"
 
 // ValidateBinds rejects insecure combinations before anything listens:
 // bind entries beyond loopback make the remote reachable by hosts

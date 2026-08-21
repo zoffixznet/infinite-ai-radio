@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
+	"iar/internal/audio"
+	"iar/internal/prompting"
+	"iar/internal/session"
 )
 
 // Steer applies one free-text steering input. The interpretation is
@@ -48,7 +48,7 @@ func (o *Orchestrator) steerContextNote(text string) string {
 	}
 	switch {
 	case o.eng == nil:
-		note += "; note: the music engine is unavailable (run 'bgm setup')"
+		note += "; note: the music engine is unavailable (run 'iar setup')"
 	case !o.eng.Ready():
 		phase, elapsed, expected, _ := o.PhaseInfo()
 		remaining := expected - elapsed
@@ -139,7 +139,7 @@ func (o *Orchestrator) NameSession(name string) string {
 		o.store.Delete(oldName)
 	}
 	o.log.Info("session named", "event", "session_named", "name", newName)
-	return "session saved as " + newName + " (resume with: bgm --session " + newName + ")"
+	return "session saved as " + newName + " (resume with: iar --session " + newName + ")"
 }
 
 // LoadPreset switches the stream to a built-in preset, seeding a fresh

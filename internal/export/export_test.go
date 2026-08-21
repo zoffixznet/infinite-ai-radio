@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"bgm/internal/engine/enginetest"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
+	"iar/internal/engine/enginetest"
+	"iar/internal/prompting"
+	"iar/internal/session"
 )
 
 func requireTools(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine/acestep"
-	"bgm/internal/session"
+	"iar/internal/audio"
+	"iar/internal/engine/acestep"
+	"iar/internal/session"
 )
 
 // setupCommand performs first-run setup: engine checkout, Python
@@ -39,7 +39,7 @@ Never uses sudo.`,
 			defer stop()
 
 			fmt.Println("Setting up the music engine in", a.paths.EngineDir())
-			fmt.Println("This is resumable: re-run 'bgm setup' if it gets interrupted.")
+			fmt.Println("This is resumable: re-run 'iar setup' if it gets interrupted.")
 			ins := acestep.NewInstaller(acestep.InstallConfig{
 				EngineDir:   a.paths.EngineDir(),
 				RepoURL:     a.cfg.ACEStep.RepoURL,
@@ -52,10 +52,10 @@ Never uses sudo.`,
 			if !noBank {
 				if err := bankPresetTracks(ctx, a); err != nil {
 					fmt.Println("note: pre-generating starter tracks failed:", err)
-					fmt.Println("bgm still works; it will bank tracks while you listen.")
+					fmt.Println("Infinite AI Radio still works; it will bank tracks while you listen.")
 				}
 			}
-			fmt.Println("Setup finished. Run 'bgm' to start playing.")
+			fmt.Println("Setup finished. Run 'iar' to start playing.")
 			return nil
 		},
 	}

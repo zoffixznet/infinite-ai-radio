@@ -7,13 +7,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"bgm/internal/audio"
-	"bgm/internal/mpris"
-	"bgm/internal/player"
-	"bgm/internal/remote"
-	"bgm/internal/session"
-	"bgm/internal/state"
-	"bgm/internal/ui"
+	"iar/internal/audio"
+	"iar/internal/mpris"
+	"iar/internal/player"
+	"iar/internal/remote"
+	"iar/internal/session"
+	"iar/internal/state"
+	"iar/internal/ui"
 )
 
 // runPlay starts the stream and the interactive interface.
@@ -35,7 +35,7 @@ func runPlay(pf playFlags) error {
 	playerLock, err := a.stateD.AcquireLock("player.lock", false)
 	if err != nil {
 		if err == state.ErrLocked {
-			return fmt.Errorf("another bgm player is already running; steer the music there, or stop it first")
+			return fmt.Errorf("another Infinite AI Radio player is already running; steer the music there, or stop it first")
 		}
 		return err
 	}
@@ -90,12 +90,12 @@ func runPlay(pf playFlags) error {
 			AllowedHosts: a.cfg.Remote.AllowedHosts,
 		}, orch, streamer, a.log)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "bgm: remote could not start:", err)
+			fmt.Fprintln(os.Stderr, "iar: remote could not start:", err)
 		} else if rs.TailnetIP != "" {
-			fmt.Fprintf(os.Stderr, "bgm: remote at http://%s:%d (phone) and http://127.0.0.1:%d\n",
+			fmt.Fprintf(os.Stderr, "iar: remote at http://%s:%d (phone) and http://127.0.0.1:%d\n",
 				rs.TailnetIP, a.cfg.Remote.Port, a.cfg.Remote.Port)
 		} else {
-			fmt.Fprintf(os.Stderr, "bgm: remote at http://127.0.0.1:%d (no Tailscale interface found; see 'bgm doctor')\n",
+			fmt.Fprintf(os.Stderr, "iar: remote at http://127.0.0.1:%d (no Tailscale interface found; see 'iar doctor')\n",
 				a.cfg.Remote.Port)
 		}
 	}
@@ -110,7 +110,7 @@ func runPlay(pf playFlags) error {
 
 	ctrl := &ui.Controller{O: orch, ExportsDir: a.paths.ExportsDir()}
 	if engineNote != "" {
-		fmt.Fprintln(os.Stderr, "bgm:", engineNote)
+		fmt.Fprintln(os.Stderr, "iar:", engineNote)
 	}
 	if pf.plain || !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		return ui.RunPlain(ctx, ctrl, os.Stdin, os.Stdout)

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"bgm/internal/player"
+	"iar/internal/player"
 )
 
 // RunPlain drives the stream with a plain line-based interface: events and
@@ -16,7 +16,7 @@ import (
 // interface used over pipes and in scripts, and works with nothing but
 // typed words and Enter.
 func RunPlain(ctx context.Context, c *Controller, r io.Reader, w io.Writer) error {
-	fmt.Fprintln(w, "bgm: type steering text or commands; 'help' lists them, 'presets' lists presets; 'quit' exits.")
+	fmt.Fprintln(w, "Infinite AI Radio: type steering text or commands; 'help' lists them, 'presets' lists presets; 'quit' exits.")
 
 	// Print stream events as they arrive.
 	go func() {
@@ -97,7 +97,7 @@ func printProgress(w io.Writer, st player.Status) {
 		line += fmt.Sprintf(" (usually ~%s)", st.PhaseExpected.Round(time.Second))
 	}
 	if st.PhaseSlow {
-		line += " - taking longer than usual, see 'bgm doctor'"
+		line += " - taking longer than usual, see 'iar doctor'"
 	}
 	fmt.Fprintln(w, line)
 }

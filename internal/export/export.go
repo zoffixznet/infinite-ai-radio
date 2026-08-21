@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
+	"iar/internal/audio"
+	"iar/internal/engine"
+	"iar/internal/prompting"
+	"iar/internal/session"
 )
 
 // MaxMinutes caps a single export.
@@ -94,7 +94,7 @@ func (r *Renderer) Render(ctx context.Context, sess *session.Session, minutes in
 	if err := EncodeMP3(ctx, samples, outPath, MP3Options{
 		Quality: r.MP3Quality,
 		Title:   sess.Describe(),
-		Artist:  "bgm",
+		Artist:  "Infinite AI Radio",
 	}); err != nil {
 		return err
 	}

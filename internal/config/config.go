@@ -102,7 +102,7 @@ type ACEStep struct {
 	// default) allocates a free port per engine daemon.
 	Port int `json:"port"`
 	// IdleMinutes shuts the shared engine daemon down after this long
-	// with no bgm process using it.
+	// with nothing using it.
 	IdleMinutes int `json:"idle_minutes"`
 	// LMModelPath names the 5Hz language-model checkpoint the engine uses
 	// for planning ("acestep-5Hz-lm-0.6B" or "acestep-5Hz-lm-1.7B").

@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine"
-	"bgm/internal/session"
+	"iar/internal/audio"
+	"iar/internal/engine"
+	"iar/internal/session"
 )
 
 // meta is the sidecar metadata stored with each banked track.

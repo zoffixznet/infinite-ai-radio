@@ -13,7 +13,7 @@ import (
 	"os/exec"
 	"time"
 
-	"bgm/internal/audio"
+	"iar/internal/audio"
 )
 
 // Client talks to a running ACE-Step API server.

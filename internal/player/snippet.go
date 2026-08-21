@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"bgm/internal/engine"
-	"bgm/internal/export"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
+	"iar/internal/engine"
+	"iar/internal/export"
+	"iar/internal/prompting"
+	"iar/internal/session"
 )
 
 // SaveSnippet captures the currently playing generated track (or the one
@@ -63,7 +63,7 @@ func (o *Orchestrator) SaveSnippet(which string) string {
 		err := export.EncodeMP3(ctx, track.Samples, path, export.MP3Options{
 			Quality: o.cfg.MP3Quality,
 			Title:   prompt,
-			Artist:  "bgm",
+			Artist:  "Infinite AI Radio",
 			Comment: snippetComment(track),
 		})
 		if err != nil {

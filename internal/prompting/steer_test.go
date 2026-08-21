@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"bgm/internal/session"
+	"iar/internal/session"
 )
 
 func TestSteerNoiseRouting(t *testing.T) {

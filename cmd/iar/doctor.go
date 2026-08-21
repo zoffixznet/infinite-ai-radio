@@ -13,10 +13,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"bgm/internal/engine/acestep"
-	"bgm/internal/prompting"
-	"bgm/internal/remote"
-	"bgm/internal/state"
+	"iar/internal/engine/acestep"
+	"iar/internal/prompting"
+	"iar/internal/remote"
+	"iar/internal/state"
 )
 
 // doctorCommand checks the environment and reports what works.
@@ -39,7 +39,7 @@ func runDoctor() error {
 	defer a.close()
 	ctx := context.Background()
 
-	fmt.Println("bgm doctor")
+	fmt.Println("Infinite AI Radio doctor")
 	fmt.Println("  data dir:   ", a.paths.DataDir)
 	fmt.Println("  config file:", a.paths.ConfigFile())
 	fmt.Println("  log files:  ", a.paths.LogFile(), "and", a.daemonLogFile())
@@ -61,7 +61,7 @@ func runDoctor() error {
 		check("libmp3lame", strings.Contains(string(out), "libmp3lame"), "MP3 encoder in ffmpeg")
 	}
 	check("ffprobe", which("ffprobe") != "", "audio file inspection")
-	check("git", which("git") != "", "required by 'bgm setup'")
+	check("git", which("git") != "", "required by 'iar setup'")
 	pwPlay := which("pw-play")
 	pacat := which("pacat")
 	check("audio output", pwPlay != "" || pacat != "", orElse(orElse(pwPlay, pacat), "pw-play or pacat needed for playback (PipeWire/PulseAudio)"))
@@ -85,7 +85,7 @@ func runDoctor() error {
 			}
 		}
 	}
-	check("uv", uvOK, "Python environment manager (installed by 'bgm setup')")
+	check("uv", uvOK, "Python environment manager (installed by 'iar setup')")
 	installed := acestep.Installed(a.paths.EngineDir())
 	check("engine install", installed, a.paths.EngineDir())
 
@@ -93,7 +93,7 @@ func runDoctor() error {
 	st, ok := a.stateD.ReadEngineState()
 	switch {
 	case !ok || !state.PIDAlive(st.PID):
-		check("engine daemon", true, "not running (starts automatically with 'bgm'; stop with 'bgm engine stop')")
+		check("engine daemon", true, "not running (starts automatically with 'iar'; stop with 'iar engine stop')")
 	default:
 		detail := fmt.Sprintf("running: pid %d, port %d, up %s, last client %s ago",
 			st.PID, st.Port, time.Since(st.Started).Round(time.Second), a.stateD.HeartbeatAge().Round(time.Second))
@@ -173,7 +173,7 @@ func runDoctor() error {
 	ocancel()
 
 	if !installed {
-		fmt.Println("\nnext step: run 'bgm setup' (or 'make setup') to install the music engine")
+		fmt.Println("\nnext step: run 'iar setup' (or 'make setup') to install the music engine")
 	}
 	return nil
 }

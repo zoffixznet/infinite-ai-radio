@@ -1,11 +1,11 @@
-# bgm
+# Infinite AI Radio
 
-Endless AI-generated background music in your terminal, running entirely on
-your own machine. Start it and music plays; type plain English while it
+Infinite AI Radio plays endless AI-generated music in your terminal,
+running entirely on your own machine. Start it and music plays; type plain English while it
 plays ("calmer", "add vocals about winning", "switch to piano") and the
 stream follows. No accounts, no API keys, no cloud.
 
-bgm is a single Go binary that manages everything else: it installs the
+It is a single Go binary (`iar`) that manages everything else: it installs the
 music model, supervises it, buffers generated tracks ahead of playback,
 joins them with smooth crossfades, and keeps audio flowing even when the
 generator hiccups. It is built for background listening: focus and study
@@ -44,7 +44,7 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
   Python dependencies. `make deps` checks these and prints the exact
   install command for anything missing.
 - Go 1.26+ to build.
-- Optional: a local [Ollama](https://ollama.com) daemon. When present, bgm
+- Optional: a local [Ollama](https://ollama.com) daemon. When present, the player
   uses it to polish prompts and write lyrics; without it, a built-in
   deterministic path is used and everything still works.
 
@@ -52,7 +52,7 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
 
 ```sh
 make deps    # check system tools; prints sudo apt-get line if anything is missing
-make build   # build the ./bgm binary
+make build   # build the ./iar binary
 make setup   # one-time: install the music engine and download models (~18 GB)
 ```
 
@@ -63,13 +63,13 @@ user directories. `make install` copies the binary to `~/.local/bin`.
 ## Running
 
 ```sh
-./bgm
+./iar
 ```
 
 That is all. Setup pre-generates a small library of starter tracks, so a
 launch begins playing one within a few seconds and crossfades to freshly
 generated music as soon as it is ready (each generation is independent,
-so playing a banked track never changes what gets generated). While anything loads, bgm shows
+so playing a banked track never changes what gets generated). While anything loads, Infinite AI Radio shows
 live progress: which phase it is in, how long it has been running, and
 how long it usually takes.
 
@@ -77,30 +77,30 @@ Behind the scenes the engine runs as a shared background process. Three
 numbers matter: launch with banked tracks, audio in seconds; fresh
 generation ready in under a minute while the engine is warm, or a couple
 of minutes after a cold engine start; and the idle engine shuts itself
-down 15 minutes after the last bgm process exits (that number is a
+down 15 minutes after the last Infinite AI Radio process exits (that number is a
 memory-saver, not a boot time).
 
 Useful variants:
 
 ```sh
-./bgm "dark techno"           # start straight from a prompt
-./bgm --preset lofi-study     # start from a built-in preset
-./bgm --session gym-grind     # resume a saved session
-./bgm --engine noise          # noise only, no GPU needed
-./bgm --plain                 # line-based interface (also used automatically in pipes)
-./bgm presets                 # list the built-in presets
-./bgm doctor                  # check your environment
-./bgm engine status           # is the shared engine running and ready?
-./bgm engine stop             # stop the engine now and free GPU memory
+./iar "dark techno"           # start straight from a prompt
+./iar --preset lofi-study     # start from a built-in preset
+./iar --session gym-grind     # resume a saved session
+./iar --engine noise          # noise only, no GPU needed
+./iar --plain                 # line-based interface (also used automatically in pipes)
+./iar presets                 # list the built-in presets
+./iar doctor                  # check your environment
+./iar engine status           # is the shared engine running and ready?
+./iar engine stop             # stop the engine now and free GPU memory
 ```
 
 Quit with `quit` (or Ctrl+C). Music generation runs a few times faster than
 realtime on a modern GPU, so the stream stays ahead of playback.
 
-The engine runs as a shared background process: quitting bgm leaves it
+The engine runs as a shared background process: quitting Infinite AI Radio leaves it
 warm so the next launch starts making music almost immediately, and it
-shuts itself down after 15 minutes without a bgm process using it
-(tunable via `idle_minutes`). Only one interactive bgm player runs at a
+shuts itself down after 15 minutes without a Infinite AI Radio process using it
+(tunable via `idle_minutes`). Only one interactive Infinite AI Radio player runs at a
 time; a second one tells you where the first is.
 
 ## Starting from a prompt
@@ -108,8 +108,8 @@ time; a second one tells you where the first is.
 You do not need a preset; describe what you want:
 
 ```sh
-./bgm "dark techno"
-./bgm --prompt "energetic rock with vocals about winning"
+./iar "dark techno"
+./iar --prompt "energetic rock with vocals about winning"
 ```
 
 Inside the player, `new <prompt>` drops the current steering context and
@@ -174,8 +174,8 @@ Name the current session to make it easy to find again:
 name gym-grind
 ```
 
-Later, get the same vibe back with `./bgm --session gym-grind` or `load
-gym-grind` inside the app. `./bgm sessions` lists everything. Session files
+Later, get the same vibe back with `./iar --session gym-grind` or `load
+gym-grind` inside the app. `./iar sessions` lists everything. Session files
 are plain JSON in your data directory.
 
 ## Presets
@@ -192,7 +192,7 @@ sessions: starting from one seeds a fresh session you can steer and name.
 | `grind` | energetic electronic rock with motivational vocals |
 | `pink-noise` | steady pink noise, no music |
 
-Select at launch (`./bgm --preset sleep`) or inside the app
+Select at launch (`./iar --preset sleep`) or inside the app
 (`preset sleep`).
 
 ## MP3 export
@@ -210,8 +210,8 @@ generates while the playback buffer is full. There is also a headless
 subcommand:
 
 ```sh
-./bgm export --minutes 20 --preset sleep
-./bgm export --minutes 30 --session gym-grind --out ~/Music/grind.mp3
+./iar export --minutes 20 --preset sleep
+./iar export --minutes 30 --session gym-grind --out ~/Music/grind.mp3
 ```
 
 Exports are capped at 180 minutes per run.
@@ -232,12 +232,12 @@ folder is configurable via `snippets_dir`.
 
 ## Listening from your phone
 
-bgm has a built-in phone remote: a single page with the live stream, the
+Infinite AI Radio has a built-in phone remote: a single page with the live stream, the
 now-playing state, a steering box, a start-fresh-with-prompt action, and
 a save button. It is off by default; start with:
 
 ```sh
-./bgm --remote
+./iar --remote
 ```
 
 or set `remote.enabled` in the config. For safety the remote binds only
@@ -246,7 +246,7 @@ never listens on your LAN or the internet unless you explicitly override
 the bind address in the config (do not do that unless you fully trust
 that network, and never expose the port to the public internet).
 
-<img src="assets/remote-phone.png" alt="the bgm phone remote page" width="300">
+<img src="assets/remote-phone.png" alt="the Infinite AI Radio phone remote page" width="300">
 
 The intended setup is a private [Tailscale](https://tailscale.com)
 network between your computer and phone:
@@ -256,12 +256,12 @@ network between your computer and phone:
    `sudo tailscale up` needs sudo) and sign in.
 2. Install the Tailscale app on the phone and sign in to the same
    account.
-3. Start `./bgm --remote`. It prints the URL to open; `bgm doctor` also
+3. Start `./iar --remote`. It prints the URL to open; `iar doctor` also
    shows it under the remote section.
 4. Open that URL in the phone's browser and tap play.
 
 To also reach the remote on your home LAN (say your laptop is
-192.168.1.20), add that address to `remote.bind` and set a token; bgm
+192.168.1.20), add that address to `remote.bind` and set a token; the player
 keeps listening on localhost and the tailnet as well, and addresses you
 bind are automatically accepted in URLs:
 
@@ -288,17 +288,17 @@ token.
 
 ## Desktop integration
 
-bgm shows up as a regular media player (MPRIS) on the desktop bus, so
+Infinite AI Radio shows up as a regular media player (MPRIS) on the desktop bus, so
 media keys, KDE's media controls, KDE Connect and `playerctl` all work:
 
 ```sh
-playerctl --player bgm play-pause
-playerctl --player bgm next
-playerctl --player bgm volume 0.5
-playerctl --player bgm metadata xesam:title
+playerctl --player iar play-pause
+playerctl --player iar next
+playerctl --player iar volume 0.5
+playerctl --player iar metadata xesam:title
 ```
 
-PipeWire/PulseAudio per-stream volume also works independently of bgm
+PipeWire/PulseAudio per-stream volume also works independently of the player
 (the playback stream belongs to `pw-play`):
 
 ```sh
@@ -340,17 +340,17 @@ Honestly, by style:
   be raised to 20 for a little more brightness, but no setting turns
   the model into a mastering studio.
 
-If you run [Ollama](https://ollama.com), bgm uses it in the background to
+If you run [Ollama](https://ollama.com), the player uses it in the background to
 polish prompts and write themed lyrics; it never delays the music, and
-bgm quietly stops asking if the model is slow or failing.
+it quietly stops asking if the model is slow or failing.
 
 Track-to-track transitions are equal-power crossfades (about 3 seconds by
 default), which suits continuous background listening.
 
 ## Configuration
 
-Optional. bgm reads a JSON config file (path shown by `bgm doctor`,
-usually `~/.config/bgm/config.json`) with these defaults:
+Optional. The player reads a JSON config file (path shown by `iar doctor`,
+usually `~/.config/iar/config.json`) with these defaults:
 
 ```json
 {
@@ -384,14 +384,14 @@ usually `~/.config/bgm/config.json`) with these defaults:
 ```
 
 See [docs/configuration.md](docs/configuration.md) for what each knob does.
-Data lives under XDG paths (`~/.local/share/bgm` by default); the
-`BGM_DATA_DIR` and `BGM_CONFIG_DIR` environment variables relocate
+Data lives under XDG paths (`~/.local/share/iar` by default); the
+`IAR_DATA_DIR` and `IAR_CONFIG_DIR` environment variables relocate
 everything, which is also how the test suite keeps clear of your real
 state.
 
 ## Models and licensing
 
-bgm's own code is MIT licensed. Model weights are never bundled with bgm;
+The code is MIT licensed. Model weights are never bundled with the player;
 they are downloaded on demand from their publishers, and the default model
 requires no account, token, or license click-through.
 
@@ -408,7 +408,7 @@ See [docs/models.md](docs/models.md) for more detail.
 
 ## Troubleshooting
 
-`bgm doctor` checks your environment: system tools, GPU, engine install,
+`iar doctor` checks your environment: system tools, GPU, engine install,
 and whether the engine API is responding. The structured log (path printed
 by doctor) has the full story including the engine's own output.
 
@@ -416,24 +416,24 @@ Common cases:
 
 - **"music engine not installed"**: run `make setup`.
 - **No sound**: confirm `pw-play` or `pacat` exists and plays something;
-  try `./bgm --player pipe`.
+  try `./iar --player pipe`.
 - **First track takes long**: the initial model load takes a few minutes;
   the progress display shows which phase is running and how long it
-  usually takes. While the engine stays warm (see `bgm engine status`),
+  usually takes. While the engine stays warm (see `iar engine status`),
   later launches skip the load entirely.
 - **Generation failures**: the stream degrades gracefully (buffer, then
   looping the last track, then a noise bed). The engine restarts itself
   after repeated failures, and instantly on known-fatal faults, even
   when its health endpoint still claims everything is fine; expect at
   most a couple of minutes of looped music while it reloads. The
-  interface and `bgm doctor` show the current failure streak and the
+  interface and `iar doctor` show the current failure streak and the
   last reason.
 - **Buzz or static from the speakers while a track generates**: heavy
   GPU load can induce electrical interference in analog audio chains
   (laptop headphone out, unbalanced cables into a mixer) that sounds
   like cell-phone buzz and follows the GPU's duty cycle, not the audio
   data. Check the underrun counter in the interface header and in
-  `bgm doctor`: if it stays at zero while you hear the noise, the audio
+  `iar doctor`: if it stays at zero while you hear the noise, the audio
   stream itself is clean and the interference is happening after the
   digital output. Mitigations that work: cap the GPU's power draw
   (`sudo nvidia-smi -pl <watts>`), use shielded or shorter audio

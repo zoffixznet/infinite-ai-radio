@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"bgm/internal/config"
-	"bgm/internal/engine/enginetest"
-	"bgm/internal/player"
-	"bgm/internal/prompting"
-	"bgm/internal/session"
+	"iar/internal/config"
+	"iar/internal/engine/enginetest"
+	"iar/internal/player"
+	"iar/internal/prompting"
+	"iar/internal/session"
 )
 
 // discardPlayer swallows audio with light pacing.

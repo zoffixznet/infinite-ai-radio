@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"bgm/internal/state"
+	"iar/internal/state"
 )
 
 // Remote is the client-side handle to the shared engine daemon. On start
@@ -20,7 +20,7 @@ import (
 type Remote struct {
 	dir       state.Dir
 	log       *slog.Logger
-	exe       string // bgm executable to spawn the daemon with
+	exe       string // player executable to spawn the daemon with
 	daemonLog string // daemon log file, for Tail
 
 	mu          sync.Mutex
@@ -33,7 +33,7 @@ type Remote struct {
 	nextForced  time.Time
 }
 
-// NewRemote returns an unstarted remote handle. exe is the bgm binary
+// NewRemote returns an unstarted remote handle. exe is the player binary
 // path; daemonLog is where the daemon writes its output.
 func NewRemote(dir state.Dir, exe, daemonLog string, log *slog.Logger) *Remote {
 	return &Remote{dir: dir, log: log, exe: exe, daemonLog: daemonLog, phase: "starting engine"}
@@ -132,7 +132,7 @@ func (r *Remote) ensureDaemon() {
 	r.spawnDaemon()
 }
 
-// spawnDaemon launches `bgm engine daemon` detached from this process.
+// spawnDaemon launches `iar engine daemon` detached from this process.
 func (r *Remote) spawnDaemon() {
 	r.mu.Lock()
 	if time.Since(r.lastSpawn) < 10*time.Second {

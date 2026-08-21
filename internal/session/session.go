@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"bgm/internal/audio"
+	"iar/internal/audio"
 )
 
 // Mode says what kind of audio the session produces.

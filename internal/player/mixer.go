@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"bgm/internal/audio"
-	"bgm/internal/engine"
-	"bgm/internal/session"
+	"iar/internal/audio"
+	"iar/internal/engine"
+	"iar/internal/session"
 )
 
 // Noise amplitudes: the fallback bed sits lower than deliberate noise mode.
@@ -82,7 +82,7 @@ func (o *Orchestrator) startupSource() source {
 		return newNoiseSource(color, noiseAmp, string(color)+" noise")
 	}
 	if o.eng == nil {
-		o.emit("MUSIC ENGINE UNAVAILABLE: run 'bgm setup' to install it (details: 'bgm doctor'). Playing the session's noise bed instead.")
+		o.emit("MUSIC ENGINE UNAVAILABLE: run 'iar setup' to install it (details: 'iar doctor'). Playing the session's noise bed instead.")
 		color := audio.ParseNoiseColor(o.sess.NoiseBed)
 		return newNoiseSource(color, bedAmp, string(color)+" noise bed")
 	}
@@ -188,7 +188,7 @@ func (o *Orchestrator) chooseNext(cur source) source {
 		return silenceSource{}
 	}
 	o.log.Warn("engine unavailable with nothing to play, noise bed fallback", "event", "bed_fallback")
-	o.emit("ENGINE UNAVAILABLE: no music can be generated (see 'bgm doctor' and the log). Playing the noise bed instead.")
+	o.emit("ENGINE UNAVAILABLE: no music can be generated (see 'iar doctor' and the log). Playing the noise bed instead.")
 	color := audio.ParseNoiseColor(o.sess.NoiseBed)
 	return newNoiseSource(color, bedAmp, string(color)+" noise bed")
 }

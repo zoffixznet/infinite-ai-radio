@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"bgm/internal/engine"
+	"iar/internal/engine"
 )
 
 // Options tunes generation requests.
