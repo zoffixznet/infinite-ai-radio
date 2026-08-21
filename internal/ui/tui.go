@@ -24,7 +24,7 @@ func RunTUI(ctx context.Context, c *Controller) error {
 	// Focus here: Init works on a copy of the model, so focusing there
 	// would be lost.
 	input.Focus()
-	m := tuiModel{c: c, input: input, styles: newStyles()}
+	m := tuiModel{c: c, input: input, styles: newStyles(), status: c.O.Status()}
 	m.push("built-in presets (switch with 'preset NAME'):")
 	for _, p := range session.Presets() {
 		m.push(fmt.Sprintf("  %-12s %s", p.Name, p.Description))
