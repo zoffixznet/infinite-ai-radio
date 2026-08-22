@@ -38,6 +38,15 @@
     </div>
   </section>
 
+  <section class="card" id="sessioncard" aria-label="Sessions">
+    <h2>Sessions</h2>
+    <div class="linkbox" id="sessionsave" data-perm="save" hidden>
+      <input id="sessname" type="text" placeholder="name this session: gym, focus&hellip;" maxlength="60" autocomplete="off">
+      <button class="action primary" id="sesssave" type="button">Save as</button>
+    </div>
+    <div id="sessions"><span class="empty">loading&hellip;</span></div>
+  </section>
+
   <section class="card" id="savecard" aria-label="Save" data-perm="save" hidden>
     <h2>Keep this track</h2>
     <input id="tag" type="text" placeholder="tag (optional): gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
@@ -100,7 +109,7 @@
   fetch("/me").then(function (r) {
     if (r.status === 401) { loggedOut(); return null; }
     return r.json();
-  }).then(function (d) { if (d) { me = d; applyPerms(); } }).catch(function () {});
+  }).then(function (d) { if (d) { me = d; applyPerms(); loadSessions(); } }).catch(function () {});
 
   // ---- mode switch -------------------------------------------------
   var mode = store.get("iar.mode", "live");
@@ -230,6 +239,95 @@
       if (mode === "saved") loadChunks();
     });
   });
+
+  // ---- sessions ---------------------------------------------------
+  $("sesssave").addEventListener("click", function () {
+    var n = $("sessname").value.trim();
+    if (!n) { ack("type a name for this session first"); return; }
+    post("/sessions/save", "name=" + encodeURIComponent(n), loadSessions);
+    $("sessname").value = "";
+  });
+
+  function sessionRow(item, group) {
+    var row = document.createElement("div");
+    row.className = "chunk sess" + (item.current ? " playing" : "");
+    var title = document.createElement("div");
+    title.className = "ctitle";
+    title.textContent = item.name + (item.current ? "  (playing)" : "");
+    var meta = document.createElement("div");
+    meta.className = "cmeta";
+    meta.textContent = item.summary + (item.played ? " · " + item.played : "");
+    row.appendChild(title);
+    row.appendChild(meta);
+    var canLoad = me && me.new_prompt && !item.current;
+    var canDelete = me && me.admin && !item.current;
+    if (canLoad || canDelete) {
+      var buttons = document.createElement("div");
+      buttons.className = "row";
+      if (canLoad) {
+        var load = document.createElement("button");
+        load.className = "action";
+        load.textContent = group === "presets" ? "Start preset" : "Load";
+        load.addEventListener("click", function () {
+          post("/sessions/load", "name=" + encodeURIComponent(item.name), loadSessions);
+        });
+        buttons.appendChild(load);
+      }
+      if (canDelete) {
+        var del = document.createElement("button");
+        del.className = "action danger";
+        del.textContent = "Delete";
+        del.addEventListener("click", function () {
+          var what = group === "presets" ? "Hide preset " : "Delete session ";
+          if (!window.confirm(what + item.name + "?")) return;
+          post("/sessions/delete", "name=" + encodeURIComponent(item.name), loadSessions);
+        });
+        buttons.appendChild(del);
+      }
+      row.appendChild(buttons);
+    }
+    return row;
+  }
+
+  function sessionGroup(label, items, group, collapsed) {
+    var box;
+    if (collapsed) {
+      box = document.createElement("details");
+      var sum = document.createElement("summary");
+      sum.className = "grouplabel";
+      sum.textContent = label + " (" + items.length + ")";
+      box.appendChild(sum);
+    } else {
+      box = document.createElement("div");
+      var h = document.createElement("div");
+      h.className = "grouplabel";
+      h.textContent = label;
+      box.appendChild(h);
+    }
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = group === "named" ? "none yet - save this session under a name" : "none";
+      box.appendChild(empty);
+    }
+    items.forEach(function (item) { box.appendChild(sessionRow(item, group)); });
+    return box;
+  }
+
+  function loadSessions() {
+    fetch("/api/sessions").then(function (r) {
+      if (r.status === 401) { loggedOut(); return null; }
+      return r.json();
+    }).then(function (d) {
+      if (!d) return;
+      var box = $("sessions");
+      box.innerHTML = "";
+      box.appendChild(sessionGroup("Your sessions", d.named, "named", false));
+      box.appendChild(sessionGroup("Presets", d.presets, "presets", false));
+      box.appendChild(sessionGroup("Auto-saved sessions", d.auto, "auto", true));
+    }).catch(function () {});
+  }
+  setInterval(loadSessions, 30000);
 
   function poll() {
     fetch("/state").then(function (r) {

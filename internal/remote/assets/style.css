@@ -172,3 +172,11 @@ audio { width: 100%; margin-top: 10px; }
 .chunk button.action { padding: 10px 8px; font-size: 14px; margin-top: 0; }
 .chunk button.looping { border-color: var(--warn); color: var(--warn); }
 .empty { color: var(--dim); }
+.grouplabel {
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px;
+  color: var(--dim); margin: 12px 0 4px; cursor: default;
+}
+details > summary.grouplabel { cursor: pointer; list-style: none; }
+details > summary.grouplabel::before { content: "\25B8\FE0E "; }
+details[open] > summary.grouplabel::before { content: "\25BE\FE0E "; }
+.sess.playing .ctitle { color: var(--accent); }

@@ -144,6 +144,35 @@ func (w *webDriver) deleteCookies() {
 	wdCall(w.t, "DELETE", w.base+"/cookie", nil)
 }
 
+// findXPath locates an element by XPath.
+func (w *webDriver) findXPath(xpath string) string {
+	v := wdCall(w.t, "POST", w.base+"/element", map[string]string{"using": "xpath", "value": xpath})
+	var m map[string]string
+	json.Unmarshal(v, &m)
+	for _, id := range m {
+		return id
+	}
+	w.t.Fatalf("xpath %q not found", xpath)
+	return ""
+}
+
+// alertText reads the open confirmation dialog's text.
+func (w *webDriver) alertText() string {
+	var s string
+	json.Unmarshal(wdCall(w.t, "GET", w.base+"/alert/text", nil), &s)
+	return s
+}
+
+// acceptAlert presses OK on the open dialog.
+func (w *webDriver) acceptAlert() {
+	wdCall(w.t, "POST", w.base+"/alert/accept", nil)
+}
+
+// sessionButton is the XPath of an action button inside a session row.
+func sessionButton(name, label string) string {
+	return fmt.Sprintf(`//div[@id='sessions']//div[contains(@class,'sess')][.//div[@class='ctitle'][starts-with(normalize-space(),'%s')]]//button[normalize-space()='%s']`, name, label)
+}
+
 func (w *webDriver) screenshot(path string) {
 	if path == "" {
 		return
@@ -472,6 +501,50 @@ func TestRealBrowser(t *testing.T) {
 	}
 	w.click("#mode-live")
 
+	// --- sessions: save under a name, start a preset, delete one ---
+	w.typeInto("#sessname", "Road Trip")
+	w.click("#sesssave")
+	var ackText string
+	waitFor(t, 10*time.Second, "session save ack", func() bool {
+		w.exec(`return document.getElementById('ack').textContent;`, &ackText)
+		return strings.Contains(ackText, "session saved as road-trip")
+	})
+	waitFor(t, 10*time.Second, "road-trip listed as playing", func() bool {
+		var n int
+		w.exec(`return document.querySelectorAll('#sessions .sess.playing').length;`, &n)
+		var title string
+		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &title)
+		return n == 1 && strings.HasPrefix(title, "road-trip")
+	})
+	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("pink-noise", "Start preset"))+"/click", nil)
+	waitFor(t, 10*time.Second, "preset start ack", func() bool {
+		w.exec(`return document.getElementById('ack').textContent;`, &ackText)
+		return strings.Contains(ackText, "preset pink-noise")
+	})
+	waitFor(t, 10*time.Second, "road-trip no longer playing", func() bool {
+		var title string
+		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &title)
+		return strings.HasPrefix(title, "pink-noise-")
+	})
+	// Delete goes through a confirmation dialog.
+	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("road-trip", "Delete"))+"/click", nil)
+	if text := w.alertText(); !strings.Contains(text, "Delete session road-trip?") {
+		t.Fatalf("confirmation dialog text = %q", text)
+	}
+	w.acceptAlert()
+	waitFor(t, 10*time.Second, "delete ack", func() bool {
+		w.exec(`return document.getElementById('ack').textContent;`, &ackText)
+		return strings.Contains(ackText, "session road-trip deleted")
+	})
+	waitFor(t, 10*time.Second, "road-trip row gone", func() bool {
+		var n int
+		w.exec(`var rows=document.querySelectorAll('#sessions .sess .ctitle'); var n=0; rows.forEach(function(r){ if (r.textContent.indexOf('road-trip')===0) n++; }); return n;`, &n)
+		return n == 0
+	})
+	if _, err := os.Stat(filepath.Join(sb.dir, "data", "sessions", "road-trip.json")); err == nil {
+		t.Fatal("deleted session file still on disk")
+	}
+
 	// --- users page: invite a listener with no other permission ---
 	w.navigate(sb.base + "/users")
 	w.typeInto("form[action='/users/create'] input[name=email]", "listener@example.com")
@@ -511,8 +584,8 @@ func TestRealBrowser(t *testing.T) {
 	// Denied actions are hidden...
 	waitFor(t, 10*time.Second, "permission hiding", func() bool {
 		var hidden []bool
-		w.exec(`return [document.getElementById('savecard').hidden, document.getElementById('steercard').hidden, document.querySelector('a[href="/users"]') === null];`, &hidden)
-		return len(hidden) == 3 && hidden[0] && hidden[1] && hidden[2]
+		w.exec(`return [document.getElementById('savecard').hidden, document.getElementById('steercard').hidden, document.querySelector('a[href="/users"]') === null, document.getElementById('sessionsave').hidden, document.querySelectorAll('#sessions button').length === 0 && document.querySelectorAll('#sessions .sess').length > 0];`, &hidden)
+		return len(hidden) == 5 && hidden[0] && hidden[1] && hidden[2] && hidden[3] && hidden[4]
 	})
 	// ...and rejected server-side even when forced.
 	var status int

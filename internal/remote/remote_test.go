@@ -25,6 +25,7 @@ import (
 
 	"iar/internal/accounts"
 	"iar/internal/player"
+	"iar/internal/session"
 )
 
 func init() { accounts.Cost = bcrypt.MinCost }
@@ -254,11 +255,14 @@ func TestStreamerEncodesRealMP3(t *testing.T) {
 
 // fakeCtl records control calls.
 type fakeCtl struct {
-	mu     sync.Mutex
-	steers []string
-	news   []string
-	saves  [][2]string
-	notes  []string
+	mu      sync.Mutex
+	steers  []string
+	news    []string
+	saves   [][2]string
+	notes   []string
+	named   []string
+	loaded  []string
+	deleted []string
 }
 
 func (f *fakeCtl) Steer(text string) string {
@@ -284,6 +288,44 @@ func (f *fakeCtl) SaveSnippet(which, tag string) string {
 
 func (f *fakeCtl) Status() player.Status {
 	return player.Status{State: "playing", Source: "test prompt", Session: "s1", Volume: 70}
+}
+
+func (f *fakeCtl) NameSession(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.named = append(f.named, name)
+	return "session saved as " + name
+}
+
+func (f *fakeCtl) LoadByName(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loaded = append(f.loaded, name)
+	return "loaded " + name
+}
+
+func (f *fakeCtl) DeleteSession(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, name)
+	return "session " + name + " deleted"
+}
+
+func (f *fakeCtl) CurrentName() string { return "s1" }
+
+func (f *fakeCtl) Listing() session.Listing {
+	now := time.Now()
+	mkSess := func(name string, named bool, ago time.Duration) *session.Session {
+		s := session.New()
+		s.Name, s.Named = name, named
+		s.Created, s.Updated, s.LastPlayed = now.Add(-ago-time.Hour), now.Add(-ago), now.Add(-ago)
+		return s
+	}
+	return session.Group([]*session.Session{
+		mkSess("gym-grind", true, 3*time.Hour),
+		mkSess("s1", true, 0),
+		mkSess("session-20260821-100000", false, 26*time.Hour),
+	}, session.Presets())
 }
 
 func (f *fakeCtl) Announce(text string) {
@@ -652,16 +694,20 @@ func TestPermissionMatrix(t *testing.T) {
 		form         url.Values
 	}
 	calls := map[string]call{
-		"/":           {"GET", "/", nil},
-		"/me":         {"GET", "/me", nil},
-		"/state":      {"GET", "/state", nil},
-		"/api/chunks": {"GET", "/api/chunks", nil},
-		"/account":    {"GET", "/account", nil},
-		"/steer":      {"POST", "/steer", url.Values{"text": {"calmer"}}},
-		"/new":        {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
-		"/save":       {"POST", "/save", url.Values{"tag": {"gym"}}},
-		"/users":      {"GET", "/users", nil},
-		"/users/link": {"POST", "/users/link", url.Values{"email": {"target@example.com"}}},
+		"/":                {"GET", "/", nil},
+		"/me":              {"GET", "/me", nil},
+		"/state":           {"GET", "/state", nil},
+		"/api/chunks":      {"GET", "/api/chunks", nil},
+		"/account":         {"GET", "/account", nil},
+		"/steer":           {"POST", "/steer", url.Values{"text": {"calmer"}}},
+		"/new":             {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
+		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}}},
+		"/users":           {"GET", "/users", nil},
+		"/api/sessions":    {"GET", "/api/sessions", nil},
+		"/sessions/save":   {"POST", "/sessions/save", url.Values{"name": {"web-named"}}},
+		"/sessions/load":   {"POST", "/sessions/load", url.Values{"name": {"gym-grind"}}},
+		"/sessions/delete": {"POST", "/sessions/delete", url.Values{"name": {"gym-grind"}}},
+		"/users/link":      {"POST", "/users/link", url.Values{"email": {"target@example.com"}}},
 		"/users/update": {"POST", "/users/update", url.Values{
 			"email": {"target@example.com"}, "steer": {"1"}}},
 	}
@@ -678,20 +724,27 @@ func TestPermissionMatrix(t *testing.T) {
 		want expect
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
-			"/steer": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir}},
+			"/steer": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
+			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny}},
+			"/steer": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny}},
+			"/steer": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny}},
+			"/steer": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny}},
+			"/steer": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see}},
+			"/steer": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see}},
+			"/steer": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
+			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok}},
 	}
 	for who, row := range matrix {
 		for name, want := range row.want {
@@ -719,8 +772,60 @@ func TestPermissionMatrix(t *testing.T) {
 	if h.ctl.saves[0][1] != "gym" {
 		t.Fatalf("save tag not passed through: %v", h.ctl.saves)
 	}
-	if len(h.ctl.notes) != 6 {
+	// Session actions: save needs the save permission (saver + full
+	// admin), load the new-prompt permission (prompter + full admin),
+	// delete admin (admin-only + full admin).
+	if len(h.ctl.named) != 2 || len(h.ctl.loaded) != 2 || len(h.ctl.deleted) != 2 {
+		t.Fatalf("session calls: named=%v loaded=%v deleted=%v", h.ctl.named, h.ctl.loaded, h.ctl.deleted)
+	}
+	if len(h.ctl.notes) != 12 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
+	}
+}
+
+func TestSessionsListingAndActions(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	resp, body := admin.get("/api/sessions")
+	if resp.StatusCode != 200 {
+		t.Fatalf("/api/sessions = %d %s", resp.StatusCode, body)
+	}
+	var l sessionsJSON
+	if err := json.Unmarshal([]byte(body), &l); err != nil {
+		t.Fatal(err)
+	}
+	if l.Current != "s1" || len(l.Named) != 2 || l.Named[0].Name != "s1" || !l.Named[0].Current || l.Named[1].Name != "gym-grind" {
+		t.Fatalf("named group = %+v (current %q)", l.Named, l.Current)
+	}
+	if len(l.Presets) != len(session.Presets()) || l.Presets[0].Name != "calm-piano" || l.Presets[0].Summary == "" {
+		t.Fatalf("presets group = %+v", l.Presets)
+	}
+	if len(l.Auto) != 1 || l.Auto[0].Name != "session-20260821-100000" || l.Auto[0].Played != "26h ago" {
+		t.Fatalf("auto group = %+v", l.Auto)
+	}
+	if l.Named[1].Played != "3h ago" || l.Named[1].Summary == "" {
+		t.Fatalf("row details = %+v", l.Named[1])
+	}
+	for _, tc := range []struct{ path, field, value, want string }{
+		{"/sessions/save", "name", "Road Trip", "session saved as Road Trip"},
+		{"/sessions/load", "name", "sleep", "loaded sleep"},
+		{"/sessions/delete", "name", "gym-grind", "session gym-grind deleted"},
+	} {
+		resp, body := admin.postAPI(tc.path, url.Values{tc.field: {tc.value}})
+		if resp.StatusCode != 200 || !strings.Contains(body, tc.want) {
+			t.Fatalf("%s = %d %s", tc.path, resp.StatusCode, body)
+		}
+		resp, _ = admin.postAPI(tc.path, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s without a name = %d", tc.path, resp.StatusCode)
+		}
+	}
+	// The page carries the sessions card and its controls.
+	_, page := admin.get("/")
+	for _, want := range []string{`id="sessioncard"`, `id="sessname"`, `id="sesssave"`, `id="sessions"`, "/api/sessions", "/sessions/delete"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("page missing %q", want)
+		}
 	}
 }
 

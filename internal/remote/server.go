@@ -16,6 +16,7 @@ import (
 
 	"iar/internal/accounts"
 	"iar/internal/player"
+	"iar/internal/session"
 	"iar/internal/snippets"
 )
 
@@ -31,6 +32,11 @@ type Controls interface {
 	Steer(text string) string
 	NewSession(prompt string) string
 	SaveSnippet(which, tag string) string
+	NameSession(name string) string
+	LoadByName(name string) string
+	DeleteSession(name string) string
+	Listing() session.Listing
+	CurrentName() string
 	Status() player.Status
 	Announce(text string)
 }
@@ -228,6 +234,13 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /steer", s.apiPerm("steer", permSteer, s.handleSteer))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
+	// Sessions: listing for everyone; loading changes what everyone
+	// hears (new-prompt permission); naming is a save; deleting is
+	// admin-only.
+	mux.HandleFunc("GET /api/sessions", s.api(s.handleSessions))
+	mux.HandleFunc("POST /sessions/save", s.apiPerm("save", permSave, s.handleSessionSave))
+	mux.HandleFunc("POST /sessions/load", s.apiPerm("new prompt", permNewPrompt, s.handleSessionLoad))
+	mux.HandleFunc("POST /sessions/delete", s.apiPerm("delete sessions", permAdmin, s.handleSessionDelete))
 	// Admin.
 	mux.HandleFunc("GET /users", s.pagePerm("users", permAdmin, s.handleUsersPage))
 	mux.HandleFunc("POST /users/create", s.pagePerm("users", permAdmin, s.handleUserCreate))
@@ -491,5 +504,76 @@ func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, u accounts.Us
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.SaveSnippet(textField(r, "which"), textField(r, "tag"))
 	s.ctl.Announce("remote save by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+// sessionJSON is one row of the web session picker.
+type sessionJSON struct {
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
+	// Played says when the session last played ("" for presets).
+	Played  string `json:"played"`
+	Current bool   `json:"current"`
+}
+
+// sessionsJSON is the grouped listing: user-named, presets, auto-named.
+type sessionsJSON struct {
+	Current string        `json:"current"`
+	Named   []sessionJSON `json:"named"`
+	Presets []sessionJSON `json:"presets"`
+	Auto    []sessionJSON `json:"auto"`
+}
+
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	l := s.ctl.Listing()
+	now := time.Now()
+	cur := s.ctl.CurrentName()
+	out := sessionsJSON{Current: cur, Named: []sessionJSON{}, Presets: []sessionJSON{}, Auto: []sessionJSON{}}
+	row := func(sess *session.Session) sessionJSON {
+		return sessionJSON{Name: sess.Name, Summary: session.Summary(sess, 80), Played: session.Ago(now, sess.Played()), Current: sess.Name == cur}
+	}
+	for _, sess := range l.Named {
+		out.Named = append(out.Named, row(sess))
+	}
+	for _, p := range l.Presets {
+		out.Presets = append(out.Presets, sessionJSON{Name: p.Name, Summary: p.Description})
+	}
+	for _, sess := range l.Auto {
+		out.Auto = append(out.Auto, row(sess))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleSessionSave(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	name := textField(r, "name")
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	ack := s.ctl.NameSession(name)
+	s.ctl.Announce("remote session save by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+func (s *Server) handleSessionLoad(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	name := textField(r, "name")
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	ack := s.ctl.LoadByName(name)
+	s.ctl.Announce("remote load by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	name := textField(r, "name")
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	ack := s.ctl.DeleteSession(name)
+	s.log.Info("remote session delete", "event", "remote_session_delete", "by", u.Email, "name", name, "ack", ack)
+	s.ctl.Announce("remote delete by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
