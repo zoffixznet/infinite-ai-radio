@@ -242,7 +242,8 @@ save prev late night
 Tags become folder names (`snippets/gym/`, `snippets/late_night/`;
 anything that is not a letter, digit or underscore turns into an
 underscore) and are also written to the MP3's album tag. Saves without
-a tag go to `snippets/untagged/`. The phone remote's saved-chunk player
+a tag go to `snippets/untagged/`, and tracks saved before tags existed
+are moved there the next time the player starts. The phone remote's saved-chunk player
 loops these folders by tag (see [Saved chunks and tags](#saved-chunks-and-tags)).
 The base folder is configurable via `snippets_dir`.
 
