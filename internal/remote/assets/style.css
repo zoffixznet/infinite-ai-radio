@@ -180,3 +180,4 @@ details > summary.grouplabel { cursor: pointer; list-style: none; }
 details > summary.grouplabel::before { content: "\25B8\FE0E "; }
 details[open] > summary.grouplabel::before { content: "\25BE\FE0E "; }
 .sess.playing .ctitle { color: var(--accent); }
+#sessname { font-family: inherit; font-size: inherit; }
