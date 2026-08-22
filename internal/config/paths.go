@@ -68,8 +68,25 @@ func (p Paths) EnsureDirs() error {
 			return fmt.Errorf("creating %s: %w", dir, err)
 		}
 	}
+	// Account files are secrets: owner-only directory.
+	if err := os.MkdirAll(p.RemoteDir(), 0o700); err != nil {
+		return fmt.Errorf("creating %s: %w", p.RemoteDir(), err)
+	}
 	return nil
 }
+
+// RemoteDir holds the phone remote's account and login-session files.
+func (p Paths) RemoteDir() string { return filepath.Join(p.DataDir, "remote") }
+
+// UsersFile is the remote's account store.
+func (p Paths) UsersFile() string { return filepath.Join(p.RemoteDir(), "users.json") }
+
+// SessionsFile is the remote's persisted login sessions.
+func (p Paths) SessionsFile() string { return filepath.Join(p.RemoteDir(), "sessions.json") }
+
+// SnippetsDir is the default location for tracks captured with the save
+// command (one subdirectory per tag).
+func (p Paths) SnippetsDir() string { return filepath.Join(p.DataDir, "snippets") }
 
 // EngineDir is where the music engine (a git checkout with its own
 // virtualenv and model checkpoints) is installed.

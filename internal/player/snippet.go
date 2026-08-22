@@ -2,7 +2,6 @@ package player
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -10,15 +9,15 @@ import (
 	"iar/internal/engine"
 	"iar/internal/export"
 	"iar/internal/prompting"
-	"iar/internal/session"
+	"iar/internal/snippets"
 )
 
 // SaveSnippet captures the currently playing generated track (or the one
 // before it, when which is "prev") as a high-quality MP3 in the snippets
-// folder. The track's PCM is already in memory, so saving is instant for
-// playback: the encode runs in the background and completion is reported
-// through Events.
-func (o *Orchestrator) SaveSnippet(which string) string {
+// folder, under the directory for tag (empty means untagged). The track's
+// PCM is already in memory, so saving is instant for playback: the encode
+// runs in the background and completion is reported through Events.
+func (o *Orchestrator) SaveSnippet(which, tag string) string {
 	o.mu.Lock()
 	var track *engine.Track
 	switch which {
@@ -43,7 +42,8 @@ func (o *Orchestrator) SaveSnippet(which string) string {
 		return "a snippet is already being saved; try again in a moment"
 	}
 
-	path := filepath.Join(o.SnippetsDir, snippetName(track))
+	slug := snippets.Slug(tag)
+	path := snippets.Path(o.SnippetsDir, tag, track.Prompt, time.Now())
 	prompt := track.Prompt
 	ctx := o.runCtx
 	if ctx == nil {
@@ -55,7 +55,7 @@ func (o *Orchestrator) SaveSnippet(which string) string {
 			o.saving = false
 			o.mu.Unlock()
 		}()
-		if err := os.MkdirAll(o.SnippetsDir, 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
 			o.emit("saving the track failed: " + err.Error())
 			return
@@ -64,6 +64,7 @@ func (o *Orchestrator) SaveSnippet(which string) string {
 			Quality: o.cfg.MP3Quality,
 			Title:   prompt,
 			Artist:  "Infinite AI Radio",
+			Album:   slug,
 			Comment: snippetComment(track),
 		})
 		if err != nil {
@@ -71,22 +72,10 @@ func (o *Orchestrator) SaveSnippet(which string) string {
 			o.emit("saving the track failed: " + err.Error())
 			return
 		}
-		o.log.Info("snippet saved", "event", "snippet_saved", "path", path, "prompt", prompt)
+		o.log.Info("snippet saved", "event", "snippet_saved", "path", path, "prompt", prompt, "tag", slug)
 		o.emit("track saved: " + path)
 	}()
 	return "saving this track to " + path
-}
-
-// snippetName builds the snippet file name: timestamp plus prompt slug.
-func snippetName(t *engine.Track) string {
-	slug := session.SanitizeName(t.Prompt)
-	if len(slug) > 60 {
-		slug = slug[:60]
-	}
-	if slug == "" || slug == "unnamed" {
-		slug = "track"
-	}
-	return fmt.Sprintf("%s-%s.mp3", time.Now().Format("20060102-150405"), slug)
 }
 
 // snippetComment carries the lyrics (when real) into the file's tags.

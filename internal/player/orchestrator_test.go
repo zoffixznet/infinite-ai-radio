@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"iar/internal/engine/enginetest"
 	"iar/internal/prompting"
 	"iar/internal/session"
+	"iar/internal/snippets"
 )
 
 // capturePlayer records everything written to it, with light pacing so the
@@ -266,31 +268,48 @@ func TestSaveSnippetDuringPlayback(t *testing.T) {
 	o.SnippetsDir = t.TempDir() + "/music/radio-snippets"
 
 	// Nothing to save before a generated track plays.
-	if ack := o.SaveSnippet(""); !strings.Contains(ack, "nothing to save") {
+	if ack := o.SaveSnippet("", ""); !strings.Contains(ack, "nothing to save") {
 		t.Fatalf("early save ack = %q", ack)
 	}
 	waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
 
-	ack := o.SaveSnippet("")
-	if !strings.Contains(ack, "saving this track") {
+	// A tagged save lands in the tag's slug directory with the tag in
+	// the album field; the ack carries the path.
+	ack := o.SaveSnippet("", "Gym Grind!")
+	if !strings.Contains(ack, "saving this track") || !strings.Contains(ack, "/gym_grind/") {
 		t.Fatalf("save ack = %q", ack)
 	}
+	// The file appears atomically once the encode is complete.
 	var files []os.DirEntry
 	waitFor(t, 15*time.Second, "snippet file", func() bool {
-		files, _ = os.ReadDir(o.SnippetsDir)
+		files = nil
+		entries, _ := os.ReadDir(filepath.Join(o.SnippetsDir, "gym_grind"))
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), ".") {
+				files = append(files, e)
+			}
+		}
 		return len(files) == 1
 	})
 	if !strings.HasSuffix(files[0].Name(), ".mp3") {
 		t.Fatalf("snippet name = %q", files[0].Name())
 	}
+	info, err := snippets.ReadInfo(filepath.Join(o.SnippetsDir, "gym_grind", files[0].Name()))
+	if err != nil || info.Album != "gym_grind" || info.Title == "" || info.Duration < time.Second {
+		t.Fatalf("snippet tags = %+v, %v", info, err)
+	}
 	if u := o.Status().Underruns; u != 0 {
 		t.Fatalf("underruns while saving: %d", u)
 	}
+	// An untagged save goes to the untagged directory.
+	waitFor(t, 15*time.Second, "save slot free", func() bool {
+		return strings.Contains(o.SaveSnippet("", ""), "saving this track to "+filepath.Join(o.SnippetsDir, "untagged"))
+	})
 	// prev works after two distinct tracks; here at least verify the
 	// unknown-prev message before one exists.
 	o2, _ := newTestOrchestrator(t, enginetest.NewMock(), session.New())
 	o2.SnippetsDir = t.TempDir()
-	if ack := o2.SaveSnippet("prev"); !strings.Contains(ack, "no previous track") {
+	if ack := o2.SaveSnippet("prev", ""); !strings.Contains(ack, "no previous track") {
 		t.Fatalf("prev ack = %q", ack)
 	}
 }

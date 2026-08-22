@@ -9,12 +9,15 @@ import (
 	"path/filepath"
 	"time"
 
+	"iar/internal/accounts"
 	"iar/internal/config"
 	"iar/internal/engine"
 	"iar/internal/engine/acestep"
 	"iar/internal/library"
 	"iar/internal/logging"
+	"iar/internal/mail"
 	"iar/internal/prompting"
+	"iar/internal/remote"
 	"iar/internal/session"
 	"iar/internal/state"
 )
@@ -182,5 +185,25 @@ func (a *app) snippetsDir() string {
 	if a.cfg.SnippetsDir != "" {
 		return a.cfg.SnippetsDir
 	}
-	return filepath.Join(a.paths.DataDir, "snippets")
+	return a.paths.SnippetsDir()
+}
+
+// accountStores opens the remote's users and login-session files.
+func (a *app) accountStores() (*accounts.Store, *accounts.Sessions) {
+	return accounts.NewStore(a.paths.UsersFile()),
+		accounts.NewSessions(a.paths.SessionsFile(), accounts.DefaultSessionTTL)
+}
+
+// remoteConfig assembles the remote server configuration.
+func (a *app) remoteConfig(snippetsDir string) remote.Config {
+	users, sessions := a.accountStores()
+	return remote.Config{
+		Port:         a.cfg.Remote.Port,
+		Binds:        a.cfg.Remote.Bind,
+		AllowedHosts: a.cfg.Remote.AllowedHosts,
+		Users:        users,
+		Sessions:     sessions,
+		Mailer:       mail.New(a.cfg.Remote.SMTP),
+		SnippetsDir:  snippetsDir,
+	}
 }

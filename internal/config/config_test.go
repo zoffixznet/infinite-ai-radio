@@ -93,7 +93,7 @@ func TestBindListAcceptsStringAndList(t *testing.T) {
 
 	// A plain string (the shape of existing config files) is one entry.
 	os.WriteFile(filepath.Join(dir, "config.json"),
-		[]byte(`{"remote":{"bind":"0.0.0.0","token":"x","allowed_hosts":["192.168.8.187"]}}`), 0o644)
+		[]byte(`{"remote":{"bind":"0.0.0.0","allowed_hosts":["192.168.8.187"]}}`), 0o644)
 	p, _ := ResolvePaths()
 	cfg, err := Load(p)
 	if err != nil {
@@ -105,7 +105,7 @@ func TestBindListAcceptsStringAndList(t *testing.T) {
 
 	// A list works too.
 	os.WriteFile(filepath.Join(dir, "config.json"),
-		[]byte(`{"remote":{"bind":["192.168.1.5","10.0.0.2"],"token":"x"}}`), 0o644)
+		[]byte(`{"remote":{"bind":["192.168.1.5","10.0.0.2"]}}`), 0o644)
 	cfg, err = Load(p)
 	if err != nil {
 		t.Fatal(err)
@@ -201,5 +201,51 @@ func TestMigrationDefersWhileOldInstallBusy(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "data", "iar")); err == nil {
 		t.Fatal("migration ran despite the live old daemon")
+	}
+}
+
+func TestLoadPurgesObsoleteTokenKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvDataDir, filepath.Join(dir, "data"))
+	t.Setenv(EnvConfigDir, dir)
+	file := filepath.Join(dir, "config.json")
+	body := `{"volume":33,"remote":{"enabled":true,"port":9000,"token":"old-secret","bind":["192.168.1.5"],
+	  "allowed_hosts":["radio.lan"],"smtp":{"host":"smtp.example.com","password":"p"}},"custom_key":{"a":1}}`
+	os.WriteFile(file, []byte(body), 0o644)
+	p, _ := ResolvePaths()
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Everything else survives, in memory and on disk.
+	if cfg.Volume != 33 || !cfg.Remote.Enabled || cfg.Remote.Port != 9000 ||
+		len(cfg.Remote.Bind) != 1 || cfg.Remote.AllowedHosts[0] != "radio.lan" ||
+		cfg.Remote.SMTP.Host != "smtp.example.com" {
+		t.Fatalf("config lost values: %+v", cfg)
+	}
+	raw, _ := os.ReadFile(file)
+	if strings.Contains(string(raw), "token") || strings.Contains(string(raw), "old-secret") {
+		t.Fatalf("obsolete key survived in the file: %s", raw)
+	}
+	for _, keep := range []string{`"custom_key"`, `"radio.lan"`, `"smtp.example.com"`, `"volume": 33`} {
+		if !strings.Contains(string(raw), keep) {
+			t.Fatalf("rewrite dropped %s: %s", keep, raw)
+		}
+	}
+	fi, _ := os.Stat(file)
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("rewritten config mode = %o, want 0600", fi.Mode().Perm())
+	}
+	// Idempotent: a clean file is left alone (mode and content).
+	os.Chmod(file, 0o644)
+	if _, err := Load(p); err != nil {
+		t.Fatal(err)
+	}
+	fi2, _ := os.Stat(file)
+	if fi2.Mode().Perm() != 0o644 {
+		t.Fatal("clean config was rewritten")
+	}
+	if _, changed := purgeObsoleteKeys([]byte(`{"remote":{"port":1}}`)); changed {
+		t.Fatal("purge reports a change on a clean document")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"iar/internal/audio"
@@ -12,6 +13,7 @@ import (
 	"iar/internal/player"
 	"iar/internal/remote"
 	"iar/internal/session"
+	"iar/internal/snippets"
 	"iar/internal/state"
 	"iar/internal/ui"
 )
@@ -71,6 +73,14 @@ func runPlay(pf playFlags) error {
 	orch.Timings = a.timings
 	orch.Library = a.library()
 	orch.SnippetsDir = a.snippetsDir()
+	// Saved tracks from before tags existed move into the untagged
+	// folder once.
+	if moved, err := snippets.Migrate(orch.SnippetsDir); err != nil {
+		a.log.Warn("snippet migration failed", "event", "snippets_migrate_failed", "error", err.Error())
+	} else if moved > 0 {
+		a.log.Info("snippets migrated", "event", "snippets_migrated", "moved", moved)
+		fmt.Fprintf(os.Stderr, "iar: moved %d saved track(s) into %s\n", moved, filepath.Join(orch.SnippetsDir, snippets.Untagged))
+	}
 
 	// The phone remote taps the mastered PCM, so it must be wired
 	// before the stream starts.
@@ -83,20 +93,19 @@ func runPlay(pf playFlags) error {
 	defer orch.Close()
 
 	if streamer != nil {
-		rs, err := remote.Start(ctx, remote.Config{
-			Port:         a.cfg.Remote.Port,
-			Token:        a.cfg.Remote.Token,
-			Binds:        a.cfg.Remote.Bind,
-			AllowedHosts: a.cfg.Remote.AllowedHosts,
-		}, orch, streamer, a.log)
-		if err != nil {
+		rs, err := remote.Start(ctx, a.remoteConfig(orch.SnippetsDir), orch, streamer, a.log)
+		switch {
+		case err != nil:
 			fmt.Fprintln(os.Stderr, "iar: remote could not start:", err)
-		} else if rs.TailnetIP != "" {
+		case rs.TailnetIP != "":
 			fmt.Fprintf(os.Stderr, "iar: remote at http://%s:%d (phone) and http://127.0.0.1:%d\n",
 				rs.TailnetIP, a.cfg.Remote.Port, a.cfg.Remote.Port)
-		} else {
+		default:
 			fmt.Fprintf(os.Stderr, "iar: remote at http://127.0.0.1:%d (no Tailscale interface found; see 'iar doctor')\n",
 				a.cfg.Remote.Port)
+		}
+		if err == nil && rs.NeedsSetup() {
+			fmt.Fprintln(os.Stderr, "iar: the remote has no accounts yet; run 'iar remote setup' to create the first admin")
 		}
 	}
 

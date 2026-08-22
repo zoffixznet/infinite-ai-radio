@@ -3,11 +3,15 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+
+	"iar/internal/mail"
 )
 
 // Config is the user-tunable configuration. Every field has a working
@@ -75,25 +79,26 @@ func (b *BindList) UnmarshalJSON(data []byte) error {
 }
 
 // Remote configures the built-in phone remote (HTTP page + MP3 stream).
+// Every request requires a logged-in account; accounts are managed with
+// `iar remote setup` and the remote's Users page.
 type Remote struct {
 	// Enabled turns the remote server on (also via the --remote flag).
 	Enabled bool `json:"enabled"`
 	// Port is the HTTP port the remote listens on.
 	Port int `json:"port"`
-	// Token, when set, is a shared secret required on every request
-	// (Authorization bearer or ?token= query). Empty disables the gate;
-	// the private tailnet is the default trust boundary.
-	Token string `json:"token"`
 	// Bind lists EXTRA addresses to listen on (a JSON string is also
 	// accepted as a one-element list). Localhost and the machine's
 	// Tailscale address are always bound regardless; a wildcard entry
-	// ("0.0.0.0") covers everything by itself. Any non-loopback entry
-	// requires Token.
+	// ("0.0.0.0") covers everything by itself.
 	Bind BindList `json:"bind"`
 	// AllowedHosts lists extra hostnames or IPs clients may use to reach
 	// the remote (Host-header allowlist). Localhost and the tailnet
 	// address are always allowed; only needed with a Bind override.
 	AllowedHosts []string `json:"allowed_hosts"`
+	// SMTP, when configured, additionally emails invite and reset links
+	// to their recipients. Optional: without it the admin passes the
+	// links on by hand.
+	SMTP mail.Config `json:"smtp"`
 }
 
 // ACEStep configures the default music engine and its sidecar process.
@@ -183,8 +188,59 @@ func Load(p Paths) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parsing %s: %w", p.ConfigFile(), err)
 	}
+	if cleaned, changed := purgeObsoleteKeys(data); changed {
+		// The file may hold secrets (SMTP password), so the rewrite is
+		// owner-only and atomic.
+		if err := writeOwnerOnly(p.ConfigFile(), cleaned); err != nil {
+			return cfg, fmt.Errorf("updating %s: %w", p.ConfigFile(), err)
+		}
+	}
 	cfg.sanitize()
 	return cfg, nil
+}
+
+// obsoleteRemoteKeys are settings older versions understood and the
+// current one removes from the file on load.
+var obsoleteRemoteKeys = []string{"token"}
+
+// purgeObsoleteKeys strips settings that no longer exist from the raw
+// config, returning the rewritten document and whether anything changed.
+// Everything else is preserved (values, nesting, unknown keys).
+func purgeObsoleteKeys(data []byte) ([]byte, bool) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return data, false
+	}
+	raw, ok := doc["remote"]
+	if !ok {
+		return data, false
+	}
+	var remote map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &remote); err != nil {
+		return data, false
+	}
+	changed := false
+	for _, k := range obsoleteRemoteKeys {
+		if _, present := remote[k]; present {
+			delete(remote, k)
+			changed = true
+		}
+	}
+	if !changed {
+		return data, false
+	}
+	fixed, err := json.Marshal(remote)
+	if err != nil {
+		return data, false
+	}
+	doc["remote"] = fixed
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return data, false
+	}
+	return out.Bytes(), true
 }
 
 // sanitize clamps out-of-range values back to safe ones.
@@ -231,4 +287,27 @@ func (c *Config) sanitize() {
 	if c.Remote.Port < 1 || c.Remote.Port > 65535 {
 		c.Remote.Port = 8246
 	}
+}
+
+// writeOwnerOnly replaces path with data through a 0600 temp file and a
+// rename, so the result is complete and owner-only regardless of the
+// previous file's mode.
+func writeOwnerOnly(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{.Product}} is not set up yet</title>
+<style>{{template "style.css"}}</style>
+</head>
+<body>
+<main class="login">
+  <h1>{{.Product}}</h1>
+  <p class="tag">No accounts yet</p>
+  <section class="card">
+    <p>The remote is running but nobody can log in until the first admin account exists.</p>
+    <p style="margin-top:10px">On the computer running {{.Product}}, create it with:</p>
+    <p style="margin-top:10px"><code style="font-size:17px">iar remote setup</code></p>
+    <p class="hint" style="margin-top:10px">Then reload this page and log in.</p>
+  </section>
+</main>
+</body>
+</html>

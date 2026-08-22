@@ -2,21 +2,32 @@ package remote
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
+	"iar/internal/accounts"
 	"iar/internal/player"
 )
+
+func init() { accounts.Cost = bcrypt.MinCost }
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -112,8 +123,6 @@ func TestResolveBindingAdditive(t *testing.T) {
 	if !strings.Contains(allowed, "192.168.8.187") || !strings.Contains(allowed, "100.101.102.103") {
 		t.Fatalf("wildcard must auto-allow machine addresses: %v", b.ExtraHosts)
 	}
-	// The tailnet is still detected under a wildcard, so its allowlist
-	// entry survives overrides.
 	if b.TailnetIP != "100.101.102.103" {
 		t.Fatalf("tailnet detection lost under wildcard: %+v", b)
 	}
@@ -122,30 +131,6 @@ func TestResolveBindingAdditive(t *testing.T) {
 	b = ResolveBinding([]string{"127.0.0.1", "localhost"}, 9999)
 	if b.Exposed {
 		t.Fatalf("loopback entries flagged exposed: %+v", b)
-	}
-}
-
-func TestValidateBinds(t *testing.T) {
-	cases := []struct {
-		binds   []string
-		token   string
-		wantErr bool
-	}{
-		{nil, "", false},
-		{[]string{"127.0.0.1"}, "", false},
-		{[]string{"localhost", "::1"}, "", false},
-		{[]string{"0.0.0.0"}, "", true},
-		{[]string{"192.168.1.10"}, "", true},
-		{[]string{"127.0.0.1", "192.168.1.10"}, "", true},
-		{[]string{"0.0.0.0"}, "secret", false},
-		{[]string{"192.168.1.10"}, "secret", false},
-	}
-	for _, tc := range cases {
-		err := ValidateBinds(tc.binds, tc.token)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("ValidateBinds(%v, token=%v) err=%v want error=%v",
-				tc.binds, tc.token != "", err, tc.wantErr)
-		}
 	}
 }
 
@@ -158,7 +143,6 @@ func TestFanoutSlowClientDoesNotStallOthers(t *testing.T) {
 	_, slow, cancelSlow := s.Subscribe()
 	defer cancelSlow()
 
-	// Fill well past the slow client's queue without reading it.
 	chunk := make([]byte, 512)
 	chunk[0] = 0xFF
 	chunk[1] = 0xFB
@@ -181,7 +165,6 @@ func TestFanoutSlowClientDoesNotStallOthers(t *testing.T) {
 	if fastGot < clientChanSlots {
 		t.Fatalf("fast client starved: got %d chunks", fastGot)
 	}
-	// The slow client's channel must be closed (drained reader sees EOF).
 	if _, ok := <-slow; ok {
 		for range slow {
 		}
@@ -190,7 +173,6 @@ func TestFanoutSlowClientDoesNotStallOthers(t *testing.T) {
 
 func TestFanoutPreBufferAlignsToFrame(t *testing.T) {
 	s := NewStreamer(testLog())
-	// Garbage, then a frame boundary mid-buffer.
 	s.broadcast([]byte{0x00, 0x11, 0x22})
 	s.broadcast([]byte{0x33, 0xFF, 0xFB, 0x90, 0x00, 0x01})
 	pre, _, cancel := s.Subscribe()
@@ -212,7 +194,7 @@ func TestFanoutDisconnectCleanup(t *testing.T) {
 	}
 	for _, c := range cancels {
 		c()
-		c() // double-cancel must be safe
+		c()
 	}
 	if s.Listeners() != 0 {
 		t.Fatalf("listeners after cancel = %d", s.Listeners())
@@ -221,7 +203,6 @@ func TestFanoutDisconnectCleanup(t *testing.T) {
 
 func TestStreamerWriteNeverBlocks(t *testing.T) {
 	s := NewStreamer(testLog())
-	// No encoder running: writes must still return instantly.
 	buf := make([]byte, 19200)
 	doneCh := make(chan struct{})
 	go func() {
@@ -237,166 +218,6 @@ func TestStreamerWriteNeverBlocks(t *testing.T) {
 	}
 }
 
-// --- handlers ---
-
-// fakeCtl records control calls.
-type fakeCtl struct {
-	mu     sync.Mutex
-	steers []string
-	news   []string
-	saves  []string
-	notes  []string
-}
-
-func (f *fakeCtl) Steer(text string) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.steers = append(f.steers, text)
-	return "steering with: " + text
-}
-
-func (f *fakeCtl) NewSession(prompt string) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.news = append(f.news, prompt)
-	return "new session: " + prompt
-}
-
-func (f *fakeCtl) SaveSnippet(which string) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.saves = append(f.saves, which)
-	return "saving this track to /tmp/x.mp3"
-}
-
-func (f *fakeCtl) Status() player.Status {
-	return player.Status{State: "playing", Source: "test prompt", Session: "s1", Volume: 70}
-}
-
-func (f *fakeCtl) Announce(text string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.notes = append(f.notes, text)
-}
-
-func testServer(t *testing.T, token string) (*httptest.Server, *fakeCtl, *Server) {
-	t.Helper()
-	ctl := &fakeCtl{}
-	s := &Server{cfg: Config{Token: token}, ctl: ctl, streamer: NewStreamer(testLog()), log: testLog()}
-	s.buildAllowedHosts(nil)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.buildHandler().ServeHTTP(w, r)
-	}))
-	t.Cleanup(srv.Close)
-	// The middleware validates Host:port, so align the config port with
-	// the ephemeral httptest port.
-	u, _ := url.Parse(srv.URL)
-	s.cfg.Port, _ = strconv.Atoi(u.Port())
-	return srv, ctl, s
-}
-
-// postForm sends a form POST the way the page does: with the CSRF header.
-func postForm(t *testing.T, u string, vals url.Values) (*http.Response, string) {
-	t.Helper()
-	req, err := http.NewRequest("POST", u, strings.NewReader(vals.Encode()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set(csrfHeader, "1")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	return resp, string(body)
-}
-
-func TestHandlersRoundTrip(t *testing.T) {
-	srv, ctl, _ := testServer(t, "")
-
-	resp, body := postForm(t, srv.URL+"/steer", url.Values{"text": {"calmer"}})
-	if resp.StatusCode != 200 || !strings.Contains(body, "steering with: calmer") {
-		t.Fatalf("steer: %d %s", resp.StatusCode, body)
-	}
-	resp, body = postForm(t, srv.URL+"/new", url.Values{"prompt": {"dark techno"}})
-	if resp.StatusCode != 200 || !strings.Contains(body, "new session: dark techno") {
-		t.Fatalf("new: %d %s", resp.StatusCode, body)
-	}
-	resp, body = postForm(t, srv.URL+"/save", nil)
-	if resp.StatusCode != 200 || !strings.Contains(body, "/tmp/x.mp3") {
-		t.Fatalf("save: %d %s", resp.StatusCode, body)
-	}
-	if len(ctl.steers) != 1 || len(ctl.news) != 1 || len(ctl.saves) != 1 {
-		t.Fatalf("controller calls: %+v", ctl)
-	}
-	if len(ctl.notes) != 3 {
-		t.Fatalf("remote actions must be announced to the local UI: %v", ctl.notes)
-	}
-
-	// Empty inputs are rejected.
-	resp, _ = postForm(t, srv.URL+"/steer", nil)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("empty steer accepted: %d", resp.StatusCode)
-	}
-
-	// State JSON.
-	r2, err := http.Get(srv.URL + "/state")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var st stateJSON
-	json.NewDecoder(r2.Body).Decode(&st)
-	r2.Body.Close()
-	if st.Source != "test prompt" || st.State != "playing" || st.Volume != 70 {
-		t.Fatalf("state = %+v", st)
-	}
-
-	// Page contains every control.
-	r3, _ := http.Get(srv.URL + "/")
-	page, _ := io.ReadAll(r3.Body)
-	r3.Body.Close()
-	for _, want := range []string{"stream.mp3", `id="steer"`, `id="fresh"`, `id="save"`, `id="text"`, `id="now"`, "viewport"} {
-		if !strings.Contains(string(page), want) {
-			t.Fatalf("page missing %q", want)
-		}
-	}
-}
-
-func TestTokenGate(t *testing.T) {
-	srv, _, _ := testServer(t, "sesame")
-
-	resp, _ := http.Get(srv.URL + "/state")
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("no token accepted: %d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	resp, _ = http.Get(srv.URL + "/state?token=wrong")
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong token accepted: %d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	resp, _ = http.Get(srv.URL + "/state?token=sesame")
-	if resp.StatusCode != 200 {
-		t.Fatalf("query token rejected: %d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	req, _ := http.NewRequest("GET", srv.URL+"/state", nil)
-	req.Header.Set("Authorization", "Bearer sesame")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("bearer token rejected: %d", resp.StatusCode)
-	}
-	resp.Body.Close()
-}
-
 func TestStreamerEncodesRealMP3(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -406,7 +227,6 @@ func TestStreamerEncodesRealMP3(t *testing.T) {
 	}
 	_, ch, cancelSub := s.Subscribe()
 	defer cancelSub()
-	// Feed one second of a tone.
 	pcm := make([]byte, 192000)
 	for i := 0; i < len(pcm); i += 4 {
 		pcm[i] = byte(i)
@@ -430,13 +250,864 @@ func TestStreamerEncodesRealMP3(t *testing.T) {
 	}
 }
 
+// --- test harness ---
+
+// fakeCtl records control calls.
+type fakeCtl struct {
+	mu     sync.Mutex
+	steers []string
+	news   []string
+	saves  [][2]string
+	notes  []string
+}
+
+func (f *fakeCtl) Steer(text string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steers = append(f.steers, text)
+	return "steering with: " + text
+}
+
+func (f *fakeCtl) NewSession(prompt string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.news = append(f.news, prompt)
+	return "new session: " + prompt
+}
+
+func (f *fakeCtl) SaveSnippet(which, tag string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saves = append(f.saves, [2]string{which, tag})
+	return "saving this track to /tmp/" + tag + "/x.mp3"
+}
+
+func (f *fakeCtl) Status() player.Status {
+	return player.Status{State: "playing", Source: "test prompt", Session: "s1", Volume: 70}
+}
+
+func (f *fakeCtl) Announce(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.notes = append(f.notes, text)
+}
+
+// fakeMailer captures sent messages.
+type fakeMailer struct {
+	mu   sync.Mutex
+	sent []string // "to|subject|body"
+	fail bool
+}
+
+func (m *fakeMailer) Configured() bool { return true }
+func (m *fakeMailer) Send(ctx context.Context, to, subject, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fail {
+		return fmt.Errorf("smtp down")
+	}
+	m.sent = append(m.sent, to+"|"+subject+"|"+body)
+	return nil
+}
+
+// harness is a server under httptest with account stores in a temp dir.
+type harness struct {
+	t      *testing.T
+	srv    *httptest.Server
+	s      *Server
+	ctl    *fakeCtl
+	users  *accounts.Store
+	mailer *fakeMailer
+	dir    string
+}
+
+func newHarness(t *testing.T, mailer Mailer) *harness {
+	t.Helper()
+	dir := t.TempDir()
+	users := accounts.NewStore(filepath.Join(dir, "remote", "users.json"))
+	sessions := accounts.NewSessions(filepath.Join(dir, "remote", "sessions.json"), time.Hour)
+	ctl := &fakeCtl{}
+	cfg := Config{Users: users, Sessions: sessions, Mailer: mailer, SnippetsDir: filepath.Join(dir, "snippets")}
+	s, err := newServer(cfg, ctl, NewStreamer(testLog()), testLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.buildAllowedHosts(nil)
+	handler := s.buildHandler()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	// The middleware validates Host:port, so align the config port with
+	// the ephemeral httptest port.
+	u, _ := url.Parse(srv.URL)
+	s.cfg.Port, _ = strconv.Atoi(u.Port())
+	h := &harness{t: t, srv: srv, s: s, ctl: ctl, users: users, dir: dir}
+	if fm, ok := mailer.(*fakeMailer); ok {
+		h.mailer = fm
+	}
+	return h
+}
+
+// client is an authenticated browser-like client (cookie jar, no
+// redirects followed, same-origin Origin on posts).
+type client struct {
+	h    *harness
+	http *http.Client
+}
+
+func (h *harness) client() *client {
+	jar, _ := cookiejar.New(nil)
+	return &client{h: h, http: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}}
+}
+
+func (c *client) get(path string) (*http.Response, string) {
+	c.h.t.Helper()
+	resp, err := c.http.Get(c.h.srv.URL + path)
+	if err != nil {
+		c.h.t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp, string(body)
+}
+
+// postForm posts the way a browser form does: with the same-origin
+// Origin header and no custom header.
+func (c *client) postForm(path string, vals url.Values) (*http.Response, string) {
+	c.h.t.Helper()
+	req, _ := http.NewRequest("POST", c.h.srv.URL+path, strings.NewReader(vals.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", c.h.srv.URL)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.h.t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp, string(body)
+}
+
+// postAPI posts the way the page's JavaScript does: custom header, no
+// Origin (fetch adds one in browsers; the header alone must suffice).
+func (c *client) postAPI(path string, vals url.Values) (*http.Response, string) {
+	c.h.t.Helper()
+	req, _ := http.NewRequest("POST", c.h.srv.URL+path, strings.NewReader(vals.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(csrfHeader, "1")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.h.t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp, string(body)
+}
+
+// login authenticates the client.
+func (c *client) login(email, password string) *http.Response {
+	c.h.t.Helper()
+	resp, body := c.postForm("/login", url.Values{"email": {email}, "password": {password}})
+	if resp.StatusCode != http.StatusFound {
+		c.h.t.Fatalf("login as %s: %d %s", email, resp.StatusCode, body)
+	}
+	return resp
+}
+
+// sessionCookieOf returns the client's session cookie.
+func (c *client) sessionCookieOf() *http.Cookie {
+	u, _ := url.Parse(c.h.srv.URL)
+	for _, ck := range c.http.Jar.Cookies(u) {
+		if ck.Name == sessionCookie {
+			return ck
+		}
+	}
+	return nil
+}
+
+// admin creates the bootstrap admin and logs in.
+func (h *harness) admin() *client {
+	h.t.Helper()
+	if _, err := h.users.EnsureAdmin("admin@example.com", "admin-pass-1"); err != nil {
+		h.t.Fatal(err)
+	}
+	c := h.client()
+	c.login("admin@example.com", "admin-pass-1")
+	return c
+}
+
+// invite creates a user through the Users page and returns the invite
+// link path from the flash.
+func (h *harness) invite(admin *client, email string, perms url.Values) string {
+	h.t.Helper()
+	vals := url.Values{"email": {email}}
+	for k, v := range perms {
+		vals[k] = v
+	}
+	resp, body := admin.postForm("/users/create", vals)
+	if resp.StatusCode != http.StatusSeeOther {
+		h.t.Fatalf("create: %d %s", resp.StatusCode, body)
+	}
+	_, page := admin.get("/users")
+	return extractLink(h.t, page)
+}
+
+var linkRe = regexp.MustCompile(`id="link"[^>]*value="([^"]+)"`)
+
+func extractLink(t *testing.T, page string) string {
+	t.Helper()
+	m := linkRe.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("no link on the page:\n%s", page)
+	}
+	u, err := url.Parse(m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Path
+}
+
+// activate redeems an invite/reset link with a password and returns a
+// logged-in client for the new account.
+func (h *harness) activate(linkPath, password string) *client {
+	h.t.Helper()
+	c := h.client()
+	resp, body := c.postForm(linkPath, url.Values{"password": {password}, "password2": {password}})
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/" {
+		h.t.Fatalf("activate: %d %s", resp.StatusCode, body)
+	}
+	if c.sessionCookieOf() == nil {
+		h.t.Fatal("activation did not log the user in")
+	}
+	return c
+}
+
+// --- setup notice ---
+
+func TestSetupNoticeUntilFirstAccount(t *testing.T) {
+	h := newHarness(t, nil)
+	c := h.client()
+	for _, path := range []string{"/", "/login", "/state", "/stream.mp3"} {
+		resp, body := c.get(path)
+		if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "iar remote setup") {
+			t.Fatalf("%s before setup: %d %s", path, resp.StatusCode, body)
+		}
+	}
+	// `iar remote setup` from another process: the server notices
+	// without restarting.
+	other := accounts.NewStore(h.users.Path())
+	other.EnsureAdmin("owner@example.com", "owner-pass-1")
+	future := time.Now().Add(2 * time.Second)
+	os.Chtimes(h.users.Path(), future, future)
+	resp, _ := c.get("/")
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("after setup, / = %d -> %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// --- login ---
+
+func TestLoginFlowAndCookie(t *testing.T) {
+	h := newHarness(t, nil)
+	h.users.EnsureAdmin("admin@example.com", "admin-pass-1")
+	c := h.client()
+
+	// Pages redirect to login; data routes answer 401.
+	resp, _ := c.get("/")
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("anonymous / = %d -> %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	resp, _ = c.get("/account")
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/login?next=/account" {
+		t.Fatalf("anonymous /account = %d -> %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, p := range []string{"/state", "/me", "/stream.mp3", "/api/chunks", "/chunks/untagged/x.mp3"} {
+		resp, _ = c.get(p)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("anonymous %s = %d", p, resp.StatusCode)
+		}
+	}
+	resp, body := c.get("/login")
+	if resp.StatusCode != 200 || !strings.Contains(body, `name="password"`) {
+		t.Fatalf("login page: %d", resp.StatusCode)
+	}
+
+	// Wrong password and unknown account get the same message.
+	resp, body1 := c.postForm("/login", url.Values{"email": {"admin@example.com"}, "password": {"nope"}})
+	resp2, body2 := c.postForm("/login", url.Values{"email": {"ghost@example.com"}, "password": {"nope"}})
+	if resp.StatusCode != http.StatusUnauthorized || resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad logins: %d %d", resp.StatusCode, resp2.StatusCode)
+	}
+	if !strings.Contains(body1, loginFailure) || !strings.Contains(body2, loginFailure) {
+		t.Fatal("login failure message differs or missing")
+	}
+	if c.sessionCookieOf() != nil {
+		t.Fatal("failed login set a cookie")
+	}
+
+	// Success: cookie flags, redirect to next.
+	resp, _ = c.postForm("/login", url.Values{"email": {"Admin@Example.com"}, "password": {"admin-pass-1"}, "next": {"/account"}})
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/account" {
+		t.Fatalf("login = %d -> %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	var ck *http.Cookie
+	for _, x := range resp.Cookies() {
+		if x.Name == sessionCookie {
+			ck = x
+		}
+	}
+	if ck == nil || !ck.HttpOnly || ck.SameSite != http.SameSiteLaxMode || ck.Secure || len(ck.Value) < 40 {
+		t.Fatalf("session cookie = %+v", ck)
+	}
+	resp, body = c.get("/")
+	if resp.StatusCode != 200 || !strings.Contains(body, `id="play"`) {
+		t.Fatalf("logged-in / = %d", resp.StatusCode)
+	}
+	resp, body = c.get("/me")
+	if resp.StatusCode != 200 || !strings.Contains(body, `"admin":true`) {
+		t.Fatalf("/me = %d %s", resp.StatusCode, body)
+	}
+	// Open redirects are refused.
+	resp, _ = c.postForm("/login", url.Values{"email": {"admin@example.com"}, "password": {"admin-pass-1"}, "next": {"//evil.example.com/x"}})
+	if resp.Header.Get("Location") != "/" {
+		t.Fatalf("open redirect: %s", resp.Header.Get("Location"))
+	}
+
+	// Logout kills the session.
+	resp, _ = c.postForm("/logout", nil)
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("logout = %d", resp.StatusCode)
+	}
+	resp, _ = c.get("/state")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("after logout /state = %d", resp.StatusCode)
+	}
+}
+
+func TestSessionsSurviveRestart(t *testing.T) {
+	h := newHarness(t, nil)
+	c := h.admin()
+	ck := c.sessionCookieOf()
+	// A new server over the same files (a player restart).
+	users := accounts.NewStore(h.users.Path())
+	sessions := accounts.NewSessions(filepath.Join(h.dir, "remote", "sessions.json"), time.Hour)
+	s2, _ := newServer(Config{Users: users, Sessions: sessions, SnippetsDir: h.dir}, h.ctl, NewStreamer(testLog()), testLog())
+	s2.buildAllowedHosts(nil)
+	srv2 := httptest.NewServer(s2.buildHandler())
+	defer srv2.Close()
+	u, _ := url.Parse(srv2.URL)
+	s2.cfg.Port, _ = strconv.Atoi(u.Port())
+	req, _ := http.NewRequest("GET", srv2.URL+"/state", nil)
+	req.AddCookie(ck)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("session lost across restart: %d", resp.StatusCode)
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	h := newHarness(t, nil)
+	h.users.EnsureAdmin("admin@example.com", "admin-pass-1")
+	c := h.client()
+	for i := 0; i < loginAttempts; i++ {
+		resp, _ := c.postForm("/login", url.Values{"email": {"admin@example.com"}, "password": {"wrong"}})
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d", i, resp.StatusCode)
+		}
+	}
+	resp, body := c.postForm("/login", url.Values{"email": {"admin@example.com"}, "password": {"admin-pass-1"}})
+	if resp.StatusCode != http.StatusTooManyRequests || !strings.Contains(body, "Too many attempts") {
+		t.Fatalf("after %d failures: %d %s", loginAttempts, resp.StatusCode, body)
+	}
+	if c.sessionCookieOf() != nil {
+		t.Fatal("throttled login succeeded")
+	}
+}
+
+// --- permissions ---
+
+func TestPermissionMatrix(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	mk := func(email string, perms url.Values) *client {
+		link := h.invite(admin, email, perms)
+		return h.activate(link, "password-"+email)
+	}
+	listener := mk("listener@example.com", nil)
+	steerer := mk("steerer@example.com", url.Values{"steer": {"1"}})
+	prompter := mk("prompter@example.com", url.Values{"new_prompt": {"1"}})
+	saver := mk("saver@example.com", url.Values{"save": {"1"}})
+	adminOnly := mk("adminonly@example.com", url.Values{"admin": {"1"}})
+	anon := h.client()
+	// The admin calls below act on this account, so the asserted ones
+	// keep their permissions whatever order the rows run in.
+	h.invite(admin, "target@example.com", nil)
+
+	type call struct {
+		method, path string
+		form         url.Values
+	}
+	calls := map[string]call{
+		"/":           {"GET", "/", nil},
+		"/me":         {"GET", "/me", nil},
+		"/state":      {"GET", "/state", nil},
+		"/api/chunks": {"GET", "/api/chunks", nil},
+		"/account":    {"GET", "/account", nil},
+		"/steer":      {"POST", "/steer", url.Values{"text": {"calmer"}}},
+		"/new":        {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
+		"/save":       {"POST", "/save", url.Values{"tag": {"gym"}}},
+		"/users":      {"GET", "/users", nil},
+		"/users/link": {"POST", "/users/link", url.Values{"email": {"target@example.com"}}},
+		"/users/update": {"POST", "/users/update", url.Values{
+			"email": {"target@example.com"}, "steer": {"1"}}},
+	}
+	type expect map[string]int
+	const (
+		ok    = 200
+		see   = 303
+		redir = 302
+		deny  = 403
+		auth  = 401
+	)
+	matrix := map[string]struct {
+		c    *client
+		want expect
+	}{
+		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
+			"/steer": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir}},
+		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
+			"/steer": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny}},
+		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
+			"/steer": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny}},
+		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
+			"/steer": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny}},
+		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
+			"/steer": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny}},
+		// Admin alone does not grant steer/new/save.
+		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
+			"/steer": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see}},
+		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
+			"/steer": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see}},
+	}
+	for who, row := range matrix {
+		for name, want := range row.want {
+			cl := calls[name]
+			var resp *http.Response
+			switch {
+			case cl.method == "GET":
+				resp, _ = row.c.get(cl.path)
+			case strings.HasPrefix(cl.path, "/users"):
+				resp, _ = row.c.postForm(cl.path, cl.form)
+			default:
+				resp, _ = row.c.postAPI(cl.path, cl.form)
+			}
+			if resp.StatusCode != want {
+				t.Errorf("%s %s %s = %d, want %d", who, cl.method, cl.path, resp.StatusCode, want)
+			}
+		}
+	}
+	// Only the permitted calls reached the controller.
+	h.ctl.mu.Lock()
+	defer h.ctl.mu.Unlock()
+	if len(h.ctl.steers) != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
+		t.Fatalf("controller calls: steers=%v news=%v saves=%v", h.ctl.steers, h.ctl.news, h.ctl.saves)
+	}
+	if h.ctl.saves[0][1] != "gym" {
+		t.Fatalf("save tag not passed through: %v", h.ctl.saves)
+	}
+	if len(h.ctl.notes) != 6 {
+		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
+	}
+}
+
+// --- invite and reset links ---
+
+func TestInviteFlowWithoutEmail(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+
+	resp, body := admin.postForm("/users/create", url.Values{"email": {"Jane@Example.com"}, "steer": {"1"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/users" {
+		t.Fatalf("create = %d %s", resp.StatusCode, body)
+	}
+	_, page := admin.get("/users")
+	for _, want := range []string{"Account created for jane@example.com", "Invitation link", `id="copy"`, "jane@example.com", "invited", "expires in"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("users page missing %q:\n%s", want, page)
+		}
+	}
+	if strings.Contains(page, "emailed") || strings.Contains(page, "Email could not") {
+		t.Fatal("without SMTP the page must not talk about email delivery")
+	}
+	link := extractLink(t, page)
+	if !strings.HasPrefix(link, "/set-password/") {
+		t.Fatalf("link path = %q", link)
+	}
+	// The flash is one-shot.
+	_, again := admin.get("/users")
+	if strings.Contains(again, `id="link"`) {
+		t.Fatal("link flash shown twice")
+	}
+	// Pending list shows it.
+	if !strings.Contains(again, "Pending links") || !strings.Contains(again, "Regenerate") {
+		t.Fatal("pending links section missing")
+	}
+
+	// The invitee opens the link: email read-only, chooses a password.
+	c := h.client()
+	resp, body = c.get(link)
+	if resp.StatusCode != 200 || !strings.Contains(body, `value="jane@example.com" readonly`) || !strings.Contains(body, "invited") {
+		t.Fatalf("invite page = %d %s", resp.StatusCode, body)
+	}
+	resp, body = c.postForm(link, url.Values{"password": {"jane-pass-1"}, "password2": {"different"}})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "do not match") {
+		t.Fatalf("mismatch = %d", resp.StatusCode)
+	}
+	resp, body = c.postForm(link, url.Values{"password": {"short"}, "password2": {"short"}})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "at least 8") {
+		t.Fatalf("weak = %d %s", resp.StatusCode, body)
+	}
+	jane := h.activate(link, "jane-pass-1")
+	resp, body = jane.get("/me")
+	if resp.StatusCode != 200 || !strings.Contains(body, `"steer":true`) || !strings.Contains(body, `"admin":false`) {
+		t.Fatalf("/me after activation = %d %s", resp.StatusCode, body)
+	}
+	// The link is dead now.
+	resp, body = h.client().get(link)
+	if resp.StatusCode != http.StatusGone || !strings.Contains(body, "not valid") {
+		t.Fatalf("used link = %d", resp.StatusCode)
+	}
+	resp, _ = h.client().postForm(link, url.Values{"password": {"x-pass-123"}, "password2": {"x-pass-123"}})
+	if resp.StatusCode != http.StatusGone {
+		t.Fatalf("used link post = %d", resp.StatusCode)
+	}
+	_, page = admin.get("/users")
+	if strings.Contains(page, "Pending links") {
+		t.Fatal("redeemed link still pending")
+	}
+	// Jane can log in with the password she chose; the admin never saw it.
+	j2 := h.client()
+	j2.login("jane@example.com", "jane-pass-1")
+}
+
+func TestInviteRegenerateAndRevoke(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	first := h.invite(admin, "kim@example.com", nil)
+
+	// Regenerate: new link works, old one is dead.
+	resp, _ := admin.postForm("/users/link", url.Values{"email": {"kim@example.com"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("regenerate = %d", resp.StatusCode)
+	}
+	_, page := admin.get("/users")
+	second := extractLink(t, page)
+	if second == first {
+		t.Fatal("regenerate returned the same link")
+	}
+	if resp, _ := h.client().get(first); resp.StatusCode != http.StatusGone {
+		t.Fatalf("old link after regenerate = %d", resp.StatusCode)
+	}
+	if resp, _ := h.client().get(second); resp.StatusCode != 200 {
+		t.Fatalf("new link = %d", resp.StatusCode)
+	}
+	// Revoke: dead, and gone from the pending list.
+	resp, _ = admin.postForm("/users/revoke-link", url.Values{"email": {"kim@example.com"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("revoke = %d", resp.StatusCode)
+	}
+	if resp, _ := h.client().get(second); resp.StatusCode != http.StatusGone {
+		t.Fatalf("revoked link = %d", resp.StatusCode)
+	}
+	_, page = admin.get("/users")
+	if !strings.Contains(page, "revoked") || strings.Contains(page, "Pending links") {
+		t.Fatalf("page after revoke:\n%s", page)
+	}
+	// Expired links are refused.
+	secret, _, _ := h.users.IssueLink("kim@example.com")
+	if resp, _ := h.client().get("/set-password/" + secret); resp.StatusCode != 200 {
+		t.Fatalf("fresh link = %d", resp.StatusCode)
+	}
+	if resp, _ := h.client().get("/set-password/not-a-real-secret"); resp.StatusCode != http.StatusGone {
+		t.Fatalf("bogus link = %d", resp.StatusCode)
+	}
+}
+
+func TestResetLinkLogsOutOtherSessions(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	link := h.invite(admin, "lee@example.com", nil)
+	lee := h.activate(link, "lee-pass-1")
+	leePhone := h.client()
+	leePhone.login("lee@example.com", "lee-pass-1")
+
+	// An active account gets a RESET link.
+	resp, _ := admin.postForm("/users/link", url.Values{"email": {"lee@example.com"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("reset link = %d", resp.StatusCode)
+	}
+	_, page := admin.get("/users")
+	if !strings.Contains(page, "Password reset link") {
+		t.Fatal("reset link not labeled as such")
+	}
+	reset := extractLink(t, page)
+	resp, body := h.client().get(reset)
+	if resp.StatusCode != 200 || !strings.Contains(body, "Choose a new password") {
+		t.Fatalf("reset page = %d %s", resp.StatusCode, body)
+	}
+	fresh := h.activate(reset, "lee-pass-2")
+	if resp, _ := fresh.get("/state"); resp.StatusCode != 200 {
+		t.Fatalf("fresh session = %d", resp.StatusCode)
+	}
+	for name, c := range map[string]*client{"old browser": lee, "phone": leePhone} {
+		if resp, _ := c.get("/state"); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s still logged in after reset: %d", name, resp.StatusCode)
+		}
+	}
+	if _, ok := h.users.Verify("lee@example.com", "lee-pass-1"); ok {
+		t.Fatal("old password survived the reset")
+	}
+}
+
+func TestInviteEmailsLinkWhenConfigured(t *testing.T) {
+	m := &fakeMailer{}
+	h := newHarness(t, m)
+	admin := h.admin()
+	link := h.invite(admin, "pat@example.com", nil)
+	m.mu.Lock()
+	sent := append([]string(nil), m.sent...)
+	m.mu.Unlock()
+	if len(sent) != 1 || !strings.HasPrefix(sent[0], "pat@example.com|Your Infinite AI Radio invitation|") {
+		t.Fatalf("sent = %v", sent)
+	}
+	if !strings.Contains(sent[0], h.srv.URL+link) {
+		t.Fatalf("email lacks the link %s:\n%s", link, sent[0])
+	}
+	if strings.Contains(strings.ToLower(sent[0]), "password:") {
+		t.Fatal("email must never carry a password")
+	}
+	// The page says it was emailed and still shows the link.
+	m.fail = true
+	resp, _ := admin.postForm("/users/link", url.Values{"email": {"pat@example.com"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("regenerate = %d", resp.StatusCode)
+	}
+	_, page := admin.get("/users")
+	if !strings.Contains(page, "Email could not be sent") || !strings.Contains(page, `id="link"`) {
+		t.Fatalf("email failure must still show the link:\n%s", page)
+	}
+	// With SMTP the users page no longer describes hand-over only.
+	if strings.Contains(page, "no email server configured") {
+		t.Fatal("page claims no email server")
+	}
+}
+
+// --- users page guards and account page ---
+
+func TestUsersGuards(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	// Cannot delete yourself.
+	admin.postForm("/users/delete", url.Values{"email": {"admin@example.com"}})
+	_, page := admin.get("/users")
+	if !strings.Contains(page, "cannot delete your own account") {
+		t.Fatalf("self delete not refused:\n%s", page)
+	}
+	// Cannot remove the last admin.
+	admin.postForm("/users/update", url.Values{"email": {"admin@example.com"}, "steer": {"1"}})
+	_, page = admin.get("/users")
+	if !strings.Contains(page, "remove the last admin") {
+		t.Fatalf("last admin demotion not refused:\n%s", page)
+	}
+	// Deleting another user ends their sessions.
+	link := h.invite(admin, "tmp@example.com", nil)
+	tmp := h.activate(link, "tmp-pass-12")
+	resp, _ := admin.postForm("/users/delete", url.Values{"email": {"tmp@example.com"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete = %d", resp.StatusCode)
+	}
+	if resp, _ := tmp.get("/state"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("deleted user still logged in: %d", resp.StatusCode)
+	}
+	// Unknown emails and invalid input produce errors, not crashes.
+	admin.postForm("/users/update", url.Values{"email": {"ghost@example.com"}})
+	_, page = admin.get("/users")
+	if !strings.Contains(page, "no account with that email") {
+		t.Fatalf("unknown update not reported:\n%s", page)
+	}
+	admin.postForm("/users/create", url.Values{"email": {"not an email"}})
+	_, page = admin.get("/users")
+	if !strings.Contains(page, "not a valid email") {
+		t.Fatalf("invalid email not reported:\n%s", page)
+	}
+}
+
+func TestAccountPasswordChange(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	other := h.client()
+	other.login("admin@example.com", "admin-pass-1")
+
+	resp, body := admin.postForm("/account/password", url.Values{"current": {"wrong"}, "password": {"new-pass-123"}, "password2": {"new-pass-123"}})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "current password is wrong") {
+		t.Fatalf("wrong current = %d", resp.StatusCode)
+	}
+	resp, body = admin.postForm("/account/password", url.Values{"current": {"admin-pass-1"}, "password": {"new-pass-123"}, "password2": {"other"}})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "do not match") {
+		t.Fatalf("mismatch = %d", resp.StatusCode)
+	}
+	resp, body = admin.postForm("/account/password", url.Values{"current": {"admin-pass-1"}, "password": {"new-pass-123"}, "password2": {"new-pass-123"}})
+	if resp.StatusCode != 200 || !strings.Contains(body, "Password changed") {
+		t.Fatalf("change = %d %s", resp.StatusCode, body)
+	}
+	// This browser stays logged in; the other one is out.
+	if resp, _ := admin.get("/state"); resp.StatusCode != 200 {
+		t.Fatalf("own session lost: %d", resp.StatusCode)
+	}
+	if resp, _ := other.get("/state"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("other session survived: %d", resp.StatusCode)
+	}
+	if _, ok := h.users.Verify("admin@example.com", "new-pass-123"); !ok {
+		t.Fatal("new password rejected")
+	}
+}
+
+// --- chunks ---
+
+// syntheticMP3 builds a tagged MP3-shaped file (ID3v2.3 + one MPEG1
+// header + zero padding): enough for the catalog and range serving.
+func syntheticMP3(title, album string, bytes int) []byte {
+	frame := func(id, text string) []byte {
+		data := []byte{3} // UTF-8
+		data = append(data, text...)
+		f := []byte(id)
+		f = binary.BigEndian.AppendUint32(f, uint32(len(data)))
+		f = append(f, 0, 0)
+		return append(f, data...)
+	}
+	body := append(frame("TIT2", title), frame("TALB", album)...)
+	size := len(body)
+	hdr := []byte{'I', 'D', '3', 3, 0, 0, byte(size>>21) & 0x7f, byte(size>>14) & 0x7f, byte(size>>7) & 0x7f, byte(size) & 0x7f}
+	out := append(hdr, body...)
+	out = append(out, 0xFF, 0xFB, 0x94, 0x00) // MPEG1 L3 128kbps 48kHz stereo
+	return append(out, make([]byte, bytes-len(out))...)
+}
+
+func TestChunkListingAndRangeServing(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	dir := h.s.catalog.Dir()
+	os.MkdirAll(filepath.Join(dir, "gym_grind"), 0o755)
+	os.MkdirAll(filepath.Join(dir, "untagged"), 0o755)
+	a := filepath.Join(dir, "gym_grind", "20260821-100000-rock.mp3")
+	b := filepath.Join(dir, "untagged", "20260821-110000-piano.mp3")
+	os.WriteFile(a, syntheticMP3("energetic rock", "gym_grind", 16000), 0o644)
+	os.WriteFile(b, syntheticMP3("calm piano", "untagged", 32000), 0o644)
+	old := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(a, old, old)
+	// A secret outside the snippets tree that must be unreachable.
+	os.WriteFile(filepath.Join(h.dir, "secret.mp3"), []byte("secret"), 0o644)
+
+	resp, body := admin.get("/api/chunks")
+	if resp.StatusCode != 200 {
+		t.Fatalf("/api/chunks = %d %s", resp.StatusCode, body)
+	}
+	var listing chunksJSON
+	if err := json.Unmarshal([]byte(body), &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Chunks) != 2 || listing.Chunks[0].Title != "calm piano" || listing.Chunks[1].Tag != "gym_grind" {
+		t.Fatalf("listing = %+v", listing)
+	}
+	if strings.Join(listing.Tags, ",") != "gym_grind,untagged" {
+		t.Fatalf("tags = %v", listing.Tags)
+	}
+	if listing.Chunks[0].Seconds < 1.9 || listing.Chunks[0].Seconds > 2.1 { // 32000 B at 128 kbps
+		t.Fatalf("duration = %v", listing.Chunks[0].Seconds)
+	}
+	if listing.Chunks[1].URL != "/chunks/gym_grind/20260821-100000-rock.mp3" {
+		t.Fatalf("url = %q", listing.Chunks[1].URL)
+	}
+
+	// Whole file.
+	resp, body = admin.get(listing.Chunks[1].URL)
+	if resp.StatusCode != 200 || len(body) != 16000 || resp.Header.Get("Content-Type") != "audio/mpeg" || resp.Header.Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("file = %d len %d type %s ranges %s", resp.StatusCode, len(body), resp.Header.Get("Content-Type"), resp.Header.Get("Accept-Ranges"))
+	}
+	// Range request (seeking).
+	req, _ := http.NewRequest("GET", h.srv.URL+listing.Chunks[1].URL, nil)
+	req.Header.Set("Range", "bytes=100-199")
+	resp2, err := admin.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusPartialContent || len(part) != 100 || resp2.Header.Get("Content-Range") != "bytes 100-199/16000" {
+		t.Fatalf("range = %d len %d %s", resp2.StatusCode, len(part), resp2.Header.Get("Content-Range"))
+	}
+	// Traversal and junk are 404, never served.
+	for _, p := range []string{
+		"/chunks/gym_grind/missing.mp3", "/chunks/../secret.mp3", "/chunks/gym_grind/..%2Fsecret.mp3",
+		"/chunks/Gym_Grind/20260821-100000-rock.mp3", "/chunks/gym_grind/.hidden.mp3",
+	} {
+		resp, _ := admin.get(p)
+		if resp.StatusCode == 200 {
+			t.Fatalf("%s served", p)
+		}
+	}
+	// Listening needs a login but no other permission.
+	if resp, _ := h.client().get(listing.Chunks[1].URL); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous chunk = %d", resp.StatusCode)
+	}
+	// An empty library is an empty listing, not an error.
+	os.RemoveAll(dir)
+	resp, body = admin.get("/api/chunks")
+	if resp.StatusCode != 200 || !strings.Contains(body, `"chunks":[]`) {
+		t.Fatalf("empty listing = %d %s", resp.StatusCode, body)
+	}
+}
+
+// --- page content ---
+
+func TestPlayerPageContainsControls(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	_, page := admin.get("/")
+	for _, want := range []string{
+		"stream.mp3", `id="play"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="tag"`, `id="text"`, `id="now"`,
+		`id="mode-live"`, `id="mode-saved"`, `id="tags"`, `id="chunks"`, `id="savedaudio"`, `id="backloop"`,
+		`href="/users"`, `href="/account"`, `action="/logout"`, "viewport",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("page missing %q", want)
+		}
+	}
+	// Non-admins get no Users link.
+	link := h.invite(admin, "plain@example.com", nil)
+	plain := h.activate(link, "plain-pass-1")
+	_, page = plain.get("/")
+	if strings.Contains(page, `href="/users"`) {
+		t.Fatal("non-admin page shows the Users link")
+	}
+	resp, _ := plain.get("/users")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-admin /users = %d", resp.StatusCode)
+	}
+}
+
 // --- security middleware ---
 
 func TestHostAllowlistRejectsForeignHosts(t *testing.T) {
-	srv, _, s := testServer(t, "")
-	port := strconv.Itoa(s.cfg.Port)
+	h := newHarness(t, nil)
+	h.users.EnsureAdmin("admin@example.com", "admin-pass-1")
+	port := strconv.Itoa(h.s.cfg.Port)
 
-	req, _ := http.NewRequest("GET", srv.URL+"/state", nil)
+	req, _ := http.NewRequest("GET", h.srv.URL+"/login", nil)
 	req.Host = "evil.example.com:" + port // DNS-rebinding shape
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -446,115 +1117,71 @@ func TestHostAllowlistRejectsForeignHosts(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign host accepted: %d", resp.StatusCode)
 	}
-
-	// Wrong port on an allowed name is rejected too.
-	req, _ = http.NewRequest("GET", srv.URL+"/state", nil)
+	req, _ = http.NewRequest("GET", h.srv.URL+"/login", nil)
 	req.Host = "127.0.0.1:1"
 	resp, _ = http.DefaultClient.Do(req)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("wrong-port host accepted: %d", resp.StatusCode)
 	}
-
-	// The legit host works (exercised implicitly everywhere else too).
-	resp, _ = http.Get(srv.URL + "/state")
+	resp, _ = http.Get(h.srv.URL + "/login")
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("legit host rejected: %d", resp.StatusCode)
 	}
 }
 
-func TestMutationsRequireCustomHeaderAndCleanOrigin(t *testing.T) {
-	srv, ctl, s := testServer(t, "")
-	port := strconv.Itoa(s.cfg.Port)
-
-	// A plain cross-site-style POST (no custom header) is refused.
-	resp, err := http.Post(srv.URL+"/steer", "application/x-www-form-urlencoded",
-		strings.NewReader("text=evil"))
-	if err != nil {
-		t.Fatal(err)
+func TestMutationsNeedOriginOrHeader(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	ck := admin.sessionCookieOf()
+	do := func(origin, header string) int {
+		req, _ := http.NewRequest("POST", h.srv.URL+"/steer", strings.NewReader("text=evil"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if header != "" {
+			req.Header.Set(csrfHeader, header)
+		}
+		req.AddCookie(ck)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("headerless POST accepted: %d", resp.StatusCode)
+	// A bare cross-site-style POST (no Origin, no header) is refused.
+	if got := do("", ""); got != http.StatusForbidden {
+		t.Fatalf("bare POST = %d", got)
 	}
-
 	// A foreign Origin is refused even with the header.
-	req, _ := http.NewRequest("POST", srv.URL+"/steer", strings.NewReader("text=evil"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set(csrfHeader, "1")
-	req.Header.Set("Origin", "http://evil.example.com")
-	resp, _ = http.DefaultClient.Do(req)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("foreign-origin POST accepted: %d", resp.StatusCode)
+	if got := do("http://evil.example.com", "1"); got != http.StatusForbidden {
+		t.Fatalf("foreign-origin POST = %d", got)
 	}
-
-	// The page's own shape (same-origin Origin + header) works.
-	req, _ = http.NewRequest("POST", srv.URL+"/steer", strings.NewReader("text=calmer"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set(csrfHeader, "1")
-	req.Header.Set("Origin", "http://127.0.0.1:"+port)
-	resp, _ = http.DefaultClient.Do(req)
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("legit POST rejected: %d", resp.StatusCode)
+	// The page's fetch shape (header) and a same-origin form post
+	// (Origin) both work.
+	if got := do("", "1"); got != 200 {
+		t.Fatalf("header POST = %d", got)
 	}
-	if len(ctl.steers) != 1 || ctl.steers[0] != "calmer" {
-		t.Fatalf("only the legit steer may reach the controller: %v", ctl.steers)
+	if got := do(h.srv.URL, ""); got != 200 {
+		t.Fatalf("same-origin form POST = %d", got)
+	}
+	h.ctl.mu.Lock()
+	defer h.ctl.mu.Unlock()
+	if len(h.ctl.steers) != 2 {
+		t.Fatalf("only the legit posts may reach the controller: %v", h.ctl.steers)
 	}
 }
 
-func TestValidateBindRequiresTokenBeyondLoopbackLegacyShapes(t *testing.T) {
-	// The one-element shapes that used to be a single override string.
-	for _, tc := range []struct {
-		entry   string
-		wantErr bool
-	}{
-		{"127.0.0.1", false}, {"localhost", false}, {"::1", false},
-		{"0.0.0.0", true}, {"192.168.1.10", true},
+func TestSafeNext(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "/", "/": "/", "/account": "/account", "//evil.example.com": "/", "http://evil.example.com": "/",
+		"/x\\y": "/", "/users?x=1": "/users?x=1",
 	} {
-		err := ValidateBinds([]string{tc.entry}, "")
-		if (err != nil) != tc.wantErr {
-			t.Errorf("legacy shape %q: err=%v want error=%v", tc.entry, err, tc.wantErr)
+		if got := safeNext(in); got != want {
+			t.Errorf("safeNext(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestTokenInURLBecomesCookieAndIsStripped(t *testing.T) {
-	srv, _, _ := testServer(t, "sesame")
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-
-	resp, err := client.Get(srv.URL + "/?token=sesame")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Fatalf("token URL not redirected: %d", resp.StatusCode)
-	}
-	if loc := resp.Header.Get("Location"); strings.Contains(loc, "token") {
-		t.Fatalf("redirect keeps the token in the URL: %q", loc)
-	}
-	var cookie *http.Cookie
-	for _, c := range resp.Cookies() {
-		if c.Name == tokenCookie {
-			cookie = c
-		}
-	}
-	if cookie == nil || cookie.Value != "sesame" || !cookie.HttpOnly {
-		t.Fatalf("token cookie wrong: %+v", cookie)
-	}
-
-	// The cookie alone now authorizes requests.
-	req, _ := http.NewRequest("GET", srv.URL+"/state", nil)
-	req.AddCookie(cookie)
-	resp, _ = http.DefaultClient.Do(req)
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.Contains(string(body), "playing") {
-		t.Fatalf("cookie auth failed: %d %s", resp.StatusCode, body)
 	}
 }

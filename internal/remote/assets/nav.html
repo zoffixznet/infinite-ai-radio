@@ -1,0 +1,6 @@
+{{define "nav"}}<nav class="nav" aria-label="Pages">
+  <a href="/"{{if eq .Page "player"}} class="on"{{end}}>Player</a>
+  <a href="/account"{{if eq .Page "account"}} class="on"{{end}}>Account</a>
+  {{if .Admin}}<a href="/users"{{if eq .Page "users"}} class="on"{{end}}>Users</a>{{end}}
+  <form method="post" action="/logout"><button type="submit">Log out</button></form>
+</nav>{{end}}

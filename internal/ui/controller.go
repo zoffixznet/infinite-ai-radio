@@ -51,7 +51,8 @@ func (c *Controller) Handle(line string) (string, bool) {
 		}
 		return c.O.NewSession(rest), false
 	case "save", "snippet":
-		return c.O.SaveSnippet(strings.ToLower(rest)), false
+		which, tag := parseSave(rest)
+		return c.O.SaveSnippet(which, tag), false
 	case "skip", "next":
 		return c.O.Skip(), false
 	case "pause":
@@ -105,6 +106,20 @@ func (c *Controller) Handle(line string) (string, bool) {
 		// Free text: steer the stream.
 		return c.O.Steer(line), false
 	}
+}
+
+// parseSave splits "save [prev] [tag words]" into which track to save
+// and the tag to file it under.
+func parseSave(rest string) (which, tag string) {
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	switch strings.ToLower(fields[0]) {
+	case "prev", "previous", "last":
+		return "prev", strings.Join(fields[1:], " ")
+	}
+	return "", strings.Join(fields, " ")
 }
 
 // export parses "mp3 <minutes> [file]".
@@ -203,7 +218,7 @@ const helpText = `steer with plain text: "more energetic", "calmer", "switch to 
 commands (leading / optional):
   clear             wipe steering        name <name>      save this session
   new <prompt>      fresh session        sessions         list saved + presets
-  save [prev]       track -> MP3         load <name>      resume a session
+  save [prev] [tag] track -> MP3         load <name>      resume a session
   mp3 <min> [file]  export MP3           preset <name>    switch preset
   skip              next track           pause | resume   pause / continue
   volume <0-100>    set volume           status | engine  show status

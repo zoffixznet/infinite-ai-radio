@@ -1,9 +1,10 @@
 // Package remote implements the built-in phone remote: a small HTTP
 // server (off by default) that serves a phone-first control page, a live
-// MP3 stream of the mastered output, and control endpoints wired through
-// the same controller the terminal UI uses. By default it binds only to
-// localhost and, when present, the machine's Tailscale address, so the
-// private tailnet is the trust boundary.
+// MP3 stream of the mastered output, a player for saved chunks, and
+// control endpoints wired through the same controller the terminal UI
+// uses. Every request needs a logged-in account (see package accounts).
+// By default it binds only to localhost and, when present, the machine's
+// Tailscale address.
 package remote
 
 import (
@@ -92,7 +93,7 @@ type Binding struct {
 	// wildcard, every machine interface address).
 	ExtraHosts []string
 	// Exposed reports whether any bound address is reachable beyond
-	// loopback and the tailnet (which makes a token mandatory).
+	// loopback and the tailnet.
 	Exposed bool
 }
 

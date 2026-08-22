@@ -139,11 +139,7 @@ func runDoctor() error {
 	binding := remote.ResolveBinding(a.cfg.Remote.Bind, a.cfg.Remote.Port)
 	tailnetIP := binding.TailnetIP
 	if binding.Exposed {
-		note := " - reachable beyond localhost/tailnet; a token is required"
-		if a.cfg.Remote.Token == "" {
-			note = " - EXPOSED without a token: the remote will refuse to start"
-		}
-		check("remote bind", a.cfg.Remote.Token != "", "would bind "+strings.Join(binding.Addrs, ", ")+note)
+		check("remote bind", true, "would bind "+strings.Join(binding.Addrs, ", ")+" - reachable beyond localhost/tailnet; every request still needs a login")
 	} else {
 		check("remote bind", true, "would bind "+strings.Join(binding.Addrs, ", "))
 	}
@@ -158,8 +154,34 @@ func runDoctor() error {
 	default:
 		check("tailnet", true, "not installed; remote stays localhost-only (see the README for the phone setup)")
 	}
-	if a.cfg.Remote.Token != "" {
-		check("remote token", true, "shared-secret token required on every request")
+	users, sessions := a.accountStores()
+	switch n := users.Count(); {
+	case n == 0:
+		check("accounts", false, "none yet; run 'iar remote setup' to create the first admin ("+users.Path()+")")
+	default:
+		admins := 0
+		for _, u := range users.List() {
+			if u.Perms.Admin {
+				admins++
+			}
+		}
+		check("accounts", true, fmt.Sprintf("%d account(s), %d admin(s), %d active login(s); pending links: %d",
+			n, admins, sessions.Count(), len(users.Links())))
+	}
+	smtp := a.cfg.Remote.SMTP
+	if smtp.Configured() {
+		if err := smtp.Validate(); err != nil {
+			check("email", false, err.Error())
+		} else {
+			check("email", true, fmt.Sprintf("invite links are also emailed via %s (from %s); test with 'iar remote test-email you@example.com'", smtp.Host, smtp.From))
+		}
+		if smtp.Password != "" {
+			if fi, err := os.Stat(a.paths.ConfigFile()); err == nil && fi.Mode().Perm()&0o077 != 0 {
+				check("config mode", false, fmt.Sprintf("%s holds an SMTP password but is readable by other users; run: chmod 600 %s", a.paths.ConfigFile(), a.paths.ConfigFile()))
+			}
+		}
+	} else {
+		check("email", true, "not configured (optional); invite links are shared by hand")
 	}
 
 	// Ollama.

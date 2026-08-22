@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Log in to {{.Product}}</title>
+<style>{{template "style.css"}}</style>
+</head>
+<body>
+<main class="login">
+  <h1>{{.Product}}</h1>
+  <p class="tag">Log in to listen</p>
+  <section class="card">
+    {{if .Error}}<div class="flash err" role="alert">{{.Error}}</div>{{end}}
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{.Next}}">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required autofocus value="{{.Email}}">
+      <label for="password" style="display:block;margin-top:10px">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button class="action primary" type="submit">Log in</button>
+    </form>
+  </section>
+  <footer>Forgot your password? Ask an admin for a reset link.</footer>
+</main>
+</body>
+</html>

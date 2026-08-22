@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{.Nav.Product}} users</title>
+<style>{{template "style.css"}}</style>
+</head>
+<body>
+<header>
+  <h1>{{.Nav.Product}}</h1>
+  <span class="sub">users</span>
+</header>
+{{template "nav" .Nav}}
+
+{{if .Flash.Error}}<div class="flash err" role="alert">{{.Flash.Error}}</div>{{end}}
+{{if .Flash.Message}}<div class="flash ok" role="status">{{.Flash.Message}}</div>{{end}}
+
+{{if .Flash.Link}}
+<section class="card" id="linkcard">
+  <h2>{{if eq .Flash.LinkKind "invite"}}Invitation link{{else}}Password reset link{{end}}</h2>
+  <p>For <strong>{{.Flash.LinkEmail}}</strong>. Works once; expires in {{until .Flash.LinkExpires}}.</p>
+  {{if .Flash.Emailed}}<p class="hint">Also emailed to {{.Flash.LinkEmail}}.</p>{{end}}
+  {{if .Flash.EmailError}}<p class="hint">Email could not be sent ({{.Flash.EmailError}}); share the link yourself.</p>{{end}}
+  <div class="linkbox">
+    <input id="link" type="text" readonly value="{{.Flash.Link}}" aria-label="Link">
+    <button id="copy" class="action primary" type="button">Copy</button>
+  </div>
+  <p class="hint">Send it by text or chat. The person must be able to reach this address (same Tailscale network or LAN).</p>
+</section>
+{{end}}
+
+<section class="card">
+  <h2>Add a user</h2>
+  <form method="post" action="/users/create">
+    <input name="email" type="email" required placeholder="name@example.com" aria-label="Email" autocomplete="off">
+    <div class="perms">
+      <label class="check"><input type="checkbox" name="steer" value="1" checked> Can steer</label>
+      <label class="check"><input type="checkbox" name="new_prompt" value="1"> New prompts</label>
+      <label class="check"><input type="checkbox" name="save" value="1"> Can save</label>
+      <label class="check"><input type="checkbox" name="admin" value="1"> Admin</label>
+    </div>
+    <button class="action primary" type="submit">Create and get invite link</button>
+  </form>
+  <p class="hint">Everyone can listen. {{if .Email}}Invite links are also emailed.{{else}}You hand the invite link over yourself (no email server configured).{{end}}</p>
+</section>
+
+{{if .Pending}}
+<section class="card">
+  <h2>Pending links</h2>
+  {{range .Pending}}
+  <div class="pending">
+    <span class="who"><strong>{{.Email}}</strong> <span class="badge {{if eq .Kind "invite"}}warn{{else}}ok{{end}}">{{.Kind}}</span></span>
+    <span class="meta">expires in {{until .Expires}}</span>
+    <form method="post" action="/users/link"><input type="hidden" name="email" value="{{.Email}}"><button class="action small" type="submit">Regenerate</button></form>
+    <form method="post" action="/users/revoke-link"><input type="hidden" name="email" value="{{.Email}}"><button class="action small danger" type="submit">Revoke</button></form>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+<section class="card">
+  <h2>Accounts</h2>
+  {{range .Users}}
+  <div class="user">
+    <div class="uhead"><strong>{{.Email}}</strong>
+      {{if .Active}}<span class="badge ok">active</span>{{else}}<span class="badge warn">invited</span>{{end}}
+      {{if .Me}}<span class="badge me">you</span>{{end}}
+    </div>
+    <form method="post" action="/users/update">
+      <input type="hidden" name="email" value="{{.Email}}">
+      <div class="perms">
+        <label class="check"><input type="checkbox" name="steer" value="1"{{if .Perms.Steer}} checked{{end}}> Can steer</label>
+        <label class="check"><input type="checkbox" name="new_prompt" value="1"{{if .Perms.NewPrompt}} checked{{end}}> New prompts</label>
+        <label class="check"><input type="checkbox" name="save" value="1"{{if .Perms.Save}} checked{{end}}> Can save</label>
+        <label class="check"><input type="checkbox" name="admin" value="1"{{if .Perms.Admin}} checked{{end}}> Admin</label>
+      </div>
+      <div class="row">
+        <button class="action small" type="submit">Save permissions</button>
+      </div>
+    </form>
+    <div class="row">
+      <form method="post" action="/users/link"><input type="hidden" name="email" value="{{.Email}}"><button class="action small" type="submit">{{if .Active}}Reset link{{else}}New invite link{{end}}</button></form>
+      {{if not .Me}}<form method="post" action="/users/delete" onsubmit="return confirm('Delete {{.Email}}?')"><input type="hidden" name="email" value="{{.Email}}"><button class="action small danger" type="submit">Delete</button></form>{{end}}
+    </div>
+  </div>
+  {{end}}
+</section>
+
+<script>
+(function () {
+  "use strict";
+  var copy = document.getElementById("copy");
+  if (!copy) return;
+  copy.addEventListener("click", function () {
+    var input = document.getElementById("link");
+    input.select();
+    input.setSelectionRange(0, input.value.length);
+    var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(input.value).then(done, function () { document.execCommand("copy"); done(); });
+    } else {
+      document.execCommand("copy");
+      done();
+    }
+  });
+})();
+</script>
+</body>
+</html>

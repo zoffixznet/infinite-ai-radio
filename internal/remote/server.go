@@ -2,10 +2,10 @@ package remote
 
 import (
 	"context"
-	"crypto/subtle"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,18 +14,23 @@ import (
 	"strings"
 	"time"
 
+	"iar/internal/accounts"
 	"iar/internal/player"
+	"iar/internal/snippets"
 )
 
-//go:embed assets/index.html
-var pageHTML []byte
+//go:embed assets/*.html assets/*.css
+var assetFS embed.FS
+
+// ProductName is the name shown on every page and in emails.
+const ProductName = "Infinite AI Radio"
 
 // Controls is what the remote needs from the player; the orchestrator
 // implements it (the same methods the terminal UI drives).
 type Controls interface {
 	Steer(text string) string
 	NewSession(prompt string) string
-	SaveSnippet(which string) string
+	SaveSnippet(which, tag string) string
 	Status() player.Status
 	Announce(text string)
 }
@@ -34,13 +39,19 @@ type Controls interface {
 type Config struct {
 	// Port to listen on.
 	Port int
-	// Token, when non-empty, is required on every request.
-	Token string
 	// Binds lists extra addresses to listen on (additive to localhost
-	// and the tailnet address). Any non-loopback entry requires Token.
+	// and the tailnet address).
 	Binds []string
 	// AllowedHosts adds hostnames/IPs to the Host-header allowlist.
 	AllowedHosts []string
+	// Users and Sessions are the account stores; both are required.
+	Users    *accounts.Store
+	Sessions *accounts.Sessions
+	// Mailer, when configured, emails invite and reset links. Nil or an
+	// unconfigured sender means links are handed over by the admin.
+	Mailer Mailer
+	// SnippetsDir is where saved chunks live (served in saved mode).
+	SnippetsDir string
 }
 
 // Server is the running remote.
@@ -53,46 +64,85 @@ type Server struct {
 	// header and Origin checks (DNS-rebinding defense).
 	allowedHosts map[string]bool
 
+	users    *accounts.Store
+	sessions *accounts.Sessions
+	mailer   Mailer
+	catalog  *snippets.Catalog
+	// ipLimit and acctLimit throttle failed logins per address and per
+	// account.
+	ipLimit   *accounts.Limiter
+	acctLimit *accounts.Limiter
+	tmpl      *template.Template
+	flashes   *flashStore
+
 	// Addrs are the addresses actually listening; TailnetIP is the
 	// detected Tailscale address ("" when absent).
 	Addrs     []string
 	TailnetIP string
 }
 
-// csrfHeader must accompany every mutating request. Cross-site senders
-// cannot add it without a CORS preflight, which is never granted.
+// Mailer sends the account emails; *mail.Sender implements it.
+type Mailer interface {
+	// Configured reports whether sending is possible at all.
+	Configured() bool
+	// Send delivers one plain-text message.
+	Send(ctx context.Context, to, subject, body string) error
+}
+
+// emailConfigured reports whether links are also emailed.
+func (s *Server) emailConfigured() bool {
+	return s.mailer != nil && s.mailer.Configured()
+}
+
+// csrfHeader accompanies the page's own fetch requests. A mutation must
+// carry it or an allowed Origin (which browsers attach to form posts);
+// cross-site senders can do neither without a CORS preflight, which is
+// never granted.
 const csrfHeader = "X-IAR-Remote"
 
-// tokenCookie carries the shared secret after the first ?token= visit.
-const tokenCookie = "iar_token"
+// Login throttling: failures per address and per account inside the
+// window before attempts are refused.
+const (
+	loginAttempts = 10
+	loginWindow   = 15 * time.Minute
+)
 
-// ValidateBinds rejects insecure combinations before anything listens:
-// bind entries beyond loopback make the remote reachable by hosts
-// outside the default trust boundary, so they require a token.
-func ValidateBinds(binds []string, token string) error {
-	if token != "" {
-		return nil
+// newServer wires a server without listening (tests use it directly).
+func newServer(cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (*Server, error) {
+	if cfg.Users == nil || cfg.Sessions == nil {
+		return nil, fmt.Errorf("remote: account stores are required")
 	}
-	for _, b := range binds {
-		b = strings.TrimSpace(b)
-		if b == "" || isLoopbackHost(b) {
-			continue
-		}
-		return fmt.Errorf("remote.bind entry %q may expose the remote beyond localhost and your tailnet; set remote.token to protect it, or remove the entry", b)
+	tmpl, err := template.New("").Funcs(template.FuncMap{
+		"clock": fmtClock,
+		"until": fmtUntil,
+	}).ParseFS(assetFS, "assets/*.html", "assets/*.css")
+	if err != nil {
+		return nil, fmt.Errorf("remote: parsing page templates: %w", err)
 	}
-	return nil
+	return &Server{
+		cfg:       cfg,
+		ctl:       ctl,
+		streamer:  streamer,
+		log:       log,
+		users:     cfg.Users,
+		sessions:  cfg.Sessions,
+		mailer:    cfg.Mailer,
+		catalog:   snippets.NewCatalog(cfg.SnippetsDir),
+		ipLimit:   accounts.NewLimiter(loginAttempts, loginWindow),
+		acctLimit: accounts.NewLimiter(loginAttempts, loginWindow),
+		tmpl:      tmpl,
+		flashes:   newFlashStore(),
+	}, nil
 }
 
 // Start resolves bind addresses, starts the shared encoder and serves on
 // every address. It returns after the listeners are accepting.
 func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (*Server, error) {
-	if err := ValidateBinds(cfg.Binds, cfg.Token); err != nil {
+	s, err := newServer(cfg, ctl, streamer, log)
+	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, ctl: ctl, streamer: streamer, log: log}
-
 	binding := ResolveBinding(cfg.Binds, cfg.Port)
-	addrs := binding.Addrs
 	s.TailnetIP = binding.TailnetIP
 	s.buildAllowedHosts(binding.ExtraHosts)
 	handler := s.buildHandler()
@@ -102,7 +152,7 @@ func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, lo
 	}
 
 	var listeners []net.Listener
-	for _, addr := range addrs {
+	for _, addr := range binding.Addrs {
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			for _, prev := range listeners {
@@ -123,9 +173,14 @@ func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, lo
 		defer cancel()
 		srv.Shutdown(shutCtx)
 	}()
-	log.Info("remote listening", "event", "remote_up", "addrs", strings.Join(s.Addrs, ","), "tailnet_ip", s.TailnetIP, "token", cfg.Token != "")
+	log.Info("remote listening", "event", "remote_up", "addrs", strings.Join(s.Addrs, ","),
+		"tailnet_ip", s.TailnetIP, "accounts", s.users.Count(), "email", s.emailConfigured())
 	return s, nil
 }
+
+// NeedsSetup reports whether no account exists yet (the remote then
+// serves only the setup notice).
+func (s *Server) NeedsSetup() bool { return s.users.Count() == 0 }
 
 // buildAllowedHosts assembles the hostname allowlist: loopback names,
 // the tailnet address, every explicitly bound address (or, for wildcard
@@ -154,12 +209,32 @@ func (s *Server) buildAllowedHosts(bound []string) {
 // buildHandler wires the route mux behind the security middleware.
 func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handlePage)
-	mux.HandleFunc("GET /stream.mp3", s.handleStream)
-	mux.HandleFunc("GET /state", s.handleState)
-	mux.HandleFunc("POST /steer", s.handleSteer)
-	mux.HandleFunc("POST /new", s.handleNew)
-	mux.HandleFunc("POST /save", s.handleSave)
+	// Public (no login): the login page and the invite/reset links.
+	mux.HandleFunc("GET /login", s.handleLoginPage)
+	mux.HandleFunc("POST /login", s.handleLogin)
+	mux.HandleFunc("GET /set-password/{secret}", s.handleSetPasswordPage)
+	mux.HandleFunc("POST /set-password/{secret}", s.handleSetPassword)
+	// Listening: any account.
+	mux.HandleFunc("GET /{$}", s.page(s.handlePlayer))
+	mux.HandleFunc("POST /logout", s.page(s.handleLogout))
+	mux.HandleFunc("GET /me", s.api(s.handleMe))
+	mux.HandleFunc("GET /state", s.api(s.handleState))
+	mux.HandleFunc("GET /stream.mp3", s.api(s.handleStream))
+	mux.HandleFunc("GET /api/chunks", s.api(s.handleChunks))
+	mux.HandleFunc("GET /chunks/{tag}/{file}", s.api(s.handleChunkFile))
+	mux.HandleFunc("GET /account", s.page(s.handleAccountPage))
+	mux.HandleFunc("POST /account/password", s.page(s.handleAccountPassword))
+	// Per-permission actions.
+	mux.HandleFunc("POST /steer", s.apiPerm("steer", permSteer, s.handleSteer))
+	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
+	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
+	// Admin.
+	mux.HandleFunc("GET /users", s.pagePerm("users", permAdmin, s.handleUsersPage))
+	mux.HandleFunc("POST /users/create", s.pagePerm("users", permAdmin, s.handleUserCreate))
+	mux.HandleFunc("POST /users/update", s.pagePerm("users", permAdmin, s.handleUserUpdate))
+	mux.HandleFunc("POST /users/delete", s.pagePerm("users", permAdmin, s.handleUserDelete))
+	mux.HandleFunc("POST /users/link", s.pagePerm("users", permAdmin, s.handleUserLink))
+	mux.HandleFunc("POST /users/revoke-link", s.pagePerm("users", permAdmin, s.handleUserRevokeLink))
 	return s.gate(mux)
 }
 
@@ -184,14 +259,14 @@ func (s *Server) originAllowed(origin string) bool {
 		return true
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "http" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
 	return s.hostAllowed(u.Host)
 }
 
-// gate applies, in order: the Host allowlist, the Origin check, the CSRF
-// header requirement on mutations, and the shared-secret token.
+// gate applies, in order: the Host allowlist, the Origin check, the
+// cross-site guard on mutations, and the zero-accounts setup notice.
 func (s *Server) gate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.hostAllowed(r.Host) {
@@ -199,62 +274,77 @@ func (s *Server) gate(next http.Handler) http.Handler {
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
-		if origin := r.Header.Get("Origin"); !s.originAllowed(origin) {
+		origin := r.Header.Get("Origin")
+		if !s.originAllowed(origin) {
 			s.log.Warn("remote request rejected: origin not allowed", "event", "remote_origin_rejected", "origin", origin, "from", r.RemoteAddr)
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
 		}
-		if r.Method != http.MethodGet && r.Header.Get(csrfHeader) == "" {
-			s.log.Warn("remote request rejected: missing header", "event", "remote_csrf_rejected", "path", r.URL.Path, "from", r.RemoteAddr)
-			http.Error(w, "missing "+csrfHeader+" header", http.StatusForbidden)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && origin == "" && r.Header.Get(csrfHeader) == "" {
+			s.log.Warn("remote request rejected: no origin or header", "event", "remote_csrf_rejected", "path", r.URL.Path, "from", r.RemoteAddr)
+			http.Error(w, "missing Origin or "+csrfHeader+" header", http.StatusForbidden)
 			return
 		}
-		if s.cfg.Token != "" {
-			if !s.tokenOK(r) {
-				http.Error(w, "missing or wrong token", http.StatusUnauthorized)
-				return
-			}
-			// First visit with ?token= in the URL: move the secret
-			// into a cookie and strip it from the address bar.
-			if r.Method == http.MethodGet && r.URL.Query().Get("token") != "" && r.URL.Path == "/" {
-				http.SetCookie(w, &http.Cookie{
-					Name: tokenCookie, Value: r.URL.Query().Get("token"),
-					Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
-				})
-				http.Redirect(w, r, r.URL.Path, http.StatusFound)
-				return
-			}
+		if s.NeedsSetup() {
+			s.log.Info("remote request before setup", "event", "remote_setup_needed", "path", r.URL.Path, "from", r.RemoteAddr)
+			w.Header().Set("Cache-Control", "no-store")
+			s.render(w, http.StatusServiceUnavailable, "setup.html", map[string]any{"Product": ProductName})
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// tokenOK checks the shared secret from, in order of preference, the
-// Authorization header, the cookie, or a token query parameter. Values
-// are never logged.
-func (s *Server) tokenOK(r *http.Request) bool {
-	got := ""
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		got = strings.TrimPrefix(h, "Bearer ")
-	} else if c, err := r.Cookie(tokenCookie); err == nil {
-		got = c.Value
-	} else {
-		got = r.URL.Query().Get("token")
+// render executes a page template.
+func (s *Server) render(w http.ResponseWriter, status int, name string, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
+		s.log.Error("page render failed", "event", "remote_render_failed", "page", name, "error", err.Error())
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
 }
 
-func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(pageHTML)
+// navData is what the shared navigation needs.
+type navData struct {
+	Product string
+	Email   string
+	Admin   bool
+	Page    string
+}
+
+func (s *Server) nav(u accounts.User, page string) navData {
+	return navData{Product: ProductName, Email: u.Email, Admin: u.Perms.Admin, Page: page}
+}
+
+// handlePlayer serves the main page.
+func (s *Server) handlePlayer(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	s.render(w, http.StatusOK, "player.html", map[string]any{"Nav": s.nav(u, "player")})
+}
+
+// meJSON tells the page who is logged in and what they may do, so it can
+// hide controls the server would refuse anyway.
+type meJSON struct {
+	Email     string `json:"email"`
+	Admin     bool   `json:"admin"`
+	Steer     bool   `json:"steer"`
+	NewPrompt bool   `json:"new_prompt"`
+	Save      bool   `json:"save"`
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	writeJSON(w, http.StatusOK, meJSON{
+		Email: u.Email, Admin: u.Perms.Admin, Steer: u.Perms.Steer,
+		NewPrompt: u.Perms.NewPrompt, Save: u.Perms.Save,
+	})
 }
 
 // handleStream serves the shared MP3 stream to one client.
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	pre, ch, cancel := s.streamer.Subscribe()
 	defer cancel()
-	s.log.Info("stream client connected", "event", "remote_stream_open", "from", r.RemoteAddr, "listeners", s.streamer.Listeners())
-	defer s.log.Info("stream client left", "event", "remote_stream_close", "from", r.RemoteAddr)
+	s.log.Info("stream client connected", "event", "remote_stream_open", "user", u.Email, "from", r.RemoteAddr, "listeners", s.streamer.Listeners())
+	defer s.log.Info("stream client left", "event", "remote_stream_close", "user", u.Email, "from", r.RemoteAddr)
 
 	w.Header().Set("Content-Type", "audio/mpeg")
 	w.Header().Set("Cache-Control", "no-store")
@@ -302,7 +392,7 @@ type stateJSON struct {
 	Listeners  int    `json:"listeners"`
 }
 
-func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	st := s.ctl.Status()
 	out := stateJSON{
 		State:      st.State,
@@ -323,13 +413,34 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		out.Elapsed = fmtClock(st.Elapsed)
 		out.Duration = fmtClock(st.Duration)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func fmtClock(d time.Duration) string {
 	d = d.Round(time.Second)
 	return fmt.Sprintf("%d:%02d", int(d.Minutes()), int(d.Seconds())%60)
+}
+
+// fmtUntil says how long until t, coarsely ("6 days", "23 hours").
+func fmtUntil(t time.Time) string {
+	d := time.Until(t)
+	switch {
+	case d <= 0:
+		return "expired"
+	case d < time.Hour:
+		return fmt.Sprintf("%d minutes", int(d.Minutes())+1)
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%d hours", int(d.Hours())+1)
+	default:
+		return fmt.Sprintf("%d days", int(d.Hours()/24))
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
 
 // actionResponse is the reply to control posts.
@@ -339,8 +450,7 @@ type actionResponse struct {
 }
 
 func (s *Server) reply(w http.ResponseWriter, ack string) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(actionResponse{OK: true, Ack: ack})
+	writeJSON(w, http.StatusOK, actionResponse{OK: true, Ack: ack})
 }
 
 // textField pulls a form/query text field with a length cap.
@@ -356,30 +466,30 @@ func textField(r *http.Request, name string) string {
 	return v
 }
 
-func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	text := textField(r, "text")
 	if text == "" {
 		http.Error(w, "text is required", http.StatusBadRequest)
 		return
 	}
 	ack := s.ctl.Steer(text)
-	s.ctl.Announce("remote steer: " + text + " -> " + ack)
+	s.ctl.Announce("remote steer by " + u.Email + ": " + text + " -> " + ack)
 	s.reply(w, ack)
 }
 
-func (s *Server) handleNew(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	prompt := textField(r, "prompt")
 	if prompt == "" {
 		http.Error(w, "prompt is required", http.StatusBadRequest)
 		return
 	}
 	ack := s.ctl.NewSession(prompt)
-	s.ctl.Announce("remote new session: " + prompt)
+	s.ctl.Announce("remote new session by " + u.Email + ": " + prompt)
 	s.reply(w, ack)
 }
 
-func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
-	ack := s.ctl.SaveSnippet(textField(r, "which"))
-	s.ctl.Announce("remote save: " + ack)
+func (s *Server) handleSave(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	ack := s.ctl.SaveSnippet(textField(r, "which"), textField(r, "tag"))
+	s.ctl.Announce("remote save by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }

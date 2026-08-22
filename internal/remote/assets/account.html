@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{.Nav.Product}} account</title>
+<style>{{template "style.css"}}</style>
+</head>
+<body>
+<header>
+  <h1>{{.Nav.Product}}</h1>
+  <span class="sub">account</span>
+</header>
+{{template "nav" .Nav}}
+<section class="card">
+  <h2>Logged in as</h2>
+  <p style="overflow-wrap:anywhere"><strong>{{.Nav.Email}}</strong></p>
+  <p class="hint">Admins manage who can listen, steer, start prompts and save{{if .Nav.Admin}} on the Users page{{end}}.</p>
+</section>
+<section class="card">
+  <h2>Change password</h2>
+  {{if .Error}}<div class="flash err" role="alert">{{.Error}}</div>{{end}}
+  {{if .Message}}<div class="flash ok" role="status">{{.Message}}</div>{{end}}
+  <form method="post" action="/account/password">
+    <label for="current">Current password</label>
+    <input id="current" name="current" type="password" autocomplete="current-password" required>
+    <label for="password" style="display:block;margin-top:10px">New password (8+ characters)</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+    <label for="password2" style="display:block;margin-top:10px">New password again</label>
+    <input id="password2" name="password2" type="password" autocomplete="new-password" minlength="8" required>
+    <button class="action primary" type="submit">Change password</button>
+  </form>
+  <p class="hint" style="margin-top:10px">Forgot it? An admin can give you a reset link.</p>
+</section>
+</body>
+</html>
