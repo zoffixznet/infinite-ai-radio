@@ -22,9 +22,16 @@ everything else keeps its default.
   "remote": {
     "enabled": false,
     "port": 8246,
-    "token": "",
     "bind": [],
-    "allowed_hosts": []
+    "allowed_hosts": [],
+    "smtp": {
+      "host": "",
+      "port": 0,
+      "username": "",
+      "password": "",
+      "from": "",
+      "tls": "starttls"
+    }
   },
   "acestep": {
     "port": 0,
@@ -68,35 +75,44 @@ everything else keeps its default.
   loudness (peak-safe) before playback and banking.
 - `mp3_quality` (0-9): libmp3lame VBR quality for exports and snippets;
   0 is best (the default), 9 is smallest.
-- `snippets_dir`: where the in-app `save` command writes captured
-  tracks. Empty means `snippets/` under the data directory.
+- `snippets_dir`: where the `save` command writes captured tracks, one
+  subdirectory per tag (`untagged/` for saves without one). Empty means
+  `snippets/` under the data directory.
 - `library_max_mb`: total size cap for the on-disk track library that
   powers instant starts (0 disables the library).
 
 ## remote
 
-The phone remote (page + live MP3 stream); see the README's "Listening
-from your phone" section for the full flow.
+The phone remote (page + live MP3 stream + saved-chunk player); see the
+README's "Listening from your phone" section for the full flow. Every
+request needs a logged-in account (`iar remote setup` creates the first
+admin; the Users page does the rest).
 
 - `enabled`: turn the remote on (the `--remote` flag does the same for
   one run).
 - `port`: the HTTP port (default 8246).
-- `token`: optional shared secret; when set, every request must carry it
-  (`?token=...` or an Authorization bearer header). The private tailnet
-  is the default trust boundary, so this is off by default.
 - `bind`: extra addresses to listen on, as a list (a plain string also
   works and means a one-element list). Binding is additive: localhost
   and the machine's Tailscale address are always kept, and every
   address you bind is automatically accepted in URLs. `"0.0.0.0"`
   listens on every network the machine is on and auto-allows the
-  machine's own interface addresses. Any entry beyond localhost refuses
-  to start unless `token` is also set - only expose the remote on
-  networks you fully trust, and never on the public internet.
+  machine's own interface addresses. Remember that logins travel in
+  clear text over plain HTTP: fine on the tailnet (encrypted), your
+  call on a home LAN, never on the public internet without TLS in
+  front.
 - `allowed_hosts`: extra hostnames or IPs clients may use in the URL
   (the remote rejects unknown Host and Origin values as a
-  DNS-rebinding/cross-site defense). Localhost and the tailnet address
-  are always allowed; you only need this together with a `bind`
-  override.
+  DNS-rebinding/cross-site defense). Localhost, the tailnet address and
+  bound addresses are always allowed; you only need this for a
+  hostname or a reverse proxy.
+- `smtp`: optional. When `host` is set, invitation and password-reset
+  links are also emailed to their recipients (without it, admins pass
+  the links on by hand). `tls` is `"starttls"` (default, port 587),
+  `"tls"` (implicit TLS, port 465) or `"none"` (port 25); `port`
+  overrides the default for the mode; `username`/`password`
+  authenticate with PLAIN when set; `from` is the sender address. Test
+  with `iar remote test-email you@example.com`. A config file holding
+  the password should be readable only by you (`chmod 600`).
 
 ## acestep
 
@@ -156,7 +172,10 @@ Inside the data directory:
   checkpoints
 - `sessions/` - one JSON file per saved session
 - `library/` - banked tracks for instant starts (size-capped)
-- `snippets/` - tracks captured with the save command (default location)
+- `snippets/<tag>/` - tracks captured with the save command, one
+  directory per tag (`untagged/` when none was given)
+- `remote/` - the phone remote's accounts and login sessions
+  (`users.json`, `sessions.json`; owner-only)
 - `exports/` - MP3 exports
 - `logs/iar.log` - structured JSON log of the player
 - `logs/engine-daemon.log` - the shared engine daemon's log

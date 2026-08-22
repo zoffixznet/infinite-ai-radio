@@ -3,7 +3,7 @@
 Infinite AI Radio plays endless AI-generated music in your terminal,
 running entirely on your own machine. Start it and music plays; type plain English while it
 plays ("calmer", "add vocals about winning", "switch to piano") and the
-stream follows. No accounts, no API keys, no cloud.
+stream follows. No cloud, no API keys, no subscriptions.
 
 It is a single Go binary (`iar`) that manages everything else: it installs the
 music model, supervises it, buffers generated tracks ahead of playback,
@@ -24,6 +24,9 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
 - [MP3 export](#mp3-export)
 - [Saving tracks you like](#saving-tracks-you-like)
 - [Listening from your phone](#listening-from-your-phone)
+- [Accounts and permissions](#accounts-and-permissions)
+- [Email setup](#email-setup)
+- [Saved chunks and tags](#saved-chunks-and-tags)
 - [Desktop integration](#desktop-integration)
 - [What the music sounds like](#what-the-music-sounds-like)
 - [Configuration](#configuration)
@@ -148,7 +151,7 @@ Enter:
 | --- | --- |
 | `clear` | wipe the steering context |
 | `new <prompt>` | fresh session from a prompt |
-| `save [prev]` | save the playing (or previous) track as MP3 |
+| `save [prev] [tag]` | save the playing (or previous) track as MP3, filed under a tag |
 | `name <name>` | save the current session under a name |
 | `sessions` | list presets and saved sessions |
 | `load <name>` | resume a saved session |
@@ -227,64 +230,195 @@ save
 and the currently playing track is written as a high-quality MP3 (with
 the prompt in its tags) into the snippets folder, path shown in the
 acknowledgment. `save prev` captures the previous track instead, for
-when it clicks a moment too late. Saving never interrupts playback. The
-folder is configurable via `snippets_dir`.
+when it clicks a moment too late. Saving never interrupts playback.
+
+Add a tag to file the track where you will find it again:
+
+```
+save gym
+save prev late night
+```
+
+Tags become folder names (`snippets/gym/`, `snippets/late_night/`;
+anything that is not a letter, digit or underscore turns into an
+underscore) and are also written to the MP3's album tag. Saves without
+a tag go to `snippets/untagged/`. The phone remote's saved-chunk player
+loops these folders by tag (see [Saved chunks and tags](#saved-chunks-and-tags)).
+The base folder is configurable via `snippets_dir`.
 
 ## Listening from your phone
 
-Infinite AI Radio has a built-in phone remote: a single page with the live stream, the
-now-playing state, a steering box, a start-fresh-with-prompt action, and
-a save button. It is off by default; start with:
+Infinite AI Radio has a built-in web remote: a phone-first page with the
+live stream, the now-playing state, a steering box, a start-fresh action,
+a save button with a tag field, and a player for the tracks you have
+saved. Everything on it needs a login, and the first account is created
+in the terminal:
 
 ```sh
-./iar --remote
+./iar remote setup          # create the first admin (email + password, typed twice)
+./iar --remote              # start playing with the remote on
 ```
 
-or set `remote.enabled` in the config. For safety the remote binds only
-to localhost and, when the machine has one, its Tailscale address; it
-never listens on your LAN or the internet unless you explicitly override
-the bind address in the config (do not do that unless you fully trust
-that network, and never expose the port to the public internet).
+(`remote.enabled` in the config keeps it on permanently.) The player
+prints the URL to open; `iar doctor` shows it too under the remote
+section. Open it on the phone, log in, tap play. The stream is MP3 at
+~192 kbps and runs a few seconds behind the machine's speakers;
+steering, starting fresh and saving act instantly and show up in the
+terminal as well.
 
-<img src="assets/remote-phone.png" alt="the Infinite AI Radio phone remote page" width="300">
+<p>
+<img src="assets/remote-login.png" alt="the login page" width="190">
+<img src="assets/remote-player.png" alt="the live stream page" width="190">
+<img src="assets/remote-saved.png" alt="the saved chunks player" width="190">
+<img src="assets/remote-users.png" alt="the users page with a fresh invite link" width="190">
+</p>
 
-The intended setup is a private [Tailscale](https://tailscale.com)
-network between your computer and phone:
+For safety the remote binds only to localhost and, when the machine has
+one, its Tailscale address; it never listens on your LAN or the internet
+unless you add addresses to `remote.bind` in the config. The intended
+setup is a private [Tailscale](https://tailscale.com) network between
+your computer and phone:
 
 1. Install Tailscale on the computer per the official Linux guide
    (`https://tailscale.com/download/linux`; installing and running
    `sudo tailscale up` needs sudo) and sign in.
 2. Install the Tailscale app on the phone and sign in to the same
    account.
-3. Start `./iar --remote`. It prints the URL to open; `iar doctor` also
-   shows it under the remote section.
-4. Open that URL in the phone's browser and tap play.
+3. Run `./iar remote setup` once, then start `./iar --remote`.
+4. Open the printed `http://100.x.y.z:8246` URL in the phone's browser,
+   log in and tap play.
 
 To also reach the remote on your home LAN (say your laptop is
-192.168.1.20), add that address to `remote.bind` and set a token; the player
-keeps listening on localhost and the tailnet as well, and addresses you
-bind are automatically accepted in URLs:
+192.168.1.20), add that address to `remote.bind`; the player keeps
+listening on localhost and the tailnet as well, and addresses you bind
+are automatically accepted in URLs:
 
 ```json
-{ "remote": { "enabled": true, "token": "pick-a-long-secret",
-              "bind": ["192.168.1.20"] } }
+{ "remote": { "enabled": true, "bind": ["192.168.1.20"] } }
 ```
 
-Then open `http://192.168.1.20:8246/?token=pick-a-long-secret` from any
-device on that network. `"bind": ["0.0.0.0"]` listens on every network
-the machine is on; a token is required either way, and the public
-internet is never a sensible place for this port.
+Then open `http://192.168.1.20:8246/` from any device on that network
+and log in. `"bind": ["0.0.0.0"]` listens on every network the machine
+is on.
 
-The stream is MP3 at ~192 kbps and runs a few seconds behind the
-machine's speakers; steering, starting fresh and saving act instantly
-and show up in the terminal UI too. If you want a shared secret on top
-of the tailnet, set `remote.token` in the config and open the page once
-as `http://<ip>:8246/?token=<your-token>`; the page stores the secret
-in a cookie and removes it from the address bar. The remote also
-refuses requests whose Host or Origin is not localhost, your tailnet
-address, or an entry you added to `remote.allowed_hosts`, and if you
-override `remote.bind` beyond localhost it will not start without a
-token.
+Security notes, plainly:
+
+- Logins happen over plain HTTP. Tailscale encrypts everything between
+  the devices, so that is fine on the tailnet. On your home LAN a
+  password travels in clear text to the laptop; that is your call for
+  a network you trust. Never expose the port to the public internet
+  without TLS in front of it (a reverse proxy with a certificate);
+  behind such a proxy the login cookie is marked secure automatically.
+- A login lasts 30 days of inactivity on that browser (it is a radio).
+  Log out from the menu to end it early; changing or resetting a
+  password logs every other device out.
+- Failed logins are rate-limited per address and per account, and the
+  page never reveals whether an email exists.
+- The remote refuses requests whose Host or Origin is not localhost,
+  your tailnet address, an address you bound, or an entry in
+  `remote.allowed_hosts` (a cross-site and DNS-rebinding defense).
+
+## Accounts and permissions
+
+Every listener has an account: the email address is the login, and
+only the account holder ever knows the password. The first admin is
+made with `./iar remote setup`; after that everything happens on the
+remote's **Users** page (visible to admins):
+
+- **Adding a user** takes an email and four checkboxes. It produces an
+  invitation link, shown with a Copy button (and emailed too if
+  [email is set up](#email-setup)). Send it by text or chat; the person
+  opens it, sees their email, chooses a password, and is logged in. The
+  link works once and expires after 7 days. The invitee has to be able
+  to reach the address in the link, so create it from a browser that is
+  on the same route in (the tailnet address for tailnet users, the LAN
+  address for LAN users).
+- **Pending links** are listed with Regenerate (which invalidates the
+  old link) and Revoke.
+- **Permissions** are four independent switches per account: *admin*
+  (manage users and links), *can steer*, *new prompts*, *can save*.
+  Listening needs none of them. Admin does not imply the other three;
+  an admin can tick them for themselves. The page only shows the
+  controls an account may use, and the server refuses the rest either
+  way.
+- **Password reset**: an admin presses *Reset link* on the account. The
+  link works once, expires after 24 hours, and the user chooses the new
+  password themselves; every other login of that account ends.
+- **Guard rails**: you cannot delete your own account, and the last
+  admin can neither be deleted nor demoted.
+
+Each user changes their own password on the **Account** page. Forgot it?
+An admin hands you a reset link. If the only admin is locked out, run
+`./iar remote setup` again with that email in the terminal: it resets the
+password and restores every permission.
+
+Accounts and login sessions are small JSON files under the data
+directory (`remote/users.json`, `remote/sessions.json`), readable only
+by your user. Logins, user changes and refused actions all show up in
+the log.
+
+## Email setup
+
+Optional. With no email configured, you pass invitation and reset links
+on yourself, and nothing is missing. If you would rather have them
+emailed automatically as well, point `remote.smtp` at a mail provider:
+
+```json
+{ "remote": { "smtp": {
+    "host": "smtp-relay.brevo.com", "port": 587, "tls": "starttls",
+    "username": "your-login", "password": "your-smtp-key",
+    "from": "radio@example.com" } } }
+```
+
+and check it with:
+
+```sh
+./iar remote test-email you@example.com
+```
+
+Providers with a free tier that works for this (re-checked August
+2026; numbers change, so confirm on their pricing pages):
+
+- [Brevo](https://www.brevo.com): 300 emails a day on the free plan,
+  SMTP relay at `smtp-relay.brevo.com:587`.
+- [Resend](https://resend.com): 3,000 emails a month (100 a day) free,
+  SMTP at `smtp.resend.com:465` with `"tls": "tls"` (username
+  `resend`, password is an API key).
+- [Mailjet](https://www.mailjet.com): 200 a day (6,000 a month) free,
+  SMTP relay at `in-v3.mailjet.com:587`.
+- Gmail: `smtp.gmail.com:587` with an
+  [app password](https://support.google.com/accounts/answer/185833)
+  (requires 2-step verification on the Google account); about 500
+  messages a day.
+
+`"tls"` is `"starttls"` (default, port 587), `"tls"` (implicit TLS, port
+465) or `"none"`. Keep the config file readable only by you when it
+holds a password (`chmod 600`); `iar doctor` warns otherwise.
+
+There is deliberately no "just send it from my computer" mode: mail sent
+straight from a home connection is blocked by most ISPs and rejected or
+spam-foldered by the big mailbox providers, so it would fail quietly
+for exactly the people it is meant for. The links are the reliable path;
+email is a convenience on top.
+
+## Saved chunks and tags
+
+The remote's **Saved chunks** mode plays the tracks you have saved,
+entirely on the phone: it never touches the live stream, other
+listeners, or the laptop's speakers.
+
+- Tick the tags you want (every tag with at least one saved track is
+  listed; all are selected to begin with) and the player loops through
+  their chunks forever.
+- Each chunk shows the prompt that produced it, its tag, length and
+  when it was saved, with *Play* and *Loop this one*. Looping one chunk
+  repeats it until you press *Back to looping the tags*.
+- The built-in controls seek, pause and set volume as usual.
+- The mode and tag selection are remembered per browser.
+
+Saving from the phone works like the terminal `save`: an optional tag
+in the box next to the button, the file appears in the chunk list a
+moment later.
 
 ## Desktop integration
 
@@ -366,7 +500,10 @@ usually `~/.config/iar/config.json`) with these defaults:
   "mp3_quality": 0,
   "snippets_dir": "",
   "library_max_mb": 600,
-  "remote": { "enabled": false, "port": 8246, "token": "", "bind": "" },
+  "remote": {
+    "enabled": false, "port": 8246, "bind": [], "allowed_hosts": [],
+    "smtp": { "host": "", "port": 0, "username": "", "password": "", "from": "", "tls": "starttls" }
+  },
   "acestep": {
     "port": 0,
     "idle_minutes": 15,
@@ -453,15 +590,21 @@ Common cases:
   before you hear it (use `skip` to get there sooner).
 - Vocal lyrics are short and chorus-driven; this is a background-music
   tool, not a songwriting studio.
+- The phone remote has no self-service password reset: an admin hands
+  out reset links, and a locked-out sole admin recovers with
+  `iar remote setup` in the terminal.
 
 ## Development
 
 ```sh
-make help    # list targets
-make test    # unit tests (silent; no audio devices touched)
-make smoke   # end-to-end test of the built binary (sandboxed, silent)
-make lint    # go vet + gofmt check
+make help          # list targets
+make test          # unit tests (silent; no audio devices touched)
+make smoke         # end-to-end test of the built binary (sandboxed, silent)
+make browser-test  # the phone remote in headless Firefox (needs geckodriver, firefox, pactl)
+make screenshots   # re-shoot the README's remote screenshots into assets/
+make lint          # go vet + gofmt check
 ```
 
-The test suite and smoke test never emit audible sound: they use the null
-or file audio backends and sandboxed data directories.
+The test suite, smoke test and browser test never emit audible sound:
+they use the null or file audio backends, sandboxed data directories,
+and a temporary null audio sink for the browser.
