@@ -26,9 +26,10 @@ const MaxMinutes = 180
 type MP3Options struct {
 	// Quality is libmp3lame VBR quality: 0 best to 9 smallest.
 	Quality int
-	// Title, Artist and Comment become ID3 tags when non-empty.
+	// Title, Artist, Album and Comment become ID3 tags when non-empty.
 	Title   string
 	Artist  string
+	Album   string
 	Comment string
 }
 
@@ -145,33 +146,42 @@ func (r *Renderer) renderMusic(ctx context.Context, sess *session.Session, total
 	return audio.CrossfadeJoin(tracks, fadeFrames), nil
 }
 
-// EncodeMP3 pipes PCM once through ffmpeg/libmp3lame.
+// EncodeMP3 pipes PCM once through ffmpeg/libmp3lame. The file is
+// written under a temporary name and renamed into place when complete,
+// so anything listing the directory never sees a half-written MP3.
 func EncodeMP3(ctx context.Context, samples []int16, outPath string, opts MP3Options) error {
 	if opts.Quality < 0 || opts.Quality > 9 {
 		opts.Quality = 0
 	}
+	tmpPath := filepath.Join(filepath.Dir(outPath), "."+filepath.Base(outPath)+".part")
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-f", "s16le", "-ar", fmt.Sprint(audio.SampleRate), "-ac", fmt.Sprint(audio.Channels),
 		"-i", "-",
-		"-codec:a", "libmp3lame", "-q:a", fmt.Sprint(opts.Quality),
+		"-f", "mp3", "-codec:a", "libmp3lame", "-q:a", fmt.Sprint(opts.Quality),
 	}
 	for tag, v := range map[string]string{
 		"title":   opts.Title,
 		"artist":  opts.Artist,
+		"album":   opts.Album,
 		"comment": opts.Comment,
 	} {
 		if v != "" {
 			args = append(args, "-metadata", tag+"="+v)
 		}
 	}
-	args = append(args, "-id3v2_version", "3", outPath)
+	args = append(args, "-id3v2_version", "3", tmpPath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = bytes.NewReader(audio.SamplesToBytes(samples))
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("ffmpeg mp3 encode: %w: %s", err, bytes.TrimSpace(errBuf.Bytes()))
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		os.Remove(tmpPath)
+		return err
 	}
 	return nil
 }
