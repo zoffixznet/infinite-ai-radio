@@ -156,6 +156,7 @@ Enter:
 | `sessions` | list presets and saved sessions |
 | `load <name>` | resume a saved session |
 | `preset <name>` | switch to a built-in preset |
+| `delete <name>` | delete a session or hide a preset (asks for confirmation) |
 | `mp3 <minutes> [file]` | export minutes of the current vibe to MP3 |
 | `skip` | jump to the next track |
 | `pause` / `resume` | pause or continue output |
@@ -178,8 +179,41 @@ name gym-grind
 ```
 
 Later, get the same vibe back with `./iar --session gym-grind` or `load
-gym-grind` inside the app. `./iar sessions` lists everything. Session files
-are plain JSON in your data directory.
+gym-grind` inside the app.
+
+`./iar sessions` (or `sessions` inside the app) lists everything you can
+start in three groups: your named sessions (most recently played
+first), the built-in presets, and auto-saved sessions (newest first),
+each with a short description and when it last played:
+
+```
+your sessions:
+  gym-grind                energetic electronic rock, driving...  vocals   2h ago
+presets:
+  calm-piano               gentle solo piano, quiet and intimate
+  deep-focus               beatless ambient pads for deep concentration
+auto-saved sessions:
+  session-20260821-220425  lofi chill beats, mellow, warm analog... +2 tweaks  3d ago
+```
+
+Sessions you never named are removed automatically two days after they
+last played (`sessions.auto_retention_days` in the config; `0` keeps
+them forever). Named sessions, presets and the session that is playing
+are never removed this way.
+
+Delete a session, with a confirmation question:
+
+```sh
+./iar sessions delete gym-grind         # asks: Delete session gym-grind? [y/N]
+./iar sessions delete gym-grind --yes   # no question, for scripts
+```
+
+Inside the app, `delete gym-grind` asks on the next line; `y` confirms,
+anything else cancels. The session that is playing cannot be deleted.
+Presets can be deleted as well: the preset disappears from every
+listing and can no longer be started until `./iar sessions
+restore-presets` brings all of them back. Session files are plain JSON
+in your data directory.
 
 ## Presets
 
@@ -251,8 +285,9 @@ The base folder is configurable via `snippets_dir`.
 
 Infinite AI Radio has a built-in web remote: a phone-first page with the
 live stream, the now-playing state, a steering box, a start-fresh action,
-a save button with a tag field, and a player for the tracks you have
-saved. Everything on it needs a login, and the first account is created
+a session picker (save the current session under a name, load any
+session or preset), a save button with a tag field, and a player for
+the tracks you have saved. Everything on it needs a login, and the first account is created
 in the terminal:
 
 ```sh
@@ -337,11 +372,13 @@ remote's **Users** page (visible to admins):
 - **Pending links** are listed with Regenerate (which invalidates the
   old link) and Revoke.
 - **Permissions** are four independent switches per account: *admin*
-  (manage users and links), *can steer*, *new prompts*, *can save*.
-  Listening needs none of them. Admin does not imply the other three;
-  an admin can tick them for themselves. The page only shows the
-  controls an account may use, and the server refuses the rest either
-  way.
+  (manage users and links, delete sessions), *can steer*, *new prompts*
+  (start a prompt, and load a session or preset, since both change what
+  everyone hears), *can save* (save tracks, and save the current session
+  under a name). Listening needs none of them. Admin does not imply the
+  other three; an admin can tick them for themselves. The page only
+  shows the controls an account may use, and the server refuses the
+  rest either way.
 - **Password reset**: an admin presses *Reset link* on the account. The
   link works once, expires after 24 hours, and the user chooses the new
   password themselves; every other login of that account ends.
@@ -505,6 +542,7 @@ usually `~/.config/iar/config.json`) with these defaults:
     "enabled": false, "port": 8246, "bind": [], "allowed_hosts": [],
     "smtp": { "host": "", "port": 0, "username": "", "password": "", "from": "", "tls": "starttls" }
   },
+  "sessions": { "auto_retention_days": 2 },
   "acestep": {
     "port": 0,
     "idle_minutes": 15,

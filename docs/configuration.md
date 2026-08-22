@@ -47,6 +47,9 @@ everything else keeps its default.
     "enabled": true,
     "url": "http://127.0.0.1:11434",
     "model": ""
+  },
+  "sessions": {
+    "auto_retention_days": 2
   }
 }
 ```
@@ -151,6 +154,14 @@ admin; the Users page does the rest).
 - `model`: model name to use; empty picks the first installed model. A
   small, fast model is plenty for this job.
 
+## sessions
+
+- `auto_retention_days`: sessions that were never given a name (the
+  `session-...`, `prompt-...` and `<preset>-...` ones saved
+  automatically) are deleted this many days after they last played, at
+  startup and every half hour while playing. `0` keeps them forever.
+  Named sessions, presets and the playing session are never touched.
+
 ## Environment variables
 
 - `IAR_DATA_DIR`: relocates all state (engine install, sessions, exports,
@@ -170,7 +181,8 @@ Inside the data directory:
 
 - `engine/` - the music engine checkout, its Python environment and model
   checkpoints
-- `sessions/` - one JSON file per saved session
+- `sessions/` - one JSON file per saved session, plus `deleted-presets`
+  (the list of presets hidden with `iar sessions delete`)
 - `library/` - banked tracks for instant starts (size-capped)
 - `snippets/<tag>/` - tracks captured with the save command, one
   directory per tag (`untagged/` when none was given)
