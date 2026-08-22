@@ -113,3 +113,72 @@ func TestControllerSessionFlow(t *testing.T) {
 		t.Fatalf("status resp = %q", resp)
 	}
 }
+
+func TestControllerDeleteConfirmation(t *testing.T) {
+	c := newController(t)
+	c.Handle("name keeper")
+	c.Handle("preset pink-noise") // switch away so keeper can be deleted
+	resp, _ := c.Handle("delete")
+	if !strings.Contains(resp, "usage") {
+		t.Fatalf("delete usage = %q", resp)
+	}
+	// Cancel: anything but y/yes keeps the session.
+	resp, _ = c.Handle("delete keeper")
+	if !strings.Contains(resp, "Delete session keeper?") {
+		t.Fatalf("delete prompt = %q", resp)
+	}
+	resp, _ = c.Handle("no")
+	if !strings.Contains(resp, "cancelled") {
+		t.Fatalf("cancel resp = %q", resp)
+	}
+	if resp, _ := c.Handle("sessions"); !strings.Contains(resp, "keeper") {
+		t.Fatalf("session gone after cancel: %q", resp)
+	}
+	// Confirm with y.
+	c.Handle("delete keeper")
+	resp, _ = c.Handle("y")
+	if resp != "session keeper deleted" {
+		t.Fatalf("confirm resp = %q", resp)
+	}
+	if resp, _ := c.Handle("sessions"); strings.Contains(resp, "  keeper") {
+		t.Fatalf("session still listed: %q", resp)
+	}
+	// The playing session is refused before any confirmation.
+	resp, _ = c.Handle("delete " + c.O.CurrentName())
+	if !strings.Contains(resp, "playing right now") {
+		t.Fatalf("delete current = %q", resp)
+	}
+	if resp, _ := c.Handle("y"); strings.Contains(resp, "deleted") {
+		t.Fatalf("stray y did something: %q", resp)
+	}
+	// Presets are deletable (tombstoned) and restored via the store.
+	c.Handle("delete sleep")
+	if resp, _ := c.Handle("yes"); !strings.Contains(resp, "preset sleep deleted") {
+		t.Fatalf("preset delete = %q", resp)
+	}
+	if resp, _ := c.Handle("presets"); strings.Contains(resp, "sleep") {
+		t.Fatalf("tombstoned preset listed: %q", resp)
+	}
+}
+
+func TestControllerSessionsListingIsGrouped(t *testing.T) {
+	c := newController(t)
+	c.Handle("name focus time")
+	resp, _ := c.Handle("sessions")
+	for _, want := range []string{session.LabelNamed + ":", session.LabelPresets + ":", session.LabelAuto + ":", "focus-time", "calm-piano", "just now"} {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("sessions listing missing %q:\n%s", want, resp)
+		}
+	}
+	if strings.Index(resp, session.LabelNamed) > strings.Index(resp, session.LabelPresets) ||
+		strings.Index(resp, session.LabelPresets) > strings.Index(resp, session.LabelAuto) {
+		t.Fatalf("group order wrong:\n%s", resp)
+	}
+	resp, _ = c.Handle("help")
+	if !strings.Contains(resp, "delete <name>") {
+		t.Fatalf("help lacks delete: %q", resp)
+	}
+	if n := strings.Count(resp, "\n") + 1; n > 10 {
+		t.Fatalf("help grew to %d lines; it must fit an 80x24 terminal", n)
+	}
+}

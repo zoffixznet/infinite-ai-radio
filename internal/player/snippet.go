@@ -102,6 +102,7 @@ func (o *Orchestrator) NewSession(prompt string) string {
 	o.switchReq = true
 	o.mu.Unlock()
 	o.saveSession()
+	o.recordCurrent()
 	o.seedFromLibrary()
 	o.kickGen()
 	o.log.Info("new session from prompt", "event", "session_new_prompt", "prompt", prompt, "vocal", fresh.Vocal)

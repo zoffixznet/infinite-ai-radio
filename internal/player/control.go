@@ -1,6 +1,7 @@
 package player
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -43,7 +44,7 @@ func (o *Orchestrator) Steer(text string) string {
 // heard, plus a hint when the input names a preset.
 func (o *Orchestrator) steerContextNote(text string) string {
 	note := ""
-	if p, err := session.LookupPreset(text); err == nil {
+	if p, err := o.store.LookupPreset(text); err == nil {
 		note += " (tip: type 'preset " + p.Name + "' to switch to that preset)"
 	}
 	switch {
@@ -127,17 +128,26 @@ func (o *Orchestrator) SetVolume(v int) string {
 	return fmt.Sprintf("volume %d%%", v)
 }
 
-// NameSession renames the current session so it can be resumed later.
+// NameSession renames the current session so it can be resumed later
+// and marks it user-named, which exempts it from the automatic sweep.
 func (o *Orchestrator) NameSession(name string) string {
 	newName := session.SanitizeName(name)
+	if _, err := session.LookupPreset(newName); err == nil {
+		return "'" + newName + "' is a built-in preset; pick another name"
+	}
 	o.mu.Lock()
 	oldName := o.sess.Name
 	o.sess.Name = newName
+	o.sess.Named = true
 	o.mu.Unlock()
 	o.saveSession()
 	if oldName != newName {
 		o.store.Delete(oldName)
+		if o.StateDir != nil {
+			o.StateDir.ForgetSession(oldName)
+		}
 	}
+	o.recordCurrent()
 	o.log.Info("session named", "event", "session_named", "name", newName)
 	return "session saved as " + newName + " (resume with: iar --session " + newName + ")"
 }
@@ -145,7 +155,7 @@ func (o *Orchestrator) NameSession(name string) string {
 // LoadPreset switches the stream to a built-in preset, seeding a fresh
 // session from it.
 func (o *Orchestrator) LoadPreset(name string) string {
-	p, err := session.LookupPreset(name)
+	p, err := o.store.LookupPreset(name)
 	if err != nil {
 		return err.Error()
 	}
@@ -159,6 +169,7 @@ func (o *Orchestrator) LoadPreset(name string) string {
 	o.switchReq = true
 	o.mu.Unlock()
 	o.saveSession()
+	o.recordCurrent()
 	o.kickGen()
 	o.log.Info("preset loaded", "event", "preset_loaded", "preset", p.Name)
 	return "preset " + p.Name + ": " + p.Description
@@ -178,9 +189,20 @@ func (o *Orchestrator) LoadSession(name string) string {
 	o.lastGood = nil
 	o.switchReq = true
 	o.mu.Unlock()
+	o.saveSession()
+	o.recordCurrent()
 	o.kickGen()
 	o.log.Info("session loaded", "event", "session_loaded", "session", s.Name)
 	return "session " + s.Name + " loaded: " + s.Describe()
+}
+
+// LoadByName switches to a preset or a saved session, whichever the
+// name denotes (presets win).
+func (o *Orchestrator) LoadByName(name string) string {
+	if _, err := o.store.LookupPreset(name); err == nil {
+		return o.LoadPreset(name)
+	}
+	return o.LoadSession(name)
 }
 
 // SessionNames lists saved sessions, newest first.
@@ -195,6 +217,45 @@ func (o *Orchestrator) SessionNames() []string {
 		names = append(names, s.Name)
 	}
 	return names
+}
+
+// Listing returns every session and preset grouped for display.
+func (o *Orchestrator) Listing() session.Listing {
+	l, err := o.store.Listing()
+	if err != nil {
+		o.log.Error("session list failed", "event", "session_list_failed", "error", err.Error())
+	}
+	return l
+}
+
+// Presets returns the built-in presets that have not been deleted.
+func (o *Orchestrator) Presets() []*session.Preset { return o.store.Presets() }
+
+// DeleteSession removes a saved session, or tombstones a preset so it
+// disappears until restored. The playing session is never deleted.
+func (o *Orchestrator) DeleteSession(name string) string {
+	name = session.SanitizeName(name)
+	if name == o.CurrentName() {
+		return "cannot delete " + name + ": it is playing right now (switch to something else first)"
+	}
+	if p, err := o.store.LookupPreset(name); err == nil {
+		if err := o.store.HidePreset(p.Name); err != nil {
+			return "could not delete preset " + p.Name + ": " + err.Error()
+		}
+		o.log.Info("preset deleted", "event", "preset_deleted", "preset", p.Name)
+		return "preset " + p.Name + " deleted (bring presets back with: iar sessions restore-presets)"
+	}
+	if err := o.store.Delete(name); err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			return "no session or preset named " + name
+		}
+		return "could not delete " + name + ": " + err.Error()
+	}
+	if o.StateDir != nil {
+		o.StateDir.ForgetSession(name)
+	}
+	o.log.Info("session deleted", "event", "session_deleted", "session", name)
+	return "session " + name + " deleted"
 }
 
 // Status returns a snapshot for status displays.

@@ -4,6 +4,7 @@ package session
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -58,6 +59,34 @@ type Session struct {
 	Tweaks []Entry `json:"tweaks"`
 	// History records every input ever typed, including cleared ones.
 	History []Entry `json:"history"`
+
+	// Named is set once a user gave the session a name. Sessions that
+	// only ever had a generated name are swept after the retention
+	// window.
+	Named bool `json:"named,omitempty"`
+	// LastPlayed is when the session was last the one playing (zero for
+	// files written by older versions; Updated stands in then).
+	LastPlayed time.Time `json:"last_played"`
+}
+
+// autoNameRe matches the generated names: "session-<date>-<time>",
+// "prompt-<slug>-<time>" and "<preset>-<date>-<time>". It decides the
+// auto-named status of sessions saved before Named existed.
+var autoNameRe = regexp.MustCompile(`^(session-\d{8}-\d{6}|prompt-.+-\d{6}|[a-z0-9._-]+-\d{8}-\d{6})$`)
+
+// AutoNamed reports whether the session still carries a generated name
+// (never named by a user).
+func (s *Session) AutoNamed() bool {
+	return !s.Named && autoNameRe.MatchString(s.Name)
+}
+
+// Played is the best "last played" time: LastPlayed when recorded,
+// otherwise the last update.
+func (s *Session) Played() time.Time {
+	if !s.LastPlayed.IsZero() {
+		return s.LastPlayed
+	}
+	return s.Updated
 }
 
 // New returns a fresh unnamed session with a pleasant default vibe.

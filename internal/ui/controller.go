@@ -20,6 +20,10 @@ type Controller struct {
 	O *player.Orchestrator
 	// ExportsDir is where MP3 exports land by default.
 	ExportsDir string
+
+	// pendingDelete is a session awaiting the user's confirmation on
+	// the next input line.
+	pendingDelete string
 }
 
 // Handle processes one input line. It returns the response to display and
@@ -29,6 +33,14 @@ func (c *Controller) Handle(line string) (string, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return "", false
+	}
+	if name := c.pendingDelete; name != "" {
+		c.pendingDelete = ""
+		switch strings.ToLower(line) {
+		case "y", "yes":
+			return c.O.DeleteSession(name), false
+		}
+		return "delete cancelled; " + name + " kept", false
 	}
 	cmd := strings.TrimPrefix(line, "/")
 	fields := strings.Fields(cmd)
@@ -74,9 +86,19 @@ func (c *Controller) Handle(line string) (string, bool) {
 		}
 		return c.O.NameSession(rest), false
 	case "sessions":
-		return c.sessionsText(), false
+		return c.O.Listing().Render(time.Now()), false
+	case "delete", "rm":
+		if rest == "" {
+			return "usage: delete <session-or-preset-name>", false
+		}
+		name := session.SanitizeName(rest)
+		if name == c.O.CurrentName() {
+			return "cannot delete " + name + ": it is playing right now (switch to something else first)", false
+		}
+		c.pendingDelete = name
+		return "Delete session " + name + "? type y to confirm, anything else cancels", false
 	case "presets":
-		return presetsText(), false
+		return c.presetsText(), false
 	case "load", "session":
 		if rest == "" {
 			return "usage: load <session-name>", false
@@ -84,7 +106,7 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return c.O.LoadSession(rest), false
 	case "preset":
 		if rest == "" {
-			return presetsText(), false
+			return c.presetsText(), false
 		}
 		return c.O.LoadPreset(rest), false
 	case "mp3", "export":
@@ -139,28 +161,10 @@ func (c *Controller) export(rest string) string {
 	return c.O.Export(minutes, out, c.ExportsDir)
 }
 
-func (c *Controller) sessionsText() string {
+func (c *Controller) presetsText() string {
 	var b strings.Builder
 	b.WriteString("presets:\n")
-	for _, p := range session.Presets() {
-		fmt.Fprintf(&b, "  %-12s %s\n", p.Name, p.Description)
-	}
-	names := c.O.SessionNames()
-	if len(names) == 0 {
-		b.WriteString("no saved sessions yet (type: name <something>)")
-		return b.String()
-	}
-	b.WriteString("saved sessions:\n")
-	for _, n := range names {
-		b.WriteString("  " + n + "\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func presetsText() string {
-	var b strings.Builder
-	b.WriteString("presets:\n")
-	for _, p := range session.Presets() {
+	for _, p := range c.O.Presets() {
 		fmt.Fprintf(&b, "  %-12s %s\n", p.Name, p.Description)
 	}
 	b.WriteString("use: preset <name>")
@@ -220,6 +224,6 @@ commands (leading / optional):
   new <prompt>      fresh session        sessions         list saved + presets
   save [prev] [tag] track -> MP3         load <name>      resume a session
   mp3 <min> [file]  export MP3           preset <name>    switch preset
-  skip              next track           pause | resume   pause / continue
-  volume <0-100>    set volume           status | engine  show status
-  help              this list            quit             exit`
+  skip              next track           delete <name>    delete a session
+  pause | resume    pause / continue     volume <0-100>   set volume
+  status | engine   show status          help | quit      this list / exit`

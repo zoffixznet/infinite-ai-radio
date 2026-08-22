@@ -78,6 +78,52 @@ func (d Dir) ReadEngineState() (EngineState, bool) {
 // RemoveEngineState deletes the daemon state file.
 func (d Dir) RemoveEngineState() { os.Remove(d.enginePath()) }
 
+func (d Dir) sessionFile() string { return filepath.Join(d.path, "session.json") }
+
+// CurrentSession records which session a player is playing.
+type CurrentSession struct {
+	// Name is the session name.
+	Name string `json:"name"`
+	// PID is the player process.
+	PID int `json:"pid"`
+	// Since is when the session started playing.
+	Since time.Time `json:"since"`
+}
+
+// WriteCurrentSession atomically records the playing session.
+func (d Dir) WriteCurrentSession(cs CurrentSession) error {
+	data, err := json.MarshalIndent(cs, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := d.sessionFile() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, d.sessionFile())
+}
+
+// ReadCurrentSession returns the last recorded playing session; Playing
+// reports whether that player process is still alive.
+func (d Dir) ReadCurrentSession() (cs CurrentSession, playing bool) {
+	data, err := os.ReadFile(d.sessionFile())
+	if err != nil {
+		return CurrentSession{}, false
+	}
+	if err := json.Unmarshal(data, &cs); err != nil || cs.Name == "" {
+		return CurrentSession{}, false
+	}
+	return cs, PIDAlive(cs.PID)
+}
+
+// ForgetSession clears the recorded playing session when it names name.
+func (d Dir) ForgetSession(name string) {
+	cs, _ := d.ReadCurrentSession()
+	if cs.Name == name {
+		os.Remove(d.sessionFile())
+	}
+}
+
 // PIDAlive reports whether a process with the given pid exists.
 func PIDAlive(pid int) bool {
 	if pid <= 0 {

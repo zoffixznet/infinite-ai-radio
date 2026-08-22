@@ -50,9 +50,18 @@ type Config struct {
 	// startup. Zero disables the library.
 	LibraryMaxMB int `json:"library_max_mb"`
 
-	ACEStep ACEStep `json:"acestep"`
-	Ollama  Ollama  `json:"ollama"`
-	Remote  Remote  `json:"remote"`
+	ACEStep  ACEStep  `json:"acestep"`
+	Ollama   Ollama   `json:"ollama"`
+	Remote   Remote   `json:"remote"`
+	Sessions Sessions `json:"sessions"`
+}
+
+// Sessions tunes session housekeeping.
+type Sessions struct {
+	// AutoRetentionDays is how long a session that was never given a
+	// name is kept after it last played before being swept; 0 disables
+	// the sweep. Named sessions and presets are never swept.
+	AutoRetentionDays int `json:"auto_retention_days"`
 }
 
 // BindList is a list of bind addresses that also unmarshals from a
@@ -171,6 +180,7 @@ func Default() Config {
 			Enabled: false,
 			Port:    8246,
 		},
+		Sessions: Sessions{AutoRetentionDays: 2},
 	}
 }
 
@@ -286,6 +296,9 @@ func (c *Config) sanitize() {
 	}
 	if c.Remote.Port < 1 || c.Remote.Port > 65535 {
 		c.Remote.Port = 8246
+	}
+	if c.Sessions.AutoRetentionDays < 0 {
+		c.Sessions.AutoRetentionDays = 0
 	}
 }
 

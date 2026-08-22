@@ -135,7 +135,7 @@ func (a *app) initialSessionPrompt(presetName, sessionName, prompt string) (*ses
 	case prompt != "":
 		return prompting.SessionFromPrompt(prompt), nil
 	case presetName != "":
-		p, err := session.LookupPreset(presetName)
+		p, err := store.LookupPreset(presetName)
 		if err != nil {
 			return nil, err
 		}

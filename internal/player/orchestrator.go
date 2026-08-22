@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,6 +104,13 @@ type Orchestrator struct {
 	// sent to the audio backend (the mastered stream). Its Write must
 	// never block.
 	Tap interface{ Write(p []byte) (int, error) }
+	// Retention is how long auto-named sessions are kept after they last
+	// played before the periodic sweep removes them; zero disables the
+	// sweep. Set before Start.
+	Retention time.Duration
+	// StateDir, when set, records which session is playing so other
+	// processes (the CLI's delete) can refuse to remove it.
+	StateDir *state.Dir
 
 	mu          sync.Mutex
 	sess        *session.Session
@@ -174,11 +182,61 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	// that burst can outrun the mixer's first write and be counted (and
 	// heard) as an underrun right at launch.
 	o.ring.Write(make([]byte, audio.DurationToBytes(300*time.Millisecond)))
+	o.recordCurrent()
 	o.wg.Add(4)
 	go func() { defer o.wg.Done(); o.genLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.pumpLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.phaseLoop(ctx) }()
+	if o.Retention > 0 {
+		o.wg.Add(1)
+		go func() { defer o.wg.Done(); o.sweepLoop(ctx) }()
+	}
+}
+
+// sweepInterval paces the periodic session sweep (a variable so tests
+// can shrink it).
+var sweepInterval = 30 * time.Minute
+
+// sweepLoop removes stale auto-named sessions at startup and
+// periodically, refreshing the playing session's last-played stamp so
+// it is never judged stale after a restart.
+func (o *Orchestrator) sweepLoop(ctx context.Context) {
+	for {
+		o.saveSession()
+		removed, err := o.store.Sweep(time.Now(), o.Retention, o.CurrentName())
+		switch {
+		case err != nil:
+			o.log.Warn("session sweep failed", "event", "sessions_sweep_failed", "error", err.Error())
+		case len(removed) > 0:
+			o.log.Info("stale auto-named sessions removed", "event", "sessions_swept",
+				"removed", strings.Join(removed, ","), "count", len(removed), "retention", o.Retention.String())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(sweepInterval):
+		}
+	}
+}
+
+// recordCurrent notes the playing session in the state directory.
+func (o *Orchestrator) recordCurrent() {
+	if o.StateDir == nil {
+		return
+	}
+	if err := o.StateDir.WriteCurrentSession(state.CurrentSession{
+		Name: o.CurrentName(), PID: os.Getpid(), Since: time.Now(),
+	}); err != nil {
+		o.log.Warn("could not record the playing session", "event", "session_state_failed", "error", err.Error())
+	}
+}
+
+// CurrentName returns the playing session's name.
+func (o *Orchestrator) CurrentName() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.sess.Name
 }
 
 // Close stops all goroutines, saves the session and releases the player.
@@ -215,8 +273,13 @@ func (o *Orchestrator) kickGen() {
 	}
 }
 
-// saveSession persists a snapshot of the current session, logging failures.
+// saveSession persists a snapshot of the current session, logging
+// failures. The session is the one playing, so its last-played stamp is
+// refreshed on the way.
 func (o *Orchestrator) saveSession() {
+	o.mu.Lock()
+	o.sess.LastPlayed = time.Now()
+	o.mu.Unlock()
 	_, cp := o.snapshotSession()
 	if err := o.store.Save(cp); err != nil {
 		o.log.Error("session save failed", "event", "session_save_failed", "error", err.Error())

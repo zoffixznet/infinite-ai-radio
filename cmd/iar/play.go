@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"iar/internal/audio"
 	"iar/internal/mpris"
@@ -73,6 +74,8 @@ func runPlay(pf playFlags) error {
 	orch.Timings = a.timings
 	orch.Library = a.library()
 	orch.SnippetsDir = a.snippetsDir()
+	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
+	orch.StateDir = &a.stateD
 	// Saved tracks from before tags existed move into the untagged
 	// folder once.
 	if moved, err := snippets.Migrate(orch.SnippetsDir); err != nil {

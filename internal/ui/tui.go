@@ -12,7 +12,6 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"iar/internal/player"
-	"iar/internal/session"
 )
 
 // RunTUI runs the full-screen terminal interface until the user quits or
@@ -26,7 +25,7 @@ func RunTUI(ctx context.Context, c *Controller) error {
 	input.Focus()
 	m := tuiModel{c: c, input: input, styles: newStyles(), status: c.O.Status()}
 	m.push("built-in presets (switch with 'preset NAME'):")
-	for _, p := range session.Presets() {
+	for _, p := range c.O.Presets() {
 		m.push(fmt.Sprintf("  %-12s %s", p.Name, p.Description))
 	}
 	m.push("steer with plain text ('calmer', 'add vocals about winning'),")

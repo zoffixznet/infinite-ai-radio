@@ -22,6 +22,7 @@ import (
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/snippets"
+	"iar/internal/state"
 )
 
 // capturePlayer records everything written to it, with light pacing so the
@@ -609,4 +610,122 @@ func TestTapCarriesEveryAudiblePath(t *testing.T) {
 			t.Fatal("paused output must be silent on the tap, matching the speakers")
 		}
 	})
+}
+
+func TestSessionDeleteGuardsAndTombstones(t *testing.T) {
+	o, _ := newTestOrchestrator(t, enginetest.NewMock(), session.New())
+	sd, err := state.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.StateDir = &sd
+	o.recordCurrent()
+	if cs, playing := sd.ReadCurrentSession(); !playing || cs.Name != o.CurrentName() {
+		t.Fatalf("current session state = %+v, playing=%v", cs, playing)
+	}
+
+	// The playing session is refused.
+	if ack := o.DeleteSession(o.CurrentName()); !strings.Contains(ack, "playing right now") {
+		t.Fatalf("delete current ack = %q", ack)
+	}
+	// Naming marks the session user-named and persists it.
+	ack := o.NameSession("Road Trip")
+	if !strings.Contains(ack, "road-trip") {
+		t.Fatalf("name ack = %q", ack)
+	}
+	saved, err := o.store.Load("road-trip")
+	if err != nil || !saved.Named || saved.AutoNamed() || saved.LastPlayed.IsZero() {
+		t.Fatalf("named session on disk = %+v, %v", saved, err)
+	}
+	if ack := o.NameSession("sleep"); !strings.Contains(ack, "built-in preset") {
+		t.Fatalf("naming after a preset ack = %q", ack)
+	}
+	// Another saved session can be deleted; unknown names are reported.
+	other := session.New()
+	other.Name = "old-favourite"
+	other.Named = true
+	o.store.Save(other)
+	if ack := o.DeleteSession("old-favourite"); ack != "session old-favourite deleted" {
+		t.Fatalf("delete ack = %q", ack)
+	}
+	if _, err := o.store.Load("old-favourite"); err == nil {
+		t.Fatal("deleted session still loads")
+	}
+	if ack := o.DeleteSession("ghost"); !strings.Contains(ack, "no session or preset") {
+		t.Fatalf("delete unknown ack = %q", ack)
+	}
+	// Deleting a preset tombstones it: gone from listings, cannot be
+	// started, LoadByName falls through to sessions.
+	if ack := o.DeleteSession("sleep"); !strings.Contains(ack, "preset sleep deleted") {
+		t.Fatalf("delete preset ack = %q", ack)
+	}
+	for _, p := range o.Presets() {
+		if p.Name == "sleep" {
+			t.Fatal("tombstoned preset still listed")
+		}
+	}
+	if ack := o.LoadPreset("sleep"); !strings.Contains(ack, "restore-presets") {
+		t.Fatalf("load tombstoned preset ack = %q", ack)
+	}
+	if ack := o.LoadByName("sleep"); !strings.Contains(ack, "not found") {
+		t.Fatalf("LoadByName tombstoned = %q", ack)
+	}
+	// LoadByName resolves presets and sessions; the state file follows.
+	if ack := o.LoadByName("calm-piano"); !strings.Contains(ack, "preset calm-piano") {
+		t.Fatalf("LoadByName preset = %q", ack)
+	}
+	if ack := o.LoadByName("road-trip"); !strings.Contains(ack, "session road-trip loaded") {
+		t.Fatalf("LoadByName session = %q", ack)
+	}
+	if cs, _ := sd.ReadCurrentSession(); cs.Name != "road-trip" {
+		t.Fatalf("state after load = %+v", cs)
+	}
+	l := o.Listing()
+	if len(l.Named) == 0 || l.Named[0].Name != "road-trip" {
+		t.Fatalf("listing named = %+v", l.Named)
+	}
+}
+
+func TestSweepLoopRemovesStaleAutoSessions(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	now := time.Now()
+	stale := session.New()
+	stale.Name = "session-20260801-120000"
+	stale.Created, stale.Updated, stale.LastPlayed = now.Add(-72*time.Hour), now.Add(-72*time.Hour), now.Add(-72*time.Hour)
+	store.Save(stale)
+	keepNamed := session.New()
+	keepNamed.Name = "gym-grind"
+	keepNamed.Named = true
+	keepNamed.Updated, keepNamed.LastPlayed = now.Add(-72*time.Hour), now.Add(-72*time.Hour)
+	store.Save(keepNamed)
+	// The playing session is old on disk too, but must survive.
+	cur := session.New()
+	cur.Name = "session-20260802-120000"
+	cur.Created, cur.Updated, cur.LastPlayed = now.Add(-72*time.Hour), now.Add(-72*time.Hour), now.Add(-72*time.Hour)
+	store.Save(cur)
+
+	old := sweepInterval
+	sweepInterval = 50 * time.Millisecond
+	t.Cleanup(func() { sweepInterval = old })
+	o := New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), store, cur, &capturePlayer{}, testLogger())
+	o.Retention = 48 * time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	o.Start(ctx)
+	t.Cleanup(func() { o.Close() })
+
+	waitFor(t, 5*time.Second, "stale session swept", func() bool {
+		_, err := store.Load("session-20260801-120000")
+		return err != nil
+	})
+	if _, err := store.Load("gym-grind"); err != nil {
+		t.Fatal("named session swept")
+	}
+	got, err := store.Load(cur.Name)
+	if err != nil {
+		t.Fatal("playing session swept")
+	}
+	if time.Since(got.LastPlayed) > time.Minute {
+		t.Fatalf("playing session's last-played stamp not refreshed: %v", got.LastPlayed)
+	}
 }
