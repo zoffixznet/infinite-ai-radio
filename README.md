@@ -319,18 +319,33 @@ steering, starting fresh and saving act instantly and show up in the
 terminal as well. Every button disables itself while its request is in
 flight and reports success or failure right next to itself.
 
-The connection looks after itself: if the stream drops (weak signal,
-switching networks, the machine rebooting), the page reconnects on its
-own with growing pauses and picks up the moment the stream is
-reachable again; only an expired login stops it, with a message saying
-to log in again. On phones the page defaults to **buffered playback**:
-it downloads the next tracks ahead of time (about two ahead on
-cellular or with data saving on, more on Wi-Fi) and plays them
+The connection looks after itself: if the stream drops or stalls (weak
+signal, switching networks, the machine rebooting), the page
+reconnects on its own with growing pauses, retries the instant
+connectivity returns, and picks up the moment the stream is reachable
+again; only an expired login stops it, with a message saying to log in
+again. On phones the page defaults to **buffered playback**: it
+downloads whole upcoming tracks ahead of time and plays them
 back-to-back, so the music keeps going through minutes of dead signal
 and steering still switches to the new sound as soon as its first
 track is downloaded. A checkbox under the play button switches between
 buffered and the direct live stream; the direct stream is what
 non-browser players (VLC, `mpv`) get from `/stream.mp3`.
+
+How much is buffered is a per-device choice next to the checkbox,
+with the banked minutes shown beside it:
+
+- **Economical** downloads one track ahead and keeps only a few,
+  for metered connections.
+- **Automatic** (the default) downloads about two ahead on cellular or
+  with data saving on, more on Wi-Fi, and keeps roughly 15-20 minutes.
+- **Maximum** fills the device with about 45 minutes of audio
+  (roughly 60-70 MB at the stream's quality) so long dead zones and
+  flights stay covered.
+
+In buffered mode the Next button skips only on that device: the
+machine's speakers and other listeners keep their own position. Use
+the direct stream's Next to skip the shared stream for everyone.
 
 The page also publishes media-session metadata, so the phone's lock
 screen, Bluetooth displays and car interfaces show what is playing

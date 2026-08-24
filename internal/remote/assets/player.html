@@ -29,6 +29,14 @@
   <label class="check" id="transportrow" title="Downloads upcoming tracks ahead of time so playback survives signal drops">
     <input type="checkbox" id="buffered"> Buffered playback (rides out signal drops)
   </label>
+  <div class="row" id="bufopts" hidden>
+    <select id="buflevel" aria-label="How much to buffer">
+      <option value="eco">Economical (least data)</option>
+      <option value="auto">Automatic</option>
+      <option value="max">Maximum (~45 min banked)</option>
+    </select>
+    <span id="bufmins" class="hint"></span>
+  </div>
 
   <section class="card" aria-label="Now playing">
     <h2>Playing</h2>
