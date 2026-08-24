@@ -11,7 +11,7 @@ everything else keeps its default.
   "player": "auto",
   "track_seconds": 150,
   "crossfade_seconds": 3,
-  "buffer_tracks": 2,
+  "buffer_tracks": 6,
   "volume": 80,
   "bed_while_waiting": false,
   "pipe_latency_ms": 200,
@@ -65,9 +65,11 @@ everything else keeps its default.
 - `track_seconds` (30-300): length of each generated track. Longer tracks
   mean fewer transitions but steering tweaks take longer to arrive.
 - `crossfade_seconds` (0.5-10): equal-power crossfade between tracks.
-- `buffer_tracks` (1-4): how many finished tracks to keep generated ahead
-  of playback. Higher survives longer engine stalls, uses more memory
-  (about 28 MB per 150-second track).
+- `buffer_tracks` (1-8): how many finished tracks to keep generated ahead
+  of playback. The queue also feeds phone listeners who prefetch
+  upcoming tracks to ride out signal dead zones, so the default is a
+  deeper 6. Higher survives longer engine stalls and deeper dead zones,
+  uses more memory (about 28 MB per 150-second track).
 - `volume` (0-100): initial output volume.
 - `bed_while_waiting`: when true, a quiet noise bed plays while the
   first track is prepared instead of the default silence-with-progress.
@@ -146,13 +148,16 @@ admin; the Users page does the rest).
 
 ## ollama
 
-- `enabled`: when true and a daemon is reachable, the player asks Ollama to
-  rewrite the accumulated steering into a clean prompt and to write
-  lyrics for vocal tracks. When false or unreachable, a deterministic
-  built-in path is used instead; everything still works.
+- `enabled`: when true and a daemon is reachable, the player asks Ollama
+  to refine steering inputs into structured, validated updates to the
+  sound, to enrich vague starting prompts, and to write lyrics for
+  vocal tracks. All of it happens in the background and only shapes
+  later tracks; the deterministic built-in path handles every input on
+  its own, so when Ollama is off or unreachable everything still works.
 - `url`: daemon address.
-- `model`: model name to use; empty picks the first installed model. A
-  small, fast model is plenty for this job.
+- `model`: model name to use; empty picks the first installed model.
+  Pin a small, fast instruction-following model here; it is plenty for
+  this job and keeps the refinements timely.
 
 ## sessions
 

@@ -48,7 +48,7 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
   install command for anything missing.
 - Go 1.26+ to build.
 - Optional: a local [Ollama](https://ollama.com) daemon. When present, the player
-  uses it to polish prompts and write lyrics; without it, a built-in
+  uses it to refine steering and write lyrics; without it, a built-in
   deterministic path is used and everything still works.
 
 ## Install
@@ -134,10 +134,24 @@ no vocals
 generate pink noise
 ```
 
-Each input is acknowledged with how it was understood and shapes the next
-generated track (the current track finishes playing; use `skip` to jump).
-If the engine is still loading when you type, the acknowledgment says so
-and estimates how long until your steering can be heard.
+Each input is acknowledged with how it was understood, and the player
+switches to the newly steered sound as soon as the first track matching
+it is generated; the old track never plays to its end after a steer,
+and the acknowledgment estimates when the switch will be audible.
+
+Steering has real semantics, not just word-appending:
+
+- "less guitars" or "no drums" removes the instrument everywhere and
+  tells the model to avoid it from then on; "more synths" (repeatable)
+  raises the emphasis instead.
+- Mood words replace their opposites: "calmer" also withdraws
+  "energetic" if you asked for that earlier.
+- "120 bpm", "faster", "slower", "in C minor", "3/4 time" and
+  "vocals in Spanish" set tempo, key, meter and vocal language as hard
+  constraints the engine honours directly.
+- Repeating a request that is already in effect changes nothing (and
+  says so) instead of churning the queue.
+
 Steering accumulates: "calmer" then "no drums" gives you calm, drumless
 music. `clear` wipes the accumulated steering and returns to the session's
 base sound.
@@ -284,11 +298,13 @@ The base folder is configurable via `snippets_dir`.
 ## Listening from your phone
 
 Infinite AI Radio has a built-in web remote: a phone-first page with the
-live stream, the now-playing state, a steering box, a start-fresh action,
-a session picker (save the current session under a name, load any
-session or preset), a save button with a tag field, and a player for
-the tracks you have saved. Everything on it needs a login, and the first account is created
-in the terminal:
+live stream, the now-playing state and the shared steering context (the
+base sound plus every accumulated tweak, identical for every listener
+and after every reload), a steering box, a start-fresh action, a Next
+button, a session picker (save the current session under a name, load
+any session or preset), a save button with a tag field, and a player
+for the tracks you have saved. Everything on it needs a login, and the
+first account is created in the terminal:
 
 ```sh
 ./iar remote setup          # create the first admin (email + password, typed twice)
@@ -300,7 +316,28 @@ prints the URL to open; `iar doctor` shows it too under the remote
 section. Open it on the phone, log in, tap play. The stream is MP3 at
 ~192 kbps and runs a few seconds behind the machine's speakers;
 steering, starting fresh and saving act instantly and show up in the
-terminal as well.
+terminal as well. Every button disables itself while its request is in
+flight and reports success or failure right next to itself.
+
+The connection looks after itself: if the stream drops (weak signal,
+switching networks, the machine rebooting), the page reconnects on its
+own with growing pauses and picks up the moment the stream is
+reachable again; only an expired login stops it, with a message saying
+to log in again. On phones the page defaults to **buffered playback**:
+it downloads the next tracks ahead of time (about two ahead on
+cellular or with data saving on, more on Wi-Fi) and plays them
+back-to-back, so the music keeps going through minutes of dead signal
+and steering still switches to the new sound as soon as its first
+track is downloaded. A checkbox under the play button switches between
+buffered and the direct live stream; the direct stream is what
+non-browser players (VLC, `mpv`) get from `/stream.mp3`.
+
+The page also publishes media-session metadata, so the phone's lock
+screen, Bluetooth displays and car interfaces show what is playing
+(track prompt, steering summary, artwork) with working play, pause and
+next buttons. The remote can be installed as an app from the browser
+menu ("Add to Home screen"); how much of its identity a car display
+shows depends on the browser and is outside the page's control.
 
 <p>
 <img src="assets/remote-login.png" alt="the login page" width="190">
@@ -513,8 +550,11 @@ Honestly, by style:
   the model into a mastering studio.
 
 If you run [Ollama](https://ollama.com), the player uses it in the background to
-polish prompts and write themed lyrics; it never delays the music, and
-it quietly stops asking if the model is slow or failing.
+refine steering (as structured, validated updates to the sound, never
+free prose), enrich vague starting prompts, and write themed lyrics; it
+never delays the music, and it quietly stops asking if the model is
+slow or failing. Set `ollama.model` to pin a specific model; empty
+picks the first installed one.
 
 Track-to-track transitions are equal-power crossfades (about 3 seconds by
 default), which suits continuous background listening.
@@ -530,7 +570,7 @@ usually `~/.config/iar/config.json`) with these defaults:
   "player": "auto",
   "track_seconds": 150,
   "crossfade_seconds": 3,
-  "buffer_tracks": 2,
+  "buffer_tracks": 6,
   "volume": 80,
   "bed_while_waiting": false,
   "pipe_latency_ms": 200,
@@ -624,9 +664,10 @@ Common cases:
 - On gaming laptops, hours-long generation sessions can heat the GPU
   enough to throttle. Capping the GPU power limit (`nvidia-smi -pl`, needs
   root) noticeably reduces heat with little quality impact.
-- A steering tweak affects the next generated track, not the one already
-  playing; with the default track length that can mean a couple of minutes
-  before you hear it (use `skip` to get there sooner).
+- A steering tweak is audible only once a track matching it has been
+  generated; the player switches over the moment that track is ready,
+  which with a warm engine typically means tens of seconds, not the end
+  of the current track.
 - Vocal lyrics are short and chorus-driven; this is a background-music
   tool, not a songwriting studio.
 - The phone remote has no self-service password reset: an admin hands
