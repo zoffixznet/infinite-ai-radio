@@ -112,27 +112,30 @@ type Orchestrator struct {
 	// processes (the CLI's delete) can refuse to remove it.
 	StateDir *state.Dir
 
-	mu          sync.Mutex
-	sess        *session.Session
-	queue       []*engine.Track
-	epoch       int
-	lastGood    *engine.Track
-	cur         source
-	switchReq   bool
-	paused      bool
-	genBusy     bool
-	genCount    int
-	lastGen     time.Duration
-	exporting   string
-	phase       string
-	phaseStart  time.Time
-	started     time.Time
-	firstMusic  bool
-	failStreak  int
-	lastFailure string
-	curTrack    *engine.Track
-	prevTrack   *engine.Track
-	saving      bool
+	mu       sync.Mutex
+	sess     *session.Session
+	queue    []*engine.Track
+	epoch    int
+	lastGood *engine.Track
+	cur      source
+	// switchReq forces the mixer to the next source; steerPending asks
+	// for the same switch, but only once a post-steer track is queued.
+	switchReq    bool
+	steerPending bool
+	paused       bool
+	genBusy      bool
+	genCount     int
+	lastGen      time.Duration
+	exporting    string
+	phase        string
+	phaseStart   time.Time
+	started      time.Time
+	firstMusic   bool
+	failStreak   int
+	lastFailure  string
+	curTrack     *engine.Track
+	prevTrack    *engine.Track
+	saving       bool
 
 	volume atomic.Int32
 	events chan Event

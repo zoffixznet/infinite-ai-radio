@@ -29,9 +29,8 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 	for ctx.Err() == nil {
 		o.mu.Lock()
 		cur := o.cur
-		wantSwitch := o.switchReq
-		o.switchReq = false
 		o.mu.Unlock()
+		wantSwitch := o.takeSwitch()
 
 		// A finite source about to end always needs a successor.
 		if !wantSwitch {
@@ -68,6 +67,24 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 			return // ring closed: shutting down
 		}
 	}
+}
+
+// takeSwitch consumes pending switch requests, reporting whether the
+// mixer should change sources now. A steer interrupts the current track
+// as soon as post-steer content exists: steering empties the queue and
+// stale-epoch results are discarded, so anything queued while
+// steerPending is set is post-steer by construction. Each request is
+// consumed exactly once.
+func (o *Orchestrator) takeSwitch() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	want := o.switchReq
+	o.switchReq = false
+	if o.steerPending && len(o.queue) > 0 {
+		want = true
+		o.steerPending = false
+	}
+	return want
 }
 
 // startupSource picks the very first audio source for the session. The

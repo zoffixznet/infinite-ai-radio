@@ -257,6 +257,7 @@ func TestStreamerEncodesRealMP3(t *testing.T) {
 type fakeCtl struct {
 	mu      sync.Mutex
 	steers  []string
+	skips   int
 	news    []string
 	saves   [][2]string
 	notes   []string
@@ -272,6 +273,13 @@ func (f *fakeCtl) Steer(text string) string {
 	return "steering with: " + text
 }
 
+func (f *fakeCtl) Skip() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.skips++
+	return "skipping to the next track"
+}
+
 func (f *fakeCtl) NewSession(prompt string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -283,7 +291,7 @@ func (f *fakeCtl) SaveSnippet(which, tag string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.saves = append(f.saves, [2]string{which, tag})
-	return "saving this track to /tmp/" + tag + "/x.mp3"
+	return "saving this track to " + tag + "/x.mp3"
 }
 
 func (f *fakeCtl) Status() player.Status {
@@ -700,6 +708,7 @@ func TestPermissionMatrix(t *testing.T) {
 		"/api/chunks":      {"GET", "/api/chunks", nil},
 		"/account":         {"GET", "/account", nil},
 		"/steer":           {"POST", "/steer", url.Values{"text": {"calmer"}}},
+		"/next":            {"POST", "/next", nil},
 		"/new":             {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
 		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}}},
 		"/users":           {"GET", "/users", nil},
@@ -724,26 +733,26 @@ func TestPermissionMatrix(t *testing.T) {
 		want expect
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
-			"/steer": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
+			"/steer": auth, "/next": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
 			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/next": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": ok, "/next": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/next": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/next": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": deny, "/next": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": ok, "/next": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok}},
 	}
 	for who, row := range matrix {
@@ -766,8 +775,8 @@ func TestPermissionMatrix(t *testing.T) {
 	// Only the permitted calls reached the controller.
 	h.ctl.mu.Lock()
 	defer h.ctl.mu.Unlock()
-	if len(h.ctl.steers) != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
-		t.Fatalf("controller calls: steers=%v news=%v saves=%v", h.ctl.steers, h.ctl.news, h.ctl.saves)
+	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
+		t.Fatalf("controller calls: steers=%v skips=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.news, h.ctl.saves)
 	}
 	if h.ctl.saves[0][1] != "gym" {
 		t.Fatalf("save tag not passed through: %v", h.ctl.saves)
@@ -778,7 +787,7 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.named) != 2 || len(h.ctl.loaded) != 2 || len(h.ctl.deleted) != 2 {
 		t.Fatalf("session calls: named=%v loaded=%v deleted=%v", h.ctl.named, h.ctl.loaded, h.ctl.deleted)
 	}
-	if len(h.ctl.notes) != 12 {
+	if len(h.ctl.notes) != 14 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
 	}
 }

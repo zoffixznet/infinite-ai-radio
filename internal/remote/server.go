@@ -31,6 +31,7 @@ const ProductName = "Infinite AI Radio"
 type Controls interface {
 	Steer(text string) string
 	NewSession(prompt string) string
+	Skip() string
 	SaveSnippet(which, tag string) string
 	NameSession(name string) string
 	LoadByName(name string) string
@@ -232,6 +233,7 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /account/password", s.page(s.handleAccountPassword))
 	// Per-permission actions.
 	mux.HandleFunc("POST /steer", s.apiPerm("steer", permSteer, s.handleSteer))
+	mux.HandleFunc("POST /next", s.apiPerm("steer", permSteer, s.handleNext))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
 	// Sessions: listing for everyone; loading changes what everyone
@@ -487,6 +489,12 @@ func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request, u accounts.
 	}
 	ack := s.ctl.Steer(text)
 	s.ctl.Announce("remote steer by " + u.Email + ": " + text + " -> " + ack)
+	s.reply(w, ack)
+}
+
+func (s *Server) handleNext(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	ack := s.ctl.Skip()
+	s.ctl.Announce("remote skip by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 

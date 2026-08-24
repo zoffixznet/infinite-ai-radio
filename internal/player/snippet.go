@@ -44,6 +44,9 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 
 	slug := snippets.Slug(tag)
 	path := snippets.Path(o.SnippetsDir, tag, track.Prompt, time.Now())
+	// User-facing acknowledgments show only the tag directory and file
+	// name; the absolute path stays in the log.
+	shown := filepath.Join(slug, filepath.Base(path))
 	prompt := track.Prompt
 	ctx := o.runCtx
 	if ctx == nil {
@@ -73,9 +76,9 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			return
 		}
 		o.log.Info("snippet saved", "event", "snippet_saved", "path", path, "prompt", prompt, "tag", slug)
-		o.emit("track saved: " + path)
+		o.emit("track saved: " + shown)
 	}()
-	return "saving this track to " + path
+	return "saving this track to " + shown
 }
 
 // snippetComment carries the lyrics (when real) into the file's tags.
@@ -100,6 +103,7 @@ func (o *Orchestrator) NewSession(prompt string) string {
 	o.queue = nil
 	o.lastGood = nil
 	o.switchReq = true
+	o.steerPending = false
 	o.mu.Unlock()
 	o.saveSession()
 	o.recordCurrent()

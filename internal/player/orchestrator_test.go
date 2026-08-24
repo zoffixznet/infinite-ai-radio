@@ -277,7 +277,7 @@ func TestSaveSnippetDuringPlayback(t *testing.T) {
 	// A tagged save lands in the tag's slug directory with the tag in
 	// the album field; the ack carries the path.
 	ack := o.SaveSnippet("", "Gym Grind!")
-	if !strings.Contains(ack, "saving this track") || !strings.Contains(ack, "/gym_grind/") {
+	if !strings.Contains(ack, "saving this track to gym_grind/") {
 		t.Fatalf("save ack = %q", ack)
 	}
 	// The file appears atomically once the encode is complete.
@@ -304,7 +304,7 @@ func TestSaveSnippetDuringPlayback(t *testing.T) {
 	}
 	// An untagged save goes to the untagged directory.
 	waitFor(t, 15*time.Second, "save slot free", func() bool {
-		return strings.Contains(o.SaveSnippet("", ""), "saving this track to "+filepath.Join(o.SnippetsDir, "untagged"))
+		return strings.Contains(o.SaveSnippet("", ""), "saving this track to untagged/")
 	})
 	// prev works after two distinct tracks; here at least verify the
 	// unknown-prev message before one exists.
@@ -728,4 +728,130 @@ func TestSweepLoopRemovesStaleAutoSessions(t *testing.T) {
 	if time.Since(got.LastPlayed) > time.Minute {
 		t.Fatalf("playing session's last-played stamp not refreshed: %v", got.LastPlayed)
 	}
+}
+
+// mkTrack builds a short in-memory track for queue plumbing tests.
+func mkTrack(prompt string, seconds int) *engine.Track {
+	return &engine.Track{
+		Samples: make([]int16, seconds*audio.SampleRate*audio.Channels),
+		Prompt:  prompt,
+	}
+}
+
+func TestSteerInterruptFlagConsumedExactlyOnce(t *testing.T) {
+	// No Start: exercise the flag mechanics directly, under o.mu.
+	store := session.NewStore(t.TempDir())
+	o := New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), store, session.New(), &capturePlayer{}, testLogger())
+
+	// A steer with nothing queued must not switch prematurely: the
+	// current (pre-steer) source keeps playing, the flag stays armed.
+	o.Steer("more energetic")
+	if o.takeSwitch() {
+		t.Fatal("switch requested with an empty queue")
+	}
+	o.mu.Lock()
+	armed := o.steerPending
+	o.mu.Unlock()
+	if !armed {
+		t.Fatal("steerPending consumed while the queue was empty")
+	}
+
+	// Once a post-steer track is queued, exactly one switch fires.
+	o.mu.Lock()
+	o.queue = append(o.queue, mkTrack("steered", 1))
+	o.mu.Unlock()
+	if !o.takeSwitch() {
+		t.Fatal("no switch with a post-steer track queued")
+	}
+	if o.takeSwitch() {
+		t.Fatal("switch fired twice for one steer")
+	}
+
+	// Loading something else disarms a pending steer switch.
+	o.Steer("calmer")
+	o.LoadPreset("pink-noise")
+	o.mu.Lock()
+	armed = o.steerPending
+	o.mu.Unlock()
+	if armed {
+		t.Fatal("steerPending survived a preset load")
+	}
+}
+
+func TestSteerInterruptsCurrentTrackMidPlay(t *testing.T) {
+	eng := enginetest.NewMock()
+	sess := session.New()
+	sess.BasePrompt = "techno" // short: keeps tweaks inside the source label
+	o, _ := newTestOrchestrator(t, eng, sess)
+	waitFor(t, 10*time.Second, "music playing", func() bool {
+		st := o.Status()
+		return st.State == "playing" && st.Duration > 0
+	})
+
+	// Tracks are 2s long and mixing runs much faster than wall time;
+	// the switch to the steered track must happen almost immediately,
+	// not after the pre-steer track's natural end.
+	ack := o.Steer("darker")
+	if !strings.Contains(ack, "switching") {
+		t.Fatalf("steer ack says nothing about switching: %q", ack)
+	}
+	waitFor(t, 10*time.Second, "steered track playing", func() bool {
+		return strings.Contains(o.Status().Source, "darker")
+	})
+}
+
+func TestSkipAckHonesty(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	o := New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), store, session.New(), &capturePlayer{}, testLogger())
+
+	if got := o.Skip(); !strings.Contains(got, "still generating") {
+		t.Fatalf("empty-queue skip ack = %q", got)
+	}
+	o.mu.Lock()
+	o.lastGood = mkTrack("x", 1)
+	o.mu.Unlock()
+	if got := o.Skip(); !strings.Contains(got, "looping") {
+		t.Fatalf("loop-fallback skip ack = %q", got)
+	}
+	o.mu.Lock()
+	o.queue = append(o.queue, mkTrack("y", 1))
+	o.mu.Unlock()
+	if got := o.Skip(); got != "skipping to the next track" {
+		t.Fatalf("queued skip ack = %q", got)
+	}
+	o.mu.Lock()
+	o.sess.Mode = session.ModeNoise
+	o.mu.Unlock()
+	if got := o.Skip(); !strings.Contains(got, "noise") {
+		t.Fatalf("noise-mode skip ack = %q", got)
+	}
+}
+
+func TestSnippetAckShowsOnlyTagAndFile(t *testing.T) {
+	eng := enginetest.NewMock()
+	o, _ := newTestOrchestrator(t, eng, session.New())
+	o.SnippetsDir = t.TempDir()
+	waitFor(t, 10*time.Second, "music playing", func() bool { return o.Status().State == "playing" })
+
+	ack := o.SaveSnippet("", "Road Trip!")
+	if strings.Contains(ack, o.SnippetsDir) || strings.Contains(ack, "/home/") {
+		t.Fatalf("save ack leaks an absolute path: %q", ack)
+	}
+	if !strings.Contains(ack, "road_trip/") {
+		t.Fatalf("save ack missing the tag-slug/file form: %q", ack)
+	}
+	// The completion event uses the same short form.
+	waitFor(t, 10*time.Second, "completion event", func() bool {
+		select {
+		case ev := <-o.Events():
+			if strings.Contains(ev.Text, "track saved:") {
+				if strings.Contains(ev.Text, o.SnippetsDir) {
+					t.Fatalf("completion event leaks the absolute path: %q", ev.Text)
+				}
+				return true
+			}
+		default:
+		}
+		return false
+	})
 }

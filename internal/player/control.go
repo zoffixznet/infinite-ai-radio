@@ -8,6 +8,7 @@ import (
 	"iar/internal/audio"
 	"iar/internal/prompting"
 	"iar/internal/session"
+	"iar/internal/state"
 )
 
 // Steer applies one free-text steering input. The interpretation is
@@ -25,8 +26,14 @@ func (o *Orchestrator) Steer(text string) string {
 		if dropped > 0 {
 			o.log.Info("steering dropped queued tracks", "event", "queue_dropped", "count", dropped)
 		}
-		if o.sess.Mode == session.ModeNoise {
+		switch o.sess.Mode {
+		case session.ModeNoise:
 			o.switchReq = true
+		default:
+			// Interrupt the current track: the mixer switches to the
+			// first post-steer track as soon as one is queued instead
+			// of letting the pre-steer track play to its end.
+			o.steerPending = true
 		}
 	}
 	o.mu.Unlock()
@@ -35,9 +42,29 @@ func (o *Orchestrator) Steer(text string) string {
 	response := ack.Text
 	if musicMode {
 		response += o.steerContextNote(text)
+		if ack.ContextChanged {
+			response += o.switchEstimateNote()
+		}
 	}
 	o.log.Info("steering accepted", "event", "steering", "input", text, "ack", response)
 	return response
+}
+
+// switchEstimateNote says when a context change will be audible.
+func (o *Orchestrator) switchEstimateNote() string {
+	if o.eng == nil || !o.eng.Ready() {
+		return ""
+	}
+	o.mu.Lock()
+	est := o.lastGen
+	o.mu.Unlock()
+	if est <= 0 {
+		est = o.Timings.Expected(state.PhaseFirstTrack)
+	}
+	if est <= 0 {
+		return "; switching as soon as the new track is generated"
+	}
+	return fmt.Sprintf("; switching to the new sound in about %s", est.Round(5*time.Second))
 }
 
 // steerContextNote appends honesty about when a steering input can be
@@ -67,6 +94,9 @@ func (o *Orchestrator) Clear() string {
 	o.sess.Clear()
 	o.epoch++
 	o.queue = nil
+	if o.sess.Mode == session.ModeMusic {
+		o.steerPending = true
+	}
 	o.mu.Unlock()
 	o.saveSession()
 	o.kickGen()
@@ -74,13 +104,27 @@ func (o *Orchestrator) Clear() string {
 	return "steering context cleared; back to the session's base sound"
 }
 
-// Skip jumps to the next source at the following mix iteration.
+// Skip jumps to the next source at the following mix iteration. The
+// acknowledgment is honest about what will actually play when the queue
+// is empty.
 func (o *Orchestrator) Skip() string {
 	o.mu.Lock()
 	o.switchReq = true
+	noise := o.sess.Mode == session.ModeNoise
+	queued := len(o.queue)
+	looping := o.lastGood != nil
 	o.mu.Unlock()
-	o.log.Info("skip requested", "event", "skip")
-	return "skipping to the next track"
+	o.log.Info("skip requested", "event", "skip", "queued", queued)
+	switch {
+	case noise:
+		return "noise mode: nothing to skip"
+	case queued > 0:
+		return "skipping to the next track"
+	case looping:
+		return "skipping - next track still generating, looping the last one meanwhile"
+	default:
+		return "skipping - next track still generating"
+	}
 }
 
 // Pause silences output without stopping generation.
@@ -167,6 +211,7 @@ func (o *Orchestrator) LoadPreset(name string) string {
 	o.queue = nil
 	o.lastGood = nil
 	o.switchReq = true
+	o.steerPending = false
 	o.mu.Unlock()
 	o.saveSession()
 	o.recordCurrent()
@@ -188,6 +233,7 @@ func (o *Orchestrator) LoadSession(name string) string {
 	o.queue = nil
 	o.lastGood = nil
 	o.switchReq = true
+	o.steerPending = false
 	o.mu.Unlock()
 	o.saveSession()
 	o.recordCurrent()
