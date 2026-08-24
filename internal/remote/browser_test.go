@@ -289,7 +289,7 @@ func buildBinary(t *testing.T, dir string) string {
 }
 
 func startSandbox(t *testing.T) *sandbox {
-	sb := prepareSandbox(t, "noise")
+	sb := prepareSandbox(t, "noise", "")
 	finishSandbox(t, sb)
 	return sb
 }
@@ -298,7 +298,13 @@ func startSandbox(t *testing.T) *sandbox {
 // daemon (instant sine tracks) that the app adopts, so queue, prefetch
 // and steering behave as with the real engine, GPU-free.
 func startMusicSandbox(t *testing.T) (*sandbox, *fakeEngine) {
-	sb := prepareSandbox(t, "acestep")
+	return startMusicSandboxCfg(t, "")
+}
+
+// startMusicSandboxCfg is startMusicSandbox with extra top-level config
+// keys (raw JSON fragment like `"buffer_tracks":1`).
+func startMusicSandboxCfg(t *testing.T, cfgExtra string) (*sandbox, *fakeEngine) {
+	sb := prepareSandbox(t, "acestep", cfgExtra)
 	// A minimal on-disk install layout so the app agrees the engine
 	// exists; generation itself goes to the fake daemon.
 	engineDir := filepath.Join(sb.dir, "data", "engine")
@@ -327,14 +333,17 @@ func finishSandbox(t *testing.T, sb *sandbox) {
 
 // prepareSandbox builds the binary and lays out config, admin account
 // and a demo chunk, without starting the player.
-func prepareSandbox(t *testing.T, engine string) *sandbox {
+func prepareSandbox(t *testing.T, engine, cfgExtra string) *sandbox {
 	t.Helper()
 	dir := t.TempDir()
 	sb := &sandbox{dir: dir, bin: buildBinary(t, dir), port: freePort(t), engine: engine}
 	sb.base = fmt.Sprintf("http://127.0.0.1:%d", sb.port)
 	os.MkdirAll(filepath.Join(dir, "config"), 0o755)
+	if cfgExtra != "" {
+		cfgExtra = "," + cfgExtra
+	}
 	os.WriteFile(filepath.Join(dir, "config", "config.json"),
-		[]byte(fmt.Sprintf(`{"remote":{"enabled":true,"port":%d}}`, sb.port)), 0o600)
+		[]byte(fmt.Sprintf(`{"remote":{"enabled":true,"port":%d}%s}`, sb.port, cfgExtra)), 0o600)
 
 	// First admin, the way the README says.
 	setup := exec.Command(sb.bin, "remote", "setup", "--email", "admin@example.com", "--password-stdin")
@@ -693,11 +702,17 @@ type fakeEngine struct {
 	nextID  int
 	tasks   map[string]string // task id -> prompt
 	prompts []string
+	// trackSeconds is the length of generated tracks (default 6: short,
+	// so track boundaries arrive quickly).
+	trackSeconds int
 }
 
-// trackSeconds is the fixed length of fake tracks: short, so track
-// boundaries arrive quickly in tests.
-const fakeTrackSeconds = 6
+// setTrackSeconds changes the length of subsequently generated tracks.
+func (f *fakeEngine) setTrackSeconds(sec int) {
+	f.mu.Lock()
+	f.trackSeconds = sec
+	f.mu.Unlock()
+}
 
 func (f *fakeEngine) handler() http.Handler {
 	wrap := func(data any) map[string]any {
@@ -749,9 +764,10 @@ func (f *fakeEngine) handler() http.Handler {
 		id := r.URL.Query().Get("path")
 		f.mu.Lock()
 		n := len(f.tasks[id]) // vary the tone a little per prompt
+		secs := f.trackSeconds
 		f.mu.Unlock()
 		freq := 220 + float64(n%12)*30
-		samples := make([]int16, fakeTrackSeconds*audio.SampleRate*audio.Channels)
+		samples := make([]int16, secs*audio.SampleRate*audio.Channels)
 		for i := 0; i < len(samples); i += 2 {
 			v := int16(8000 * math.Sin(2*math.Pi*freq*float64(i/2)/audio.SampleRate))
 			samples[i], samples[i+1] = v, v
@@ -782,7 +798,7 @@ func (f *fakeEngine) lastPrompt() string {
 // engine daemon in stateDir.
 func startFakeEngine(t *testing.T, stateDir string) *fakeEngine {
 	t.Helper()
-	fe := &fakeEngine{tasks: map[string]string{}}
+	fe := &fakeEngine{tasks: map[string]string{}, trackSeconds: 6}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -873,6 +889,47 @@ func TestRealBrowserResilience(t *testing.T) {
 		return ok && strings.HasPrefix(p.Pill, "playing")
 	})
 
+	// --- a connectivity event during a stall reconnects immediately ---
+	// Freezing the server keeps the TCP connection open with no data:
+	// the element stalls without erroring. A connectivity signal must
+	// then tear it down and reconnect at once, not wait for the
+	// watchdog.
+	exec.Command("kill", "-STOP", fmt.Sprint(sb.player.Process.Pid)).Run()
+	// Wait until playback has made no progress for a sustained stretch
+	// (the element keeps playing buffered audio for a while first).
+	var lastCT float64 = -1
+	var stableSince time.Time
+	waitFor(t, 40*time.Second, "playback stalled for several seconds", func() bool {
+		p, ok := w.audioState("liveaudio")
+		if !ok {
+			return false
+		}
+		if p.Time != lastCT {
+			lastCT = p.Time
+			stableSince = time.Now()
+			return false
+		}
+		// The page's own progress bookkeeping ticks every 2s, so the
+		// stall must comfortably exceed threshold + tick granularity.
+		return !stableSince.IsZero() && time.Since(stableSince) > 6*time.Second
+	})
+	// Mark the stalled element, fire the connectivity event, and expect
+	// a NEW element (the old one torn down) well before the watchdog
+	// would have acted.
+	w.exec(`var a=document.getElementById('liveaudio'); if (a) a.setAttribute('data-stalled','1');
+		window.dispatchEvent(new Event('online')); return true;`, nil)
+	waitFor(t, 3*time.Second, "immediate reconnect on the connectivity event", func() bool {
+		var fresh bool
+		w.exec(`var a=document.getElementById('liveaudio');
+			return !!a && !a.hasAttribute('data-stalled');`, &fresh)
+		return fresh
+	})
+	exec.Command("kill", "-CONT", fmt.Sprint(sb.player.Process.Pid)).Run()
+	waitFor(t, 60*time.Second, "stream recovers after the stall", func() bool {
+		p, ok := w.audioState("liveaudio")
+		return ok && strings.HasPrefix(p.Pill, "playing")
+	})
+
 	// --- an expired login is terminal: no reconnect loop ---
 	w.deleteCookies()
 	sb.killPlayer()
@@ -917,27 +974,27 @@ func TestRealBrowserResilience(t *testing.T) {
 			strings.Contains(pill, "3 ahead") || strings.Contains(pill, "4 ahead") ||
 			strings.Contains(pill, "5 ahead")
 	})
-	// The Next button swaps to the next preloaded track instantly.
+	// The media session stays honest in buffered mode: the title is
+	// this device's playing track and the artist is the live steering
+	// summary, never a placeholder.
+	waitFor(t, 15*time.Second, "buffered media-session metadata", func() bool {
+		var md struct {
+			Title  string `json:"title"`
+			Artist string `json:"artist"`
+		}
+		w.exec(`if (!('mediaSession' in navigator) || !navigator.mediaSession.metadata) return {title:'',artist:''};
+			var m = navigator.mediaSession.metadata;
+			return {title: m.title, artist: m.artist};`, &md)
+		if md.Artist == "buffered playback" {
+			t.Fatalf("media session artist is a placeholder: %+v", md)
+		}
+		// The steered session summary starts with the base prompt.
+		return strings.Contains(md.Artist, "lofi") && md.Title != "" && md.Title != "Infinite AI Radio"
+	})
 	var srcBefore string
-	playingSrc := func() string {
-		var src string
-		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
-			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].src; }
-			return '';`, &src)
-		return src
-	}
-	srcBefore = playingSrc()
-	w.click("#next")
-	waitFor(t, 10*time.Second, "buffered next swaps tracks", func() bool {
-		cur := playingSrc()
-		return cur != "" && cur != srcBefore
-	})
-	waitFor(t, 60*time.Second, "buffer refills after the skip", func() bool {
-		var pill string
-		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
-		return strings.Contains(pill, "ahead") && !strings.Contains(pill, "0 ahead")
-	})
-	srcBefore = playingSrc()
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].src; }
+		return '';`, &srcBefore)
 	sb.killPlayer()
 	// Playback must continue and cross into the next prefetched track.
 	waitFor(t, 45*time.Second, "playback continues across a boundary offline", func() bool {
@@ -952,4 +1009,108 @@ func TestRealBrowserResilience(t *testing.T) {
 	})
 	sb.startPlayer(t)
 	sb.waitListening(t)
+}
+
+// TestRealBrowserBufferedNextExclusive reproduces the smallest store the
+// buffered player can have (the playing track plus exactly one other:
+// server buffer of one track, no library filler) and asserts a manual
+// Next is a true swap: the outgoing element is paused and disarmed within a
+// short deadline, exactly one element produces audio at all times, and
+// the skipped track cannot replay through a stale ended handler.
+func TestRealBrowserBufferedNextExclusive(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":1,"library_max_mb":0`)
+	// Long enough that the single-slot queue is reliably occupied
+	// (generation takes ~2-3s per track).
+	fe.setTrackSeconds(20)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+
+	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
+	w.click("#play")
+
+	type bufState struct {
+		Playing  int      `json:"playing"`
+		PlaySrc  string   `json:"playsrc"`
+		Others   []string `json:"others"`
+		Paused   bool     `json:"paused"`   // the non-playing element is paused (or absent)
+		Disarmed bool     `json:"disarmed"` // the non-playing element has no ended handler
+	}
+	readState := func() bufState {
+		var st bufState
+		w.exec(`var els=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var out={playing:0, playsrc:'', others:[], paused:true, disarmed:true};
+			for (var i=0;i<2;i++) {
+				var a=els[i];
+				if (!a) continue;
+				if (!a.paused && !a.ended) { out.playing++; out.playsrc=a.src; }
+				else {
+					out.others.push(a.src||'');
+					if (!a.paused) out.paused=false;
+					if (a.onended) out.disarmed=false;
+				}
+			}
+			// A second playing element means the outgoing one was neither
+			// paused nor disarmed.
+			if (out.playing>1) { out.paused=false; out.disarmed=false; }
+			return out;`, &st)
+		return st
+	}
+
+	// Wait for playback plus exactly one prefetched track (store of 2).
+	waitFor(t, 60*time.Second, "playing with one track ahead", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		st := readState()
+		return st.Playing == 1 && strings.Contains(pill, "1 ahead")
+	})
+	before := readState()
+
+	w.click("#next")
+
+	// The device-local skip is acknowledged honestly (read before the
+	// status line's auto-clear).
+	var status string
+	w.exec(`return document.getElementById('steerstatus').textContent;`, &status)
+	if !strings.Contains(status, "this device") {
+		t.Fatalf("skip ack does not say it is device-local: %q", status)
+	}
+
+	// Within a short deadline the swap must be exclusive: one element
+	// playing the OTHER track, the outgoing element paused and disarmed.
+	waitFor(t, 3*time.Second, "exclusive swap to the staged track", func() bool {
+		st := readState()
+		return st.Playing == 1 && st.PlaySrc != before.PlaySrc && st.Paused && st.Disarmed
+	})
+	after := readState()
+
+	// Hold the invariant across the window where the skipped track's
+	// stale ended handler would fire (fake tracks are 6s long): never
+	// two elements playing, never a handler re-armed on a paused
+	// element, and the new track is never cut back to the skipped one.
+	deadline := time.Now().Add(7 * time.Second)
+	for time.Now().Before(deadline) {
+		st := readState()
+		if st.Playing > 1 {
+			t.Fatalf("two elements playing at once after Next: %+v", st)
+		}
+		if !st.Paused {
+			t.Fatalf("outgoing element not paused after Next: %+v", st)
+		}
+		if st.Playing == 1 && st.PlaySrc == before.PlaySrc {
+			var ct float64
+			w.exec(`var els=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+				for (var i=0;i<2;i++) { if (els[i] && !els[i].paused) return els[i].currentTime; }
+				return 0;`, &ct)
+			// Returning to the skipped track is legitimate only as the
+			// natural wraparound AFTER the new track played through.
+			if time.Since(deadline.Add(-7*time.Second)) < 4500*time.Millisecond {
+				t.Fatalf("skipped track replayed %.1fs after Next (stale handler)", time.Since(deadline.Add(-7*time.Second)).Seconds())
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	_ = after
 }
