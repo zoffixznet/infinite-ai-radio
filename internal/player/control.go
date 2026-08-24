@@ -316,6 +316,10 @@ func (o *Orchestrator) Status() Status {
 		Generating:   o.genBusy,
 		Session:      o.sess.Name,
 		SessionDesc:  o.sess.Describe(),
+		Epoch:        o.epoch,
+		BasePrompt:   o.sess.BasePrompt,
+		Tweaks:       append([]session.Entry(nil), o.sess.Tweaks...),
+		Vocal:        o.sess.Vocal,
 		Volume:       int(o.volume.Load()),
 		Paused:       o.paused,
 		Underruns:    o.ring.Underruns(),
@@ -336,6 +340,8 @@ func (o *Orchestrator) Status() Status {
 		if ts, ok := o.cur.(*trackSource); ok {
 			st.Elapsed = time.Duration(float64(ts.elapsedFrames()) / audio.SampleRate * float64(time.Second))
 			st.Duration = ts.track.Duration()
+			st.TrackID = ts.track.ID
+			st.TrackPrompt = ts.track.Prompt
 		}
 	}
 	st.State = o.stateLocked()

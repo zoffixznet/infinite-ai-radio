@@ -166,6 +166,8 @@ footer { color: var(--dim); font-size: 12px; margin-top: 18px; text-align: cente
 }
 .chip input { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
 .chip.on { border-color: var(--accent); }
+.chip.tweak { cursor: default; font-weight: 500; color: var(--dim); border-color: var(--edge); }
+#baseprompt { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; margin-bottom: 8px; }
 #loopstate { margin-top: 10px; color: var(--dim); font-size: 14px; }
 #loopstate.one { color: var(--warn); font-weight: 600; }
 audio { width: 100%; margin-top: 10px; }

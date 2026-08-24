@@ -390,6 +390,26 @@
   }
   setInterval(loadSessions, 30000);
 
+  // renderSound shows the shared steering state: the base prompt plus
+  // the ordered tweak chips. It is the session's context ("Steering
+  // now"), distinct from the playing track's prompt above it.
+  var soundSig = "";
+  function renderSound(s) {
+    var sig = JSON.stringify([s.base_prompt, s.vocals, s.tweaks]);
+    if (sig === soundSig) return;
+    soundSig = sig;
+    $("baseprompt").textContent = (s.base_prompt || "…") + (s.vocals ? "  ·  vocals on" : "");
+    var box = $("tweaks");
+    box.innerHTML = "";
+    (s.tweaks || []).forEach(function (tw) {
+      var chip = document.createElement("span");
+      chip.className = "chip tweak";
+      chip.textContent = tw.raw;
+      if (tw.interpreted) chip.title = tw.interpreted;
+      box.appendChild(chip);
+    });
+  }
+
   function poll() {
     fetch("/state").then(function (r) {
       if (r.status === 401) { loggedOut(); return null; }
@@ -397,17 +417,19 @@
     }).then(function (s) {
       if (!s) return;
       $("conn").textContent = "connected";
-      $("now").textContent = s.source || s.state || "...";
-      var meta = s.session ? (s.session.indexOf("session-") === 0 ? s.session : "session " + s.session) : "";
+      $("now").textContent = (s.track && s.track.prompt) || s.source || s.state || "...";
+      var meta = s.session ? "session " + s.session : "";
       if (s.elapsed) meta += (meta ? "  ·  " : "") + s.elapsed + " / " + s.duration;
       meta += (meta ? "  ·  " : "") + s.queued + " ready" + (s.generating ? " · generating" : "");
       $("meta").textContent = meta;
       $("phase").textContent =
         s.phase ? s.phase + " (" + s.phase_info + ")" : (s.paused ? "paused at the machine" : "");
-      var now = s.source || s.state || "";
-      if (now !== lastNow || (s.session || "") !== lastMeta) {
+      renderSound(s);
+      var now = (s.track && s.track.prompt) || s.source || s.state || "";
+      var artist = s.session_desc || s.session || "";
+      if (now !== lastNow || artist !== lastMeta) {
         lastNow = now;
-        lastMeta = s.session || "";
+        lastMeta = artist;
         if (wantStream) applyMediaMetadata();
       }
     }).catch(function () {

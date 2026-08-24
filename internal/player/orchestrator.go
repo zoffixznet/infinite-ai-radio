@@ -2,7 +2,9 @@ package player
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -70,6 +72,18 @@ type Status struct {
 	// succeeded).
 	FailStreak  int
 	LastFailure string
+	// Epoch increments on every steering-context change; remote clients
+	// use it to invalidate queued and prefetched tracks.
+	Epoch int
+	// BasePrompt and Tweaks are the session's steering context;
+	// Vocal reports whether it asks for sung vocals.
+	BasePrompt string
+	Tweaks     []session.Entry
+	Vocal      bool
+	// TrackID and TrackPrompt identify the playing generated track
+	// (empty while a stopgap source plays).
+	TrackID     string
+	TrackPrompt string
 	// Phase names the current startup phase ("starting engine",
 	// "loading models", "generating first track") or "playing".
 	Phase string
@@ -388,6 +402,7 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 				o.log.Debug("track loudness normalized", "event", "normalized", "gain", gain)
 			}
 		}
+		track.ID = newTrackID()
 		o.mu.Lock()
 		if epoch == o.epoch {
 			o.queue = append(o.queue, track)
@@ -410,6 +425,11 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			"elapsed_seconds", elapsed.Seconds(), "track_seconds", track.Duration().Seconds(),
 			"kept", kept, "prompt", track.Prompt)
 	}
+}
+
+// newTrackID returns a unique id for a track entering the stream.
+func newTrackID() string {
+	return fmt.Sprintf("t-%d-%04d", time.Now().UnixMilli(), rand.IntN(10000))
 }
 
 // wantGeneration reports whether the generate-ahead worker should produce
@@ -636,6 +656,7 @@ func (o *Orchestrator) seedFromLibrary() {
 	if !ok {
 		return
 	}
+	track.ID = newTrackID()
 	o.mu.Lock()
 	o.queue = append(o.queue, track)
 	o.lastGood = track

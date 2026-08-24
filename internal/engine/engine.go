@@ -35,6 +35,9 @@ func (s Spec) Vocal() bool {
 
 // Track is one generated track in the internal PCM format.
 type Track struct {
+	// ID identifies the track for remote serving; the player assigns it
+	// when the track enters the stream.
+	ID string
 	// Samples are interleaved s16le samples at 48 kHz stereo.
 	Samples []int16
 	// Spec is the request that produced the track.

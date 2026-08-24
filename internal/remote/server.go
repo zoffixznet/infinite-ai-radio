@@ -424,7 +424,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u accounts
 	}
 }
 
-// stateJSON is the now-playing payload the page polls.
+// stateJSON is the shared now-playing and steering payload the page
+// polls: every client and every reload renders the same state.
 type stateJSON struct {
 	State      string `json:"state"`
 	Source     string `json:"source"`
@@ -439,20 +440,56 @@ type stateJSON struct {
 	Volume     int    `json:"volume"`
 	Underruns  int64  `json:"underruns"`
 	Listeners  int    `json:"listeners"`
+	// Epoch identifies the steering context; it bumps whenever steering
+	// changes what will be generated next.
+	Epoch       int         `json:"epoch"`
+	SessionDesc string      `json:"session_desc"`
+	BasePrompt  string      `json:"base_prompt"`
+	Tweaks      []tweakJSON `json:"tweaks"`
+	Vocals      bool        `json:"vocals"`
+	// Track is the playing generated track (absent for stopgap audio).
+	Track *trackJSON `json:"track,omitempty"`
+}
+
+// tweakJSON is one steering input as the page renders it.
+type tweakJSON struct {
+	Raw         string `json:"raw"`
+	Interpreted string `json:"interpreted"`
+	Time        string `json:"time"`
+}
+
+// trackJSON identifies one playable track.
+type trackJSON struct {
+	ID        string  `json:"id"`
+	Prompt    string  `json:"prompt"`
+	DurationS float64 `json:"duration_s"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	st := s.ctl.Status()
 	out := stateJSON{
-		State:      st.State,
-		Source:     st.Source,
-		Session:    st.Session,
-		Queued:     st.Queued,
-		Generating: st.Generating,
-		Paused:     st.Paused,
-		Volume:     st.Volume,
-		Underruns:  st.Underruns,
-		Listeners:  s.streamer.Listeners(),
+		State:       st.State,
+		Source:      st.Source,
+		Session:     st.Session,
+		Queued:      st.Queued,
+		Generating:  st.Generating,
+		Paused:      st.Paused,
+		Volume:      st.Volume,
+		Underruns:   st.Underruns,
+		Listeners:   s.streamer.Listeners(),
+		Epoch:       st.Epoch,
+		SessionDesc: st.SessionDesc,
+		BasePrompt:  st.BasePrompt,
+		Tweaks:      []tweakJSON{},
+		Vocals:      st.Vocal,
+	}
+	for _, tw := range st.Tweaks {
+		out.Tweaks = append(out.Tweaks, tweakJSON{
+			Raw: tw.Raw, Interpreted: tw.Interpreted, Time: tw.Time.Format(time.RFC3339),
+		})
+	}
+	if st.TrackID != "" {
+		out.Track = &trackJSON{ID: st.TrackID, Prompt: st.TrackPrompt, DurationS: st.Duration.Seconds()}
 	}
 	if st.Phase != "" && st.Phase != "playing" {
 		out.Phase = st.Phase

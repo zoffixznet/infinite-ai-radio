@@ -319,7 +319,16 @@ func (f *fakeCtl) SaveSnippet(which, tag string) string {
 }
 
 func (f *fakeCtl) Status() player.Status {
-	return player.Status{State: "playing", Source: "test prompt", Session: "s1", Volume: 70}
+	return player.Status{
+		State: "playing", Source: "test prompt", Session: "s1", Volume: 70,
+		Epoch: 7, BasePrompt: "dark techno", Vocal: true,
+		SessionDesc: "dark techno +2 tweaks vocals",
+		Tweaks: []session.Entry{
+			{Time: time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC), Raw: "less guitars", Interpreted: "fewer guitars"},
+			{Time: time.Date(2026, 8, 23, 10, 1, 0, 0, time.UTC), Raw: "faster", Interpreted: "faster tempo"},
+		},
+		TrackID: "t-1", TrackPrompt: "dark techno, driving", Duration: 150 * time.Second,
+	}
 }
 
 func (f *fakeCtl) NameSession(name string) string {
@@ -1249,6 +1258,43 @@ func TestPlayerPageContainsControls(t *testing.T) {
 	resp, _ = plain.get("/users")
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-admin /users = %d", resp.StatusCode)
+	}
+}
+
+func TestStateCarriesSharedSteeringContext(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	resp, body := admin.get("/state")
+	if resp.StatusCode != 200 {
+		t.Fatalf("/state = %d", resp.StatusCode)
+	}
+	var st struct {
+		Epoch       int    `json:"epoch"`
+		SessionDesc string `json:"session_desc"`
+		BasePrompt  string `json:"base_prompt"`
+		Vocals      bool   `json:"vocals"`
+		Tweaks      []struct {
+			Raw         string `json:"raw"`
+			Interpreted string `json:"interpreted"`
+			Time        string `json:"time"`
+		} `json:"tweaks"`
+		Track *struct {
+			ID        string  `json:"id"`
+			Prompt    string  `json:"prompt"`
+			DurationS float64 `json:"duration_s"`
+		} `json:"track"`
+	}
+	if err := json.Unmarshal([]byte(body), &st); err != nil {
+		t.Fatalf("parsing /state: %v\n%s", err, body)
+	}
+	if st.Epoch != 7 || st.BasePrompt != "dark techno" || !st.Vocals || st.SessionDesc == "" {
+		t.Fatalf("steering context wrong: %+v", st)
+	}
+	if len(st.Tweaks) != 2 || st.Tweaks[0].Raw != "less guitars" || st.Tweaks[1].Interpreted != "faster tempo" || st.Tweaks[0].Time == "" {
+		t.Fatalf("tweaks wrong: %+v", st.Tweaks)
+	}
+	if st.Track == nil || st.Track.ID != "t-1" || st.Track.Prompt != "dark techno, driving" || st.Track.DurationS != 150 {
+		t.Fatalf("track wrong: %+v", st.Track)
 	}
 }
 

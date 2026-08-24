@@ -28,10 +28,16 @@
   <button class="action" id="next" data-perm="steer" hidden>Next track &#9654;&#xFE0E;</button>
 
   <section class="card" aria-label="Now playing">
-    <h2>Now playing</h2>
+    <h2>Playing</h2>
     <div id="now">&hellip;</div>
     <div id="meta"></div>
     <div id="phase"></div>
+  </section>
+
+  <section class="card" id="soundcard" aria-label="Current sound">
+    <h2>Steering now</h2>
+    <div id="baseprompt">&hellip;</div>
+    <div id="tweaks" class="chips"></div>
   </section>
 
   <section class="card" id="steercard" aria-label="Steering" hidden>
