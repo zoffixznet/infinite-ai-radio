@@ -917,8 +917,27 @@ func TestRealBrowserResilience(t *testing.T) {
 			strings.Contains(pill, "3 ahead") || strings.Contains(pill, "4 ahead") ||
 			strings.Contains(pill, "5 ahead")
 	})
+	// The Next button swaps to the next preloaded track instantly.
 	var srcBefore string
-	w.exec(`var a=document.getElementById('bufaudio0'); return a && !a.paused ? a.src : (document.getElementById('bufaudio1')||{}).src || '';`, &srcBefore)
+	playingSrc := func() string {
+		var src string
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].src; }
+			return '';`, &src)
+		return src
+	}
+	srcBefore = playingSrc()
+	w.click("#next")
+	waitFor(t, 10*time.Second, "buffered next swaps tracks", func() bool {
+		cur := playingSrc()
+		return cur != "" && cur != srcBefore
+	})
+	waitFor(t, 60*time.Second, "buffer refills after the skip", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		return strings.Contains(pill, "ahead") && !strings.Contains(pill, "0 ahead")
+	})
+	srcBefore = playingSrc()
 	sb.killPlayer()
 	// Playback must continue and cross into the next prefetched track.
 	waitFor(t, 45*time.Second, "playback continues across a boundary offline", func() bool {
