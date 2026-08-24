@@ -18,10 +18,18 @@ type Streamer struct {
 	feed chan []byte // PCM chunks awaiting encode
 
 	mu      sync.Mutex
-	clients map[int]chan []byte
+	clients map[int]*streamClient
 	nextID  int
 	pre     []byte // rolling recent MP3 bytes
 	closed  bool
+}
+
+// streamClient is one subscribed listener.
+type streamClient struct {
+	ch chan []byte
+	// resyncs counts how often the client fell behind and had queued
+	// audio dropped to catch it back up to live.
+	resyncs int
 }
 
 // Sizing: at ~192 kbps MP3 is ~24 KB/s.
@@ -36,7 +44,7 @@ func NewStreamer(log *slog.Logger) *Streamer {
 	return &Streamer{
 		log:     log,
 		feed:    make(chan []byte, feedSlots),
-		clients: map[int]chan []byte{},
+		clients: map[int]*streamClient{},
 	}
 }
 
@@ -83,8 +91,8 @@ func (s *Streamer) Start(ctx context.Context) error {
 		cmd.Wait()
 		s.mu.Lock()
 		s.closed = true
-		for id, ch := range s.clients {
-			close(ch)
+		for id, c := range s.clients {
+			close(c.ch)
 			delete(s.clients, id)
 		}
 		s.mu.Unlock()
@@ -127,8 +135,10 @@ func (s *Streamer) pumpOut(stdout io.Reader) {
 }
 
 // broadcast appends to the pre-buffer and delivers to every client. A
-// client whose queue is full is disconnected rather than allowed to stall
-// the others.
+// client whose queue is full has its oldest queued chunks dropped and
+// stays subscribed: it resyncs closer to live instead of being
+// disconnected, so a weak connection degrades to skipped audio rather
+// than a dead stream.
 func (s *Streamer) broadcast(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -136,13 +146,31 @@ func (s *Streamer) broadcast(chunk []byte) {
 	if over := len(s.pre) - preBufferBytes; over > 0 {
 		s.pre = append([]byte(nil), s.pre[over:]...)
 	}
-	for id, ch := range s.clients {
+	for id, c := range s.clients {
 		select {
-		case ch <- chunk:
+		case c.ch <- chunk:
+			continue
 		default:
-			close(ch)
-			delete(s.clients, id)
-			s.log.Info("slow stream client dropped", "event", "remote_client_dropped", "id", id)
+		}
+		// Full queue: drain the oldest half. broadcast is the only
+		// sender, so after draining there is always room again (the
+		// reader can only shrink the queue further).
+		dropped := 0
+		for len(c.ch) > clientChanSlots/2 {
+			select {
+			case <-c.ch:
+				dropped++
+			default:
+			}
+		}
+		select {
+		case c.ch <- chunk:
+		default:
+		}
+		c.resyncs++
+		if c.resyncs == 1 || c.resyncs%20 == 0 {
+			s.log.Info("slow stream client resynced to live", "event", "remote_client_resync",
+				"id", id, "dropped_chunks", dropped, "resyncs", c.resyncs)
 		}
 	}
 }
@@ -159,13 +187,13 @@ func (s *Streamer) Subscribe() (pre []byte, ch <-chan []byte, cancel func()) {
 		close(c)
 		return nil, c, func() {}
 	}
-	s.clients[id] = c
+	s.clients[id] = &streamClient{ch: c}
 	pre = alignToFrame(s.pre)
 	cancel = func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if cc, ok := s.clients[id]; ok {
-			close(cc)
+			close(cc.ch)
 			delete(s.clients, id)
 		}
 	}

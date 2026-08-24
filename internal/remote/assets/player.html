@@ -3,7 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
 <title>{{.Nav.Product}}</title>
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
 <style>{{template "style.css"}}</style>
 </head>
 <body>
@@ -21,6 +25,7 @@
 <section id="live" aria-label="Live stream">
   <button id="play" aria-label="Play the live stream">&#9654;&#xFE0E; Play the stream</button>
   <div id="streamstate" role="status"></div>
+  <button class="action" id="next" data-perm="steer" hidden>Next track &#9654;&#xFE0E;</button>
 
   <section class="card" aria-label="Now playing">
     <h2>Now playing</h2>
@@ -36,6 +41,7 @@
       <button class="action primary" id="steer" data-perm="steer" hidden>Steer</button>
       <button class="action" id="fresh" data-perm="new_prompt" hidden>Start fresh</button>
     </div>
+    <div id="steerstatus" class="cardstatus" role="status"></div>
   </section>
 
   <section class="card" id="sessioncard" aria-label="Sessions">
@@ -44,6 +50,7 @@
       <input id="sessname" type="text" placeholder="name this session: gym, focus&hellip;" maxlength="60" autocomplete="off">
       <button class="action primary" id="sesssave" type="button">Save as</button>
     </div>
+    <div id="sessstatus" class="cardstatus" role="status"></div>
     <div id="sessions"><span class="empty">loading&hellip;</span></div>
   </section>
 
@@ -51,8 +58,8 @@
     <h2>Keep this track</h2>
     <input id="tag" type="text" placeholder="tag (optional): gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
     <button class="action primary" id="save">&#9825;&#xFE0E; Save this track</button>
+    <div id="savestatus" class="cardstatus" role="status"></div>
   </section>
-  <div id="ack" role="status"></div>
 </section>
 
 <section id="saved" aria-label="Saved chunks" hidden>
@@ -83,432 +90,6 @@
 
 <footer>live stream runs a few seconds behind the speakers</footer>
 
-<script>
-(function () {
-  "use strict";
-  var $ = function (id) { return document.getElementById(id); };
-  var store = {
-    get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-    set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-  };
-  var headers = { "Content-Type": "application/x-www-form-urlencoded", "X-IAR-Remote": "1" };
-
-  // ---- permissions ------------------------------------------------
-  var me = null;
-  function applyPerms() {
-    var perms = { steer: !!me.steer, new_prompt: !!me.new_prompt, save: !!me.save };
-    Array.prototype.forEach.call(document.querySelectorAll("[data-perm]"), function (el) {
-      el.hidden = !perms[el.getAttribute("data-perm")];
-    });
-    $("steercard").hidden = !(perms.steer || perms.new_prompt);
-  }
-  function loggedOut() {
-    $("conn").textContent = "logged out";
-    stopStream("logged out - reload this page to log in again", "bad");
-  }
-  fetch("/me").then(function (r) {
-    if (r.status === 401) { loggedOut(); return null; }
-    return r.json();
-  }).then(function (d) { if (d) { me = d; applyPerms(); loadSessions(); } }).catch(function () {});
-
-  // ---- mode switch -------------------------------------------------
-  var mode = store.get("iar.mode", "live");
-  function setMode(m) {
-    mode = m;
-    store.set("iar.mode", m);
-    var live = m === "live";
-    $("live").hidden = !live;
-    $("saved").hidden = live;
-    $("mode-live").classList.toggle("on", live);
-    $("mode-saved").classList.toggle("on", !live);
-    $("mode-live").setAttribute("aria-selected", live ? "true" : "false");
-    $("mode-saved").setAttribute("aria-selected", live ? "false" : "true");
-    if (live) {
-      savedAudio.pause();
-    } else {
-      if (audio) stopStream("stopped (switched to saved chunks)", "");
-      loadChunks();
-    }
-  }
-  $("mode-live").addEventListener("click", function () { setMode("live"); });
-  $("mode-saved").addEventListener("click", function () { setMode("saved"); });
-
-  // ---- live stream -------------------------------------------------
-  var audio = null;
-  var watchdog = null;
-  var lastTime = -1;
-  var lastAdvance = 0;
-  var playBtn = $("play");
-  var stateEl = $("streamstate");
-
-  function streamState(text, cls) {
-    stateEl.textContent = text;
-    stateEl.className = cls || "";
-  }
-
-  function stopStream(msg, cls) {
-    if (watchdog) { clearInterval(watchdog); watchdog = null; }
-    if (audio) {
-      audio.onerror = null;
-      audio.pause();
-      audio.removeAttribute("src");
-      audio.load();
-      if (audio.parentNode) audio.parentNode.removeChild(audio);
-      audio = null;
-    }
-    playBtn.classList.remove("playing");
-    playBtn.innerHTML = "&#9654;&#xFE0E; Play the stream";
-    streamState(msg || "", cls || "");
-  }
-
-  function streamError() {
-    // Distinguish an auth problem from a network/stream one.
-    fetch("/state").then(function (r) {
-      if (r.status === 401 || r.status === 403) {
-        stopStream("session expired - reload this page and log in again", "bad");
-      } else {
-        stopStream("stream error - tap play to reconnect", "bad");
-      }
-    }).catch(function () {
-      stopStream("cannot reach the player - is it still running?", "bad");
-    });
-  }
-
-  playBtn.addEventListener("click", function () {
-    if (audio) {
-      stopStream("stopped", "");
-      return;
-    }
-    streamState("connecting…", "");
-    audio = new Audio("/stream.mp3?t=" + Date.now());
-    audio.id = "liveaudio";
-    document.body.appendChild(audio);
-    audio.onerror = streamError;
-    audio.addEventListener("stalled", function () { streamState("stalled - waiting for data…", "bad"); });
-    audio.addEventListener("waiting", function () { streamState("buffering…", ""); });
-    audio.addEventListener("playing", function () { streamState("receiving audio…", ""); });
-    audio.play().then(function () {
-      playBtn.classList.add("playing");
-      playBtn.innerHTML = "&#9632;&#xFE0E; Stop listening";
-    }).catch(function (e) {
-      stopStream("could not start audio: " + e.message, "bad");
-    });
-    // Honest progress: only report playing while currentTime advances.
-    lastTime = -1;
-    lastAdvance = Date.now();
-    watchdog = setInterval(function () {
-      if (!audio) return;
-      var t = audio.currentTime;
-      if (t > lastTime + 0.2) {
-        lastTime = t;
-        lastAdvance = Date.now();
-        streamState("playing · " + Math.floor(t) + "s", "good");
-      } else if (Date.now() - lastAdvance > 6000) {
-        streamState("no audio arriving - tap stop, then play again", "bad");
-      }
-    }, 2000);
-  });
-
-  var ackEl = $("ack");
-  function ack(text) { ackEl.textContent = text; }
-
-  function post(path, body, done) {
-    fetch(path, { method: "POST", headers: headers, body: body })
-      .then(function (r) {
-        if (r.status === 401) { loggedOut(); throw new Error("logged out"); }
-        return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || ("error " + r.status)); return d; });
-      })
-      .then(function (d) { ack(d.ack || "done"); if (done) done(d); })
-      .catch(function (e) { ack("failed: " + e.message); });
-  }
-
-  $("steer").addEventListener("click", function () {
-    var t = $("text").value.trim();
-    if (!t) { ack("type what you want first"); return; }
-    post("/steer", "text=" + encodeURIComponent(t));
-    $("text").value = "";
-  });
-  $("fresh").addEventListener("click", function () {
-    var t = $("text").value.trim();
-    if (!t) { ack("type a prompt first, then Start fresh"); return; }
-    post("/new", "prompt=" + encodeURIComponent(t));
-    $("text").value = "";
-  });
-  $("save").addEventListener("click", function () {
-    post("/save", "tag=" + encodeURIComponent($("tag").value.trim()), function () {
-      if (mode === "saved") loadChunks();
-    });
-  });
-
-  // ---- sessions ---------------------------------------------------
-  $("sesssave").addEventListener("click", function () {
-    var n = $("sessname").value.trim();
-    if (!n) { ack("type a name for this session first"); return; }
-    post("/sessions/save", "name=" + encodeURIComponent(n), loadSessions);
-    $("sessname").value = "";
-  });
-
-  function sessionRow(item, group) {
-    var row = document.createElement("div");
-    row.className = "chunk sess" + (item.current ? " playing" : "");
-    var title = document.createElement("div");
-    title.className = "ctitle";
-    title.textContent = item.name + (item.current ? "  (playing)" : "");
-    var meta = document.createElement("div");
-    meta.className = "cmeta";
-    meta.textContent = item.summary + (item.played ? " · " + item.played : "");
-    row.appendChild(title);
-    row.appendChild(meta);
-    var canLoad = me && me.new_prompt && !item.current;
-    var canDelete = me && me.admin && !item.current;
-    if (canLoad || canDelete) {
-      var buttons = document.createElement("div");
-      buttons.className = "row";
-      if (canLoad) {
-        var load = document.createElement("button");
-        load.className = "action";
-        load.textContent = group === "presets" ? "Start preset" : "Load";
-        load.addEventListener("click", function () {
-          post("/sessions/load", "name=" + encodeURIComponent(item.name), loadSessions);
-        });
-        buttons.appendChild(load);
-      }
-      if (canDelete) {
-        var del = document.createElement("button");
-        del.className = "action danger";
-        del.textContent = "Delete";
-        del.addEventListener("click", function () {
-          var what = group === "presets" ? "Hide preset " : "Delete session ";
-          if (!window.confirm(what + item.name + "?")) return;
-          post("/sessions/delete", "name=" + encodeURIComponent(item.name), loadSessions);
-        });
-        buttons.appendChild(del);
-      }
-      row.appendChild(buttons);
-    }
-    return row;
-  }
-
-  function sessionGroup(label, items, group, collapsed) {
-    var box;
-    if (collapsed) {
-      box = document.createElement("details");
-      var sum = document.createElement("summary");
-      sum.className = "grouplabel";
-      sum.textContent = label + " (" + items.length + ")";
-      box.appendChild(sum);
-    } else {
-      box = document.createElement("div");
-      var h = document.createElement("div");
-      h.className = "grouplabel";
-      h.textContent = label;
-      box.appendChild(h);
-    }
-    if (!items.length) {
-      var empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = group === "named" ? "none yet - save this session under a name" : "none";
-      box.appendChild(empty);
-    }
-    items.forEach(function (item) { box.appendChild(sessionRow(item, group)); });
-    return box;
-  }
-
-  function loadSessions() {
-    fetch("/api/sessions").then(function (r) {
-      if (r.status === 401) { loggedOut(); return null; }
-      return r.json();
-    }).then(function (d) {
-      if (!d) return;
-      var box = $("sessions");
-      box.innerHTML = "";
-      box.appendChild(sessionGroup("Your sessions", d.named, "named", false));
-      box.appendChild(sessionGroup("Presets", d.presets, "presets", false));
-      box.appendChild(sessionGroup("Auto-saved sessions", d.auto, "auto", true));
-    }).catch(function () {});
-  }
-  setInterval(loadSessions, 30000);
-
-  function poll() {
-    fetch("/state").then(function (r) {
-      if (r.status === 401) { loggedOut(); return null; }
-      return r.json();
-    }).then(function (s) {
-      if (!s) return;
-      $("conn").textContent = "connected";
-      $("now").textContent = s.source || s.state || "...";
-      var meta = s.session ? (s.session.indexOf("session-") === 0 ? s.session : "session " + s.session) : "";
-      if (s.elapsed) meta += (meta ? "  ·  " : "") + s.elapsed + " / " + s.duration;
-      meta += (meta ? "  ·  " : "") + s.queued + " ready" + (s.generating ? " · generating" : "");
-      $("meta").textContent = meta;
-      $("phase").textContent =
-        s.phase ? s.phase + " (" + s.phase_info + ")" : (s.paused ? "paused at the machine" : "");
-    }).catch(function () {
-      $("conn").textContent = "disconnected";
-    });
-  }
-  poll();
-  setInterval(poll, 2000);
-
-  // ---- saved chunks ------------------------------------------------
-  var savedAudio = $("savedaudio");
-  var chunks = [];          // everything the server has
-  var tagsOn = store.get("iar.tags", {}); // tag -> selected; unknown tags default to on
-  var playlist = [];        // chunks in the selected tags
-  var current = null;       // chunk playing in saved mode
-  var repeatOne = null;     // chunk looped on its own
-
-  function tagOn(tag) { return tagsOn[tag] !== false; }
-
-  function fmtSecs(s) {
-    s = Math.round(s || 0);
-    return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
-  }
-  function fmtDate(iso) {
-    var d = new Date(iso);
-    if (isNaN(d.getTime())) return "";
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
-      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  }
-
-  function rebuildPlaylist() {
-    playlist = chunks.filter(function (c) { return tagOn(c.tag); });
-  }
-
-  function renderTags(tags) {
-    var box = $("tags");
-    box.innerHTML = "";
-    if (!tags.length) {
-      box.innerHTML = '<span class="empty">no saved chunks yet</span>';
-      return;
-    }
-    tags.forEach(function (tag) {
-      var label = document.createElement("label");
-      label.className = "chip" + (tagOn(tag) ? " on" : "");
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = tagOn(tag);
-      cb.addEventListener("change", function () {
-        tagsOn[tag] = cb.checked;
-        store.set("iar.tags", tagsOn);
-        label.classList.toggle("on", cb.checked);
-        rebuildPlaylist();
-        renderChunks();
-      });
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(tag));
-      box.appendChild(label);
-    });
-  }
-
-  function renderChunks() {
-    var box = $("chunks");
-    box.innerHTML = "";
-    if (!chunks.length) {
-      box.innerHTML = '<span class="empty">nothing saved yet - save a track from the live stream</span>';
-      return;
-    }
-    chunks.forEach(function (c) {
-      if (!tagOn(c.tag)) return;
-      var row = document.createElement("div");
-      row.className = "chunk" + (current && current.url === c.url ? " playing" : "");
-      var title = document.createElement("div");
-      title.className = "ctitle";
-      title.textContent = c.title;
-      var meta = document.createElement("div");
-      meta.className = "cmeta";
-      meta.textContent = c.tag + " · " + fmtSecs(c.seconds) + " · " + fmtDate(c.saved);
-      var row2 = document.createElement("div");
-      row2.className = "row";
-      var play = document.createElement("button");
-      play.className = "action";
-      play.textContent = "Play";
-      play.addEventListener("click", function () { playChunk(c); });
-      var loop = document.createElement("button");
-      loop.className = "action" + (repeatOne && repeatOne.url === c.url ? " looping" : "");
-      loop.textContent = repeatOne && repeatOne.url === c.url ? "Looping this one" : "Loop this one";
-      loop.addEventListener("click", function () { loopOne(c); });
-      row2.appendChild(play);
-      row2.appendChild(loop);
-      row.appendChild(title);
-      row.appendChild(meta);
-      row.appendChild(row2);
-      box.appendChild(row);
-    });
-  }
-
-  function updateLoopState() {
-    var el = $("loopstate");
-    if (repeatOne) {
-      el.textContent = "Looping one chunk: " + repeatOne.title;
-      el.className = "one";
-      $("backloop").hidden = false;
-    } else {
-      el.textContent = "Looping every chunk in the selected tags";
-      el.className = "";
-      $("backloop").hidden = true;
-    }
-    savedAudio.loop = !!repeatOne;
-  }
-
-  function playChunk(c) {
-    current = c;
-    savedAudio.src = c.url;
-    savedAudio.play().catch(function (e) { $("savednow").textContent = "could not play: " + e.message; });
-    $("savednow").className = "";
-    $("savednow").textContent = c.title + "  (" + c.tag + ")";
-    renderChunks();
-  }
-
-  function loopOne(c) {
-    repeatOne = c;
-    updateLoopState();
-    if (!current || current.url !== c.url) playChunk(c); else renderChunks();
-  }
-
-  $("backloop").addEventListener("click", function () {
-    repeatOne = null;
-    updateLoopState();
-    renderChunks();
-  });
-
-  function step(dir) {
-    if (!playlist.length) return;
-    var i = -1;
-    if (current) {
-      playlist.forEach(function (c, k) { if (c.url === current.url) i = k; });
-    }
-    i = (i + dir + playlist.length) % playlist.length;
-    playChunk(playlist[i]);
-  }
-  $("snext").addEventListener("click", function () { repeatOne = null; updateLoopState(); step(1); });
-  $("sprev").addEventListener("click", function () { repeatOne = null; updateLoopState(); step(-1); });
-  $("splay").addEventListener("click", function () {
-    if (current && savedAudio.paused && savedAudio.src) { savedAudio.play(); return; }
-    if (current && !savedAudio.paused) { savedAudio.pause(); return; }
-    step(1);
-  });
-  savedAudio.addEventListener("ended", function () { if (!repeatOne) step(1); });
-  savedAudio.addEventListener("play", function () { $("splay").innerHTML = "&#10074;&#10074;&#xFE0E; Pause"; });
-  savedAudio.addEventListener("pause", function () { $("splay").innerHTML = "&#9654;&#xFE0E; Play"; });
-
-  function loadChunks() {
-    fetch("/api/chunks").then(function (r) {
-      if (r.status === 401) { loggedOut(); return null; }
-      return r.json();
-    }).then(function (d) {
-      if (!d) return;
-      chunks = d.chunks || [];
-      renderTags(d.tags || []);
-      rebuildPlaylist();
-      renderChunks();
-      updateLoopState();
-    }).catch(function () {});
-  }
-  setInterval(function () { if (mode === "saved") loadChunks(); }, 30000);
-
-  setMode(mode);
-})();
-</script>
+<script src="/app.js"></script>
 </body>
 </html>

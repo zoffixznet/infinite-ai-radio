@@ -137,16 +137,22 @@ func TestResolveBindingAdditive(t *testing.T) {
 
 // --- fan-out ---
 
-func TestFanoutSlowClientDoesNotStallOthers(t *testing.T) {
+func TestFanoutSlowClientResyncsAndStaysSubscribed(t *testing.T) {
 	s := NewStreamer(testLog())
 	_, fast, cancelFast := s.Subscribe()
 	defer cancelFast()
 	_, slow, cancelSlow := s.Subscribe()
 	defer cancelSlow()
 
-	chunk := make([]byte, 512)
-	chunk[0] = 0xFF
-	chunk[1] = 0xFB
+	mkChunk := func(i int) []byte {
+		c := make([]byte, 512)
+		c[0] = 0xFF
+		c[1] = 0xFB
+		c[2] = byte(i >> 8)
+		c[3] = byte(i)
+		return c
+	}
+	idx := func(c []byte) int { return int(c[2])<<8 | int(c[3]) }
 	var fastGot int
 	done := make(chan struct{})
 	go func() {
@@ -155,20 +161,38 @@ func TestFanoutSlowClientDoesNotStallOthers(t *testing.T) {
 			fastGot++
 		}
 	}()
-	for i := 0; i < clientChanSlots*2; i++ {
-		s.broadcast(chunk)
+	total := clientChanSlots * 2
+	for i := 0; i < total; i++ {
+		s.broadcast(mkChunk(i))
 	}
-	if got := s.Listeners(); got != 1 {
-		t.Fatalf("slow client not dropped: %d listeners", got)
+	// The slow client is resynced (oldest chunks dropped), never dropped.
+	if got := s.Listeners(); got != 2 {
+		t.Fatalf("slow client was disconnected: %d listeners", got)
 	}
 	cancelFast()
 	<-done
 	if fastGot < clientChanSlots {
 		t.Fatalf("fast client starved: got %d chunks", fastGot)
 	}
-	if _, ok := <-slow; ok {
-		for range slow {
+	first := -1
+	last := -1
+	for {
+		select {
+		case c := <-slow:
+			if first < 0 {
+				first = idx(c)
+			}
+			last = idx(c)
+			continue
+		default:
 		}
+		break
+	}
+	if first <= 0 {
+		t.Fatalf("no old chunks were dropped for the slow client (first=%d)", first)
+	}
+	if last != total-1 {
+		t.Fatalf("slow client not at live edge: last=%d want %d", last, total-1)
 	}
 }
 
@@ -829,11 +853,18 @@ func TestSessionsListingAndActions(t *testing.T) {
 			t.Fatalf("%s without a name = %d", tc.path, resp.StatusCode)
 		}
 	}
-	// The page carries the sessions card and its controls.
+	// The page carries the sessions card; the page script drives the
+	// session endpoints.
 	_, page := admin.get("/")
-	for _, want := range []string{`id="sessioncard"`, `id="sessname"`, `id="sesssave"`, `id="sessions"`, "/api/sessions", "/sessions/delete"} {
+	for _, want := range []string{`id="sessioncard"`, `id="sessname"`, `id="sesssave"`, `id="sessions"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("page missing %q", want)
+		}
+	}
+	_, script := admin.get("/app.js")
+	for _, want := range []string{"/api/sessions", "/sessions/delete"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("page script missing %q", want)
 		}
 	}
 }
@@ -1193,13 +1224,20 @@ func TestPlayerPageContainsControls(t *testing.T) {
 	admin := h.admin()
 	_, page := admin.get("/")
 	for _, want := range []string{
-		"stream.mp3", `id="play"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="tag"`, `id="text"`, `id="now"`,
+		`id="play"`, `id="next"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="tag"`, `id="text"`, `id="now"`,
 		`id="mode-live"`, `id="mode-saved"`, `id="tags"`, `id="chunks"`, `id="savedaudio"`, `id="backloop"`,
-		`href="/users"`, `href="/account"`, `action="/logout"`, "viewport",
+		`id="steerstatus"`, `id="savestatus"`, `id="sessstatus"`,
+		`href="/users"`, `href="/account"`, `action="/logout"`, "viewport", "/app.js", "manifest.webmanifest",
 	} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("page missing %q", want)
 		}
+	}
+	// The page script is served publicly and drives the stream.
+	resp, script := admin.get("/app.js")
+	if resp.StatusCode != 200 || !strings.Contains(script, "stream.mp3") || !strings.Contains(script, "mediaSession") {
+		t.Fatalf("app.js = %d (stream/mediaSession present: %v/%v)", resp.StatusCode,
+			strings.Contains(script, "stream.mp3"), strings.Contains(script, "mediaSession"))
 	}
 	// Non-admins get no Users link.
 	link := h.invite(admin, "plain@example.com", nil)
@@ -1208,7 +1246,7 @@ func TestPlayerPageContainsControls(t *testing.T) {
 	if strings.Contains(page, `href="/users"`) {
 		t.Fatal("non-admin page shows the Users link")
 	}
-	resp, _ := plain.get("/users")
+	resp, _ = plain.get("/users")
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-admin /users = %d", resp.StatusCode)
 	}

@@ -506,7 +506,7 @@ func TestRealBrowser(t *testing.T) {
 	w.click("#sesssave")
 	var ackText string
 	waitFor(t, 10*time.Second, "session save ack", func() bool {
-		w.exec(`return document.getElementById('ack').textContent;`, &ackText)
+		w.exec(`return document.getElementById('sessstatus').textContent;`, &ackText)
 		return strings.Contains(ackText, "session saved as road-trip")
 	})
 	waitFor(t, 10*time.Second, "road-trip listed as playing", func() bool {
@@ -518,7 +518,7 @@ func TestRealBrowser(t *testing.T) {
 	})
 	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("pink-noise", "Start preset"))+"/click", nil)
 	waitFor(t, 10*time.Second, "preset start ack", func() bool {
-		w.exec(`return document.getElementById('ack').textContent;`, &ackText)
+		w.exec(`return document.getElementById('sessstatus').textContent;`, &ackText)
 		return strings.Contains(ackText, "preset pink-noise")
 	})
 	waitFor(t, 10*time.Second, "road-trip no longer playing", func() bool {
@@ -533,7 +533,7 @@ func TestRealBrowser(t *testing.T) {
 	}
 	w.acceptAlert()
 	waitFor(t, 10*time.Second, "delete ack", func() bool {
-		w.exec(`return document.getElementById('ack').textContent;`, &ackText)
+		w.exec(`return document.getElementById('sessstatus').textContent;`, &ackText)
 		return strings.Contains(ackText, "session road-trip deleted")
 	})
 	waitFor(t, 10*time.Second, "road-trip row gone", func() bool {

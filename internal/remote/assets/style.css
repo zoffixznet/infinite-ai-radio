@@ -97,6 +97,10 @@ button.action:active { background: #2c3a5c; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 button.primary:active { background: var(--accent-press); }
 button.danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+button:disabled, button[aria-busy="true"] {
+  opacity: 0.55;
+  cursor: progress;
+}
 button.small { padding: 9px 12px; font-size: 14px; width: auto; margin-top: 0; }
 .flash { padding: 12px 14px; border-radius: 12px; margin-top: 14px; font-weight: 600; }
 .flash.ok { background: #12331f; color: #bff5d6; border: 1px solid var(--accent); }
@@ -149,7 +153,10 @@ footer { color: var(--dim); font-size: 12px; margin-top: 18px; text-align: cente
 #now { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
 #meta { color: var(--dim); font-size: 14px; margin-top: 6px; }
 #phase { color: var(--focus); font-size: 14px; margin-top: 6px; min-height: 1.2em; }
-#ack { margin-top: 10px; color: var(--accent); font-size: 14px; min-height: 1.3em; overflow-wrap: anywhere; }
+.cardstatus { margin-top: 8px; color: var(--dim); font-size: 14px; min-height: 1.3em; overflow-wrap: anywhere; }
+.cardstatus.ok { color: var(--accent); }
+.cardstatus.err { color: var(--danger); font-weight: 600; }
+#next { margin-top: 10px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   display: inline-flex; align-items: center; gap: 8px;

@@ -20,7 +20,7 @@ import (
 	"iar/internal/snippets"
 )
 
-//go:embed assets/*.html assets/*.css
+//go:embed assets/*.html assets/*.css assets/app.js assets/manifest.webmanifest assets/icons/*.png
 var assetFS embed.FS
 
 // ProductName is the name shown on every page and in emails.
@@ -216,6 +216,11 @@ func (s *Server) buildAllowedHosts(bound []string) {
 // buildHandler wires the route mux behind the security middleware.
 func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
+	// Public (no login): static assets (page code, icons, the app
+	// manifest, which browsers fetch without credentials).
+	mux.HandleFunc("GET /app.js", s.staticAsset("assets/app.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /manifest.webmanifest", s.staticAsset("assets/manifest.webmanifest", "application/manifest+json"))
+	mux.HandleFunc("GET /icons/{file}", s.handleIcon)
 	// Public (no login): the login page and the invite/reset links.
 	mux.HandleFunc("GET /login", s.handleLoginPage)
 	mux.HandleFunc("POST /login", s.handleLogin)
@@ -300,7 +305,7 @@ func (s *Server) gate(next http.Handler) http.Handler {
 			http.Error(w, "missing Origin or "+csrfHeader+" header", http.StatusForbidden)
 			return
 		}
-		if s.NeedsSetup() {
+		if s.NeedsSetup() && !staticPath(r.URL.Path) {
 			s.log.Info("remote request before setup", "event", "remote_setup_needed", "path", r.URL.Path, "from", r.RemoteAddr)
 			w.Header().Set("Cache-Control", "no-store")
 			s.render(w, http.StatusServiceUnavailable, "setup.html", map[string]any{"Product": ProductName})
@@ -308,6 +313,35 @@ func (s *Server) gate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// staticPath reports whether a request path is a public static asset.
+func staticPath(p string) bool {
+	return p == "/app.js" || p == "/manifest.webmanifest" || strings.HasPrefix(p, "/icons/")
+}
+
+// staticAsset serves one embedded file with light caching.
+func (s *Server) staticAsset(name, contentType string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := assetFS.ReadFile(name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Write(data)
+	}
+}
+
+// handleIcon serves one embedded icon by file name.
+func (s *Server) handleIcon(w http.ResponseWriter, r *http.Request) {
+	file := r.PathValue("file")
+	if strings.ContainsAny(file, "/\\") || !strings.HasSuffix(file, ".png") {
+		http.NotFound(w, r)
+		return
+	}
+	s.staticAsset("assets/icons/"+file, "image/png")(w, r)
 }
 
 // render executes a page template.
