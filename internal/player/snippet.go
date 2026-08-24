@@ -109,6 +109,7 @@ func (o *Orchestrator) NewSession(prompt string) string {
 	o.recordCurrent()
 	o.seedFromLibrary()
 	o.kickGen()
+	o.expandSeedAsync(fresh)
 	o.log.Info("new session from prompt", "event", "session_new_prompt", "prompt", prompt, "vocal", fresh.Vocal)
 	ack := "new session: " + fresh.Describe()
 	if fresh.Vocal {

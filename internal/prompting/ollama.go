@@ -62,15 +62,25 @@ func (o *Ollama) Available(ctx context.Context) bool {
 // Model reports the resolved model name.
 func (o *Ollama) Model() string { return o.model }
 
+// ChatJSON sends one exchange with a JSON schema constraint on the
+// reply (Ollama's format parameter), returning the raw JSON text.
+func (o *Ollama) ChatJSON(ctx context.Context, system, user string, schema any) (string, error) {
+	return o.chat(ctx, system, user, schema)
+}
+
 // Chat sends one system+user exchange and returns the reply text.
-// keep_alive is zero so the helper model frees GPU memory for the music
-// engine right after each call.
 func (o *Ollama) Chat(ctx context.Context, system, user string) (string, error) {
+	return o.chat(ctx, system, user, nil)
+}
+
+// chat implements both calls. keep_alive is zero so the helper model
+// frees GPU memory for the music engine right after each call.
+func (o *Ollama) chat(ctx context.Context, system, user string, format any) (string, error) {
 	if o.model == "" && !o.Available(ctx) {
 		return "", fmt.Errorf("ollama unavailable")
 	}
 	stream := false
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model": o.model,
 		"messages": []map[string]string{
 			{"role": "system", "content": system},
@@ -79,7 +89,11 @@ func (o *Ollama) Chat(ctx context.Context, system, user string) (string, error) 
 		"stream":     &stream,
 		"keep_alive": 0,
 		"options":    map[string]any{"temperature": 0.7},
-	})
+	}
+	if format != nil {
+		payload["format"] = format
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}

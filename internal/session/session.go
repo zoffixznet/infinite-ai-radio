@@ -55,6 +55,11 @@ type Session struct {
 	Vocal       bool   `json:"vocal"`
 	LyricsTheme string `json:"lyrics_theme,omitempty"`
 
+	// Spec is the structured steering state derived from the tweaks.
+	// Sessions saved before it existed load with a nil Spec; it is then
+	// rebuilt by replaying the recorded tweaks.
+	Spec *PromptSpec `json:"spec,omitempty"`
+
 	// Tweaks is the accumulated steering context (wiped by clear).
 	Tweaks []Entry `json:"tweaks"`
 	// History records every input ever typed, including cleared ones.
@@ -141,6 +146,7 @@ func (s *Session) RecordOnly(raw, interpreted string) {
 // keeping the base prompt and history.
 func (s *Session) Clear() {
 	s.Tweaks = nil
+	s.Spec = nil
 	s.RecordOnly("clear", "steering context cleared")
 }
 
@@ -173,6 +179,7 @@ func (s *Session) Describe() string {
 // Snapshot returns a copy safe to read from another goroutine.
 func (s *Session) Snapshot() *Session {
 	cp := *s
+	cp.Spec = s.Spec.Clone()
 	cp.Tweaks = append([]Entry(nil), s.Tweaks...)
 	cp.History = append([]Entry(nil), s.History...)
 	return &cp

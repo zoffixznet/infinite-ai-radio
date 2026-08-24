@@ -84,9 +84,19 @@ type GenerateRequest struct {
 	AudioFormat    string  `json:"audio_format"`
 	InferenceSteps int     `json:"inference_steps,omitempty"`
 	BatchSize      int     `json:"batch_size"`
-	VocalLanguage  string  `json:"vocal_language,omitempty"`
 	UseRandomSeed  bool    `json:"use_random_seed"`
 	Seed           int64   `json:"seed"`
+
+	// Structured constraints: the server injects these as hard metadata
+	// during constrained decoding (user metadata always wins).
+	BPM           int    `json:"bpm,omitempty"`
+	KeyScale      string `json:"key_scale,omitempty"`
+	TimeSignature string `json:"time_signature,omitempty"`
+	VocalLanguage string `json:"vocal_language,omitempty"`
+	// Planner-LM negative conditioning: the only working negative lever
+	// on the CFG-distilled turbo model.
+	LMNegativePrompt string  `json:"lm_negative_prompt,omitempty"`
+	LMCfgScale       float64 `json:"lm_cfg_scale,omitempty"`
 }
 
 // GenerateResult is one finished track as reported by the server, before

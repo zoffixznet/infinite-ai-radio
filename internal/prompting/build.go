@@ -2,7 +2,9 @@ package prompting
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -13,10 +15,11 @@ import (
 
 // Builder turns a session's steering context into generation specs.
 //
-// The deterministic path is always used immediately; an optional Ollama
-// helper polishes prompts and writes lyrics strictly in the background,
-// and its results are used only when they are already available by the
-// time a spec is needed. No generation ever waits for the helper.
+// The deterministic path is always used immediately and is complete on
+// its own; an optional Ollama helper writes lyrics and proposes
+// structured spec refinements strictly in the background, and its
+// results are used only when they are already available by the time a
+// spec is needed. No generation ever waits for the helper.
 type Builder struct {
 	ollama *Ollama
 	log    *slog.Logger
@@ -87,48 +90,42 @@ func (b *Builder) ProbeAsync(ctx context.Context) {
 	}()
 }
 
-// BuildSpec produces the spec for the session's next track. It never
-// blocks on the helper model.
+// BuildSpec produces the spec for the session's next track from the
+// structured steering state. This is the single choke point between
+// steering and the engine; it never blocks on the helper model.
 func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int) engine.Spec {
-	spec := engine.Spec{Seconds: seconds, Seed: -1}
-	spec.Prompt = b.buildPrompt(s)
+	_ = ctx
+	r := Render(s)
+	spec := engine.Spec{
+		Seconds:        seconds,
+		Seed:           -1,
+		Prompt:         r.Caption,
+		BPM:            r.BPM,
+		KeyScale:       r.KeyScale,
+		TimeSignature:  r.TimeSignature,
+		VocalLanguage:  r.VocalLanguage,
+		NegativePrompt: r.NegativePrompt,
+		LMCfgScale:     r.LMCfgScale,
+	}
 	if !s.Vocal {
 		spec.Lyrics = engine.InstrumentalLyrics
 		return spec
 	}
-	if lyrics := b.buildLyrics(s, spec.Prompt); lyrics != "" {
+	if lyrics := b.buildLyrics(s, r.Caption); lyrics != "" {
 		spec.Lyrics = lyrics
 		return spec
 	}
 	// No lyrics ready: the engine's own planner invents caption and
-	// lyrics from a description (sample mode). Vocals stay local.
-	query := spec.Prompt + ", with sung vocals"
+	// lyrics from the rendered description (sample mode). The
+	// structured constraints above still apply as user metadata, so
+	// steering reaches vocal tracks too.
+	query := r.Caption + ", with sung vocals"
 	if s.LyricsTheme != "" {
 		query += " about " + s.LyricsTheme
 	}
 	spec.Prompt = ""
 	spec.SampleQuery = query
 	return spec
-}
-
-// buildPrompt merges base prompt and tweaks deterministically, upgrading
-// to an already-finished helper rewrite when one exists.
-func (b *Builder) buildPrompt(s *session.Session) string {
-	merged := mergePrompt(s)
-	if len(s.Tweaks) == 0 || !b.helperUsable() {
-		return merged
-	}
-	key := "p|" + merged
-	if v, ok := b.lookup(key); ok {
-		return v
-	}
-	// Snapshot now: the caller may keep mutating the session while the
-	// background rewrite runs.
-	snap := s.Snapshot()
-	b.fillAsync(key, func(ctx context.Context) (string, error) {
-		return b.rewrite(ctx, snap)
-	})
-	return merged
 }
 
 // buildLyrics returns helper-written lyrics when they are ready, kicking
@@ -229,40 +226,231 @@ func (b *Builder) store(key, v string) {
 	b.cache[key] = v
 }
 
-// mergePrompt is the deterministic path: base prompt plus tweak phrases
-// in order.
-func mergePrompt(s *session.Session) string {
-	parts := []string{s.BasePrompt}
-	parts = append(parts, s.TweakPhrases()...)
-	if s.Vocal {
-		parts = append(parts, "with vocals")
-	}
-	return strings.Join(parts, ", ")
+// SpecUpdate is a helper-proposed structured update to the steering
+// spec, produced as schema-constrained JSON so it can be validated and
+// merged mechanically.
+type SpecUpdate struct {
+	Genre         []string       `json:"genre"`
+	Instruments   map[string]int `json:"instruments"`
+	Mood          []string       `json:"mood"`
+	BPM           int            `json:"bpm"`
+	KeyScale      string         `json:"key_scale"`
+	TimeSignature string         `json:"time_signature"`
+	VocalLanguage string         `json:"vocal_language"`
+	Production    []string       `json:"production"`
+	Negatives     []string       `json:"negatives"`
 }
 
-const rewriteSystem = `You rewrite prompts for a music-generation model.
-The user gives a base description and a list of adjustments, newest last.
-Produce ONE final prompt: short comma-separated tags and phrases (genre,
-mood, tempo, instrumentation), at most 35 words. Later adjustments override
-earlier ones and the base when they conflict. Output ONLY the prompt text,
-no quotes, no explanations.`
+// specUpdateSchema constrains the helper model's JSON output.
+var specUpdateSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"genre":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"instruments":    map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer"}},
+		"mood":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"bpm":            map[string]any{"type": "integer"},
+		"key_scale":      map[string]any{"type": "string"},
+		"time_signature": map[string]any{"type": "string"},
+		"vocal_language": map[string]any{"type": "string"},
+		"production":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"negatives":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+	},
+}
 
-func (b *Builder) rewrite(ctx context.Context, s *session.Session) (string, error) {
-	var sb strings.Builder
-	sb.WriteString("Base: " + s.BasePrompt + "\nAdjustments:\n")
-	for _, t := range s.Tweaks {
-		sb.WriteString("- " + t.Raw + "\n")
+const refineSystem = `You refine steering for a music-generation model.
+Given the current structured description and one user adjustment, output a
+JSON update: only fields the adjustment affects, everything else empty.
+Weights are 1-3. "negatives" lists what the music must AVOID. Never put a
+negated thing in a positive field. bpm 0 means unchanged.`
+
+const expandSystem = `You expand a short music description into structured
+fields for a music-generation model: genre (1-3 tags), instruments with
+weight 1, mood words, production words, bpm (or 0), key_scale like
+"C major" (or empty). Leave "negatives" empty unless the description
+excludes something. Output JSON only.`
+
+// RefineAsync asks the helper model to interpret one steering input as
+// a structured update, delivering the validated result to apply when it
+// is ready. Never blocks; does nothing when the helper is unusable.
+func (b *Builder) RefineAsync(snap *session.Session, raw string, apply func(SpecUpdate)) {
+	if !b.helperUsable() {
+		return
 	}
-	if s.Vocal {
-		sb.WriteString("The track will have sung vocals.\n")
+	specJSON, _ := json.Marshal(snap.Spec)
+	user := "Base description: " + snap.BasePrompt +
+		"\nCurrent spec: " + string(specJSON) +
+		"\nUser adjustment: " + raw
+	b.updateAsync("r|"+raw+"|"+string(specJSON), refineSystem, user, apply)
+}
+
+// ExpandAsync asks the helper model to enrich a vague seed prompt into
+// structured fields (background, best-effort).
+func (b *Builder) ExpandAsync(snap *session.Session, apply func(SpecUpdate)) {
+	if !b.helperUsable() {
+		return
+	}
+	b.updateAsync("e|"+snap.BasePrompt, expandSystem, "Music description: "+snap.BasePrompt, apply)
+}
+
+// updateAsync runs one schema-constrained helper call in the background.
+func (b *Builder) updateAsync(key, system, user string, apply func(SpecUpdate)) {
+	b.mu.Lock()
+	if b.pending[key] {
+		b.mu.Unlock()
+		return
+	}
+	b.pending[key] = true
+	runCtx := b.runCtx
+	b.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(runCtx, chatTimeout)
+		defer cancel()
+		out, err := b.ollama.ChatJSON(ctx, system, user, specUpdateSchema)
+		b.mu.Lock()
+		delete(b.pending, key)
+		b.mu.Unlock()
+		if err != nil {
+			b.noteFailure(err)
+			return
+		}
+		var u SpecUpdate
+		if err := json.Unmarshal([]byte(out), &u); err != nil {
+			b.noteFailure(err)
+			return
+		}
+		b.noteSuccess()
+		sanitizeUpdate(&u)
+		b.log.Info("helper spec update ready", "event", "helper_spec_update", "kind", key[:1])
+		apply(u)
+	}()
+}
+
+// validLanguages are the vocal language codes the engine accepts.
+var validLanguages = map[string]bool{}
+
+func init() {
+	for _, code := range []string{
+		"ar", "az", "bg", "bn", "ca", "cs", "da", "de", "el", "en",
+		"es", "fa", "fi", "fr", "he", "hi", "hr", "ht", "hu", "id",
+		"is", "it", "ja", "ko", "la", "lt", "ms", "ne", "nl", "no",
+		"pa", "pl", "pt", "ro", "ru", "sa", "sk", "sr", "sv", "sw",
+		"ta", "te", "th", "tl", "tr", "uk", "ur", "vi", "yue", "zh",
+	} {
+		validLanguages[code] = true
+	}
+}
+
+var keyScaleRe = regexp.MustCompile(`^[A-Ga-g][#b]? (major|minor)$`)
+
+// sanitizeUpdate clamps and validates everything a helper model
+// proposed before it can touch the session.
+func sanitizeUpdate(u *SpecUpdate) {
+	clampList := func(list []string) []string {
+		var out []string
+		for _, v := range list {
+			v = sanitizeLine(strings.ToLower(v), 40)
+			if v != "" && len(out) < 8 {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	u.Genre = clampList(u.Genre)
+	u.Mood = clampList(u.Mood)
+	u.Production = clampList(u.Production)
+	u.Negatives = clampList(u.Negatives)
+	clean := map[string]int{}
+	for k, w := range u.Instruments {
+		k = sanitizeLine(strings.ToLower(k), 40)
+		if k == "" || len(clean) >= 8 {
+			continue
+		}
+		switch {
+		case w <= 0:
+			// A zero-or-negative weight is a negation.
+			if len(u.Negatives) < 8 {
+				u.Negatives = append(u.Negatives, k)
+			}
+		case w > 3:
+			clean[k] = 3
+		default:
+			clean[k] = w
+		}
+	}
+	u.Instruments = clean
+	if u.BPM != 0 {
+		u.BPM = clampBPM(u.BPM)
+	}
+	u.KeyScale = strings.TrimSpace(u.KeyScale)
+	if u.KeyScale != "" {
+		if keyScaleRe.MatchString(u.KeyScale) {
+			u.KeyScale = strings.ToUpper(u.KeyScale[:1]) + u.KeyScale[1:]
+		} else {
+			u.KeyScale = ""
+		}
+	}
+	switch u.TimeSignature {
+	case "2", "3", "4", "6":
+	default:
+		u.TimeSignature = ""
+	}
+	if !validLanguages[strings.ToLower(u.VocalLanguage)] {
+		u.VocalLanguage = ""
 	} else {
-		sb.WriteString("The track is instrumental.\n")
+		u.VocalLanguage = strings.ToLower(u.VocalLanguage)
 	}
-	out, err := b.ollama.Chat(ctx, rewriteSystem, sb.String())
-	if err != nil {
-		return "", err
+}
+
+// MergeUpdate folds a sanitized helper update into the session's spec,
+// reporting whether anything changed. Values the user set explicitly
+// (bpm, key, time signature, language) are never overridden.
+func MergeUpdate(s *session.Session, u SpecUpdate) bool {
+	EnsureSpec(s)
+	spec := s.Spec
+	before := spec.Clone()
+	for _, g := range u.Genre {
+		if !negated(spec, g) && len(spec.Genre) < 8 {
+			addWord(&spec.Genre, g)
+		}
 	}
-	return sanitizeLine(out, 350), nil
+	for k, w := range u.Instruments {
+		if negated(spec, k) {
+			continue
+		}
+		if spec.Instruments == nil {
+			spec.Instruments = map[string]int{}
+		}
+		if w > spec.Instruments[k] {
+			spec.Instruments[k] = w
+		}
+	}
+	for _, m := range u.Mood {
+		if !negated(spec, m) && len(spec.Mood) < 8 {
+			addWord(&spec.Mood, m)
+		}
+	}
+	for _, p := range u.Production {
+		if !negated(spec, p) && len(spec.Production) < 8 {
+			addWord(&spec.Production, p)
+		}
+	}
+	for _, n := range u.Negatives {
+		removeMatching(spec, n)
+		addNegative(spec, n)
+	}
+	if spec.BPM == 0 {
+		spec.BPM = u.BPM
+	}
+	if spec.KeyScale == "" {
+		spec.KeyScale = u.KeyScale
+	}
+	if spec.TimeSignature == "" {
+		spec.TimeSignature = u.TimeSignature
+	}
+	if spec.VocalLanguage == "" {
+		spec.VocalLanguage = u.VocalLanguage
+	}
+	return !before.Equal(spec)
 }
 
 const lyricsSystem = `You write short song lyrics for an AI music model.

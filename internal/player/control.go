@@ -36,9 +36,29 @@ func (o *Orchestrator) Steer(text string) string {
 			o.steerPending = true
 		}
 	}
+	epochAt := o.epoch
+	sessPtr := o.sess
+	snap := o.sess.Snapshot()
 	o.mu.Unlock()
 	o.saveSession()
 	o.kickGen()
+	if ack.ContextChanged && musicMode {
+		// The helper model may refine the deterministic interpretation
+		// in the background; the result lands only if no further
+		// steering happened meanwhile and affects later tracks.
+		o.builder.RefineAsync(snap, text, func(u prompting.SpecUpdate) {
+			o.mu.Lock()
+			changed := false
+			if o.sess == sessPtr && o.epoch == epochAt {
+				changed = prompting.MergeUpdate(o.sess, u)
+			}
+			o.mu.Unlock()
+			if changed {
+				o.saveSession()
+				o.log.Info("steering refined by the helper model", "event", "steering_refined", "input", text)
+			}
+		})
+	}
 	response := ack.Text
 	if musicMode {
 		response += o.steerContextNote(text)

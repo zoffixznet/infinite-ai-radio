@@ -18,10 +18,12 @@ import (
 // succeeds; later chats behave per the mode fields.
 type fakeOllama struct {
 	reply     string
+	jsonReply string
 	failFills bool
 	slow      time.Duration
 	chats     atomic.Int32
 	fills     atomic.Int32
+	jsonCalls atomic.Int32
 }
 
 func (f *fakeOllama) server(t *testing.T) *httptest.Server {
@@ -39,7 +41,8 @@ func (f *fakeOllama) server(t *testing.T) *httptest.Server {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
-			Stream *bool `json:"stream"`
+			Stream *bool           `json:"stream"`
+			Format json.RawMessage `json:"format"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("bad chat request: %v", err)
@@ -55,6 +58,9 @@ func (f *fakeOllama) server(t *testing.T) *httptest.Server {
 			return
 		}
 		f.fills.Add(1)
+		if len(req.Format) > 0 {
+			f.jsonCalls.Add(1)
+		}
 		if f.slow > 0 {
 			time.Sleep(f.slow)
 		}
@@ -62,8 +68,12 @@ func (f *fakeOllama) server(t *testing.T) *httptest.Server {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
 		}
+		reply := f.reply
+		if len(req.Format) > 0 && f.jsonReply != "" {
+			reply = f.jsonReply
+		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"message": map[string]string{"role": "assistant", "content": f.reply},
+			"message": map[string]string{"role": "assistant", "content": reply},
 		})
 	})
 	return httptest.NewServer(mux)
@@ -97,8 +107,8 @@ func waitCond(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func TestBuildSpecDeterministicFirstThenPolished(t *testing.T) {
-	f := &fakeOllama{reply: "dreamy lofi, slow tempo, soft piano"}
+func TestBuildSpecDeterministicAndRefineMerges(t *testing.T) {
+	f := &fakeOllama{jsonReply: `{"genre":["chillhop"],"instruments":{"rhodes piano":2},"mood":["nostalgic"],"bpm":80,"negatives":["harsh highs"]}`}
 	srv := f.server(t)
 	defer srv.Close()
 	b := probedBuilder(t, srv)
@@ -106,8 +116,7 @@ func TestBuildSpecDeterministicFirstThenPolished(t *testing.T) {
 	s.BasePrompt = "lofi beats"
 	Steer(s, "dreamier")
 
-	// First build never waits: deterministic result, helper fill kicked
-	// off in the background.
+	// The build is deterministic and instant, whatever the helper does.
 	spec := b.BuildSpec(context.Background(), s, 120)
 	if !strings.HasPrefix(spec.Prompt, "lofi beats") {
 		t.Fatalf("first build must be deterministic, got %q", spec.Prompt)
@@ -116,13 +125,67 @@ func TestBuildSpecDeterministicFirstThenPolished(t *testing.T) {
 		t.Fatalf("lyrics = %q; want instrumental", spec.Lyrics)
 	}
 
-	// Once the background fill lands, the polished prompt is used.
-	waitCond(t, "helper fill", func() bool { return f.fills.Load() >= 1 })
-	waitCond(t, "polished prompt", func() bool {
-		return b.BuildSpec(context.Background(), s, 120).Prompt == f.reply
-	})
-	if f.fills.Load() != 1 {
-		t.Fatalf("helper called %d times for one context; want 1", f.fills.Load())
+	// The helper proposes a schema-constrained JSON update; the merge is
+	// validated and lands asynchronously.
+	got := make(chan SpecUpdate, 1)
+	b.RefineAsync(s.Snapshot(), "dreamier", func(u SpecUpdate) { got <- u })
+	var u SpecUpdate
+	select {
+	case u = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refine result never arrived")
+	}
+	if f.jsonCalls.Load() != 1 {
+		t.Fatalf("json-constrained calls = %d; want 1", f.jsonCalls.Load())
+	}
+	if !MergeUpdate(s, u) {
+		t.Fatal("merge changed nothing")
+	}
+	r := Render(s)
+	if !strings.Contains(r.Caption, "chillhop") || !strings.Contains(r.Caption, "rich rhodes piano") {
+		t.Fatalf("caption after merge = %q", r.Caption)
+	}
+	if r.BPM != 80 || !strings.Contains(r.NegativePrompt, "harsh highs") {
+		t.Fatalf("fields after merge: bpm=%d neg=%q", r.BPM, r.NegativePrompt)
+	}
+	// A user-negated item can never come back through a helper update.
+	Steer(s, "no piano")
+	MergeUpdate(s, u)
+	if r := Render(s); strings.Contains(r.Caption, "piano") {
+		t.Fatalf("helper resurrected a negated instrument: %q", r.Caption)
+	}
+}
+
+func TestSanitizeUpdateClampsHostileValues(t *testing.T) {
+	u := SpecUpdate{
+		Genre:         []string{" TECHNO ", "", strings.Repeat("x", 300)},
+		Instruments:   map[string]int{"kick": 9, "hats": -2, "": 1},
+		BPM:           9999,
+		KeyScale:      "Q weird",
+		TimeSignature: "17",
+		VocalLanguage: "klingon",
+	}
+	sanitizeUpdate(&u)
+	if u.Instruments["kick"] != 3 {
+		t.Fatalf("weight not clamped: %+v", u.Instruments)
+	}
+	if _, ok := u.Instruments["hats"]; ok {
+		t.Fatal("non-positive weight kept as instrument")
+	}
+	found := false
+	for _, n := range u.Negatives {
+		if n == "hats" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("negative-weight instrument not negated: %+v", u.Negatives)
+	}
+	if u.BPM != 300 || u.KeyScale != "" || u.TimeSignature != "" || u.VocalLanguage != "" {
+		t.Fatalf("invalid fields kept: %+v", u)
+	}
+	if len(u.Genre) != 2 || u.Genre[0] != "techno" || len(u.Genre[1]) > 40 {
+		t.Fatalf("genre not cleaned: %+v", u.Genre)
 	}
 }
 
@@ -186,8 +249,9 @@ func TestBuilderDisablesHelperAfterRepeatedFailures(t *testing.T) {
 	b := probedBuilder(t, srv)
 	s := session.New()
 	for i := 0; i < 5; i++ {
-		Steer(s, "tweak number "+string(rune('a'+i)))
-		b.BuildSpec(context.Background(), s, 60)
+		raw := "tweak number " + string(rune('a'+i))
+		Steer(s, raw)
+		b.RefineAsync(s.Snapshot(), raw, func(SpecUpdate) {})
 		time.Sleep(50 * time.Millisecond)
 	}
 	waitCond(t, "helper disabled", func() bool { return !b.helperUsable() })
@@ -208,6 +272,8 @@ func TestBuilderUnusableWithoutProbe(t *testing.T) {
 	if !strings.HasPrefix(spec.Prompt, s.BasePrompt) {
 		t.Fatalf("prompt = %q", spec.Prompt)
 	}
+	b.RefineAsync(s.Snapshot(), "calmer", func(SpecUpdate) { t.Error("refine ran without a probe") })
+	time.Sleep(100 * time.Millisecond)
 	if f.chats.Load() != 0 {
 		t.Fatalf("helper consulted %d times without a successful probe", f.chats.Load())
 	}

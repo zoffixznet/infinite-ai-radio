@@ -29,7 +29,7 @@ out="$SANDBOX/out.txt"
 # engine keeps the run heavy-model-free; every other layer is the real one.
 {
   echo "status"
-  echo "generate pink noise"
+  echo "generate white noise"
   sleep 2
   echo "brown noise please"
   sleep 1
@@ -41,7 +41,7 @@ out="$SANDBOX/out.txt"
   echo "quit"
 } | "$BIN" --engine noise --player null --plain > "$out" 2>&1 || fail "iar exited non-zero"
 
-grep -q "switching to pink noise" "$out" || fail "steering acknowledgment missing"
+grep -q "switching to white noise" "$out" || fail "steering acknowledgment missing"
 grep -q "switching to brown noise" "$out" || fail "second steering acknowledgment missing"
 grep -q "session saved as smoke-session" "$out" || fail "session naming failed"
 grep -q "smoke-session" "$IAR_DATA_DIR/sessions/smoke-session.json" || fail "session file missing"

@@ -89,15 +89,26 @@ func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track,
 		BatchSize:      1,
 		UseRandomSeed:  spec.Seed < 0,
 		Seed:           spec.Seed,
+		BPM:            spec.BPM,
+		KeyScale:       spec.KeyScale,
+		TimeSignature:  spec.TimeSignature,
+		VocalLanguage:  spec.VocalLanguage,
 	}
 	if spec.SampleQuery != "" {
 		req.SampleMode = true
 		req.SampleQuery = spec.SampleQuery
-		// Sample mode needs the planner LM to invent caption and lyrics.
+		// Sample mode needs the planner LM to invent caption and lyrics;
+		// the structured constraints above still apply as user metadata.
 		req.Thinking = true
 	} else {
 		req.Prompt = spec.Prompt
 		req.Lyrics = spec.Lyrics
+	}
+	// Negative conditioning only works through the planner LM; without
+	// thinking there is no negative lever, so the fields are dropped.
+	if spec.NegativePrompt != "" && req.Thinking {
+		req.LMNegativePrompt = spec.NegativePrompt
+		req.LMCfgScale = spec.LMCfgScale
 	}
 	res, err := e.be.Client().Generate(ctx, req)
 	if err != nil {

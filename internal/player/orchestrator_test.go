@@ -796,7 +796,7 @@ func TestSteerInterruptsCurrentTrackMidPlay(t *testing.T) {
 		t.Fatalf("steer ack says nothing about switching: %q", ack)
 	}
 	waitFor(t, 10*time.Second, "steered track playing", func() bool {
-		return strings.Contains(o.Status().Source, "darker")
+		return strings.Contains(o.Status().Source, "dark")
 	})
 }
 

@@ -65,7 +65,7 @@ func TestControllerCommandsWorkWithAndWithoutSlash(t *testing.T) {
 func TestControllerFreeTextSteers(t *testing.T) {
 	c := newController(t)
 	resp, quit := c.Handle("make it dreamy and slow")
-	if quit || !strings.Contains(resp, "steering with") {
+	if quit || !strings.Contains(resp, "steering") {
 		t.Fatalf("steer resp = %q", resp)
 	}
 	resp, _ = c.Handle("clear")

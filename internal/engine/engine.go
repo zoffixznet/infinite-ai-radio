@@ -26,6 +26,19 @@ type Spec struct {
 	Seconds int
 	// Seed pins the random seed; -1 means random.
 	Seed int64
+
+	// Structured constraints the engine honours directly (all optional;
+	// zero values leave the choice to the model).
+	BPM           int
+	KeyScale      string // "C major", "F# minor", ...
+	TimeSignature string // "2", "3", "4" or "6"
+	VocalLanguage string // ISO code for sung vocals
+	// NegativePrompt lists what the music must avoid; it drives the
+	// engine's planner-side negative conditioning.
+	NegativePrompt string
+	// LMCfgScale raises planner guidance when negatives are present
+	// (0 keeps the engine default).
+	LMCfgScale float64
 }
 
 // Vocal reports whether the spec asks for sung vocals.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,7 @@ func (f *fakeServer) handler() http.Handler {
 		}))
 	})
 	mux.HandleFunc("/release_task", func(w http.ResponseWriter, r *http.Request) {
+		f.lastReq = GenerateRequest{}
 		if err := json.NewDecoder(r.Body).Decode(&f.lastReq); err != nil {
 			f.t.Errorf("bad release_task body: %v", err)
 		}
@@ -188,6 +190,41 @@ func TestEngineMapsSpecs(t *testing.T) {
 	}
 	if !f.lastReq.SampleMode || f.lastReq.SampleQuery == "" || !f.lastReq.Thinking {
 		t.Fatalf("sample mode request wrong: %+v", f.lastReq)
+	}
+
+	// Structured constraints and negatives reach the request; the
+	// negatives ride the planner LM's negative prompt with raised
+	// guidance, never the caption.
+	_, err = eng.Generate(context.Background(), engine.Spec{
+		Prompt: "techno, synths", Lyrics: engine.InstrumentalLyrics, Seconds: 60, Seed: -1,
+		BPM: 128, KeyScale: "C minor", TimeSignature: "4", VocalLanguage: "en",
+		NegativePrompt: "guitars, guitar", LMCfgScale: 3.25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := f.lastReq
+	if req.BPM != 128 || req.KeyScale != "C minor" || req.TimeSignature != "4" || req.VocalLanguage != "en" {
+		t.Fatalf("structured fields wrong: %+v", req)
+	}
+	if req.LMNegativePrompt != "guitars, guitar" || req.LMCfgScale != 3.25 {
+		t.Fatalf("negative conditioning wrong: %+v", req)
+	}
+	if strings.Contains(req.Prompt, "guitar") {
+		t.Fatalf("negatives leaked into the caption: %q", req.Prompt)
+	}
+
+	// Without thinking there is no negative lever: the fields drop out.
+	engNoThink := NewEngine(sidecar, Options{InferenceSteps: 8, Thinking: false})
+	_, err = engNoThink.Generate(context.Background(), engine.Spec{
+		Prompt: "techno", Lyrics: engine.InstrumentalLyrics, Seconds: 60, Seed: -1,
+		NegativePrompt: "guitars", LMCfgScale: 3.25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.lastReq.LMNegativePrompt != "" || f.lastReq.LMCfgScale != 0 {
+		t.Fatalf("negative fields sent without thinking: %+v", f.lastReq)
 	}
 }
 

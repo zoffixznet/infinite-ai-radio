@@ -194,6 +194,15 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	o.phaseStart = now
 	o.mu.Unlock()
 	o.seedFromLibrary()
+	// Prompt-seeded sessions carry a raw user description; let the
+	// helper enrich it in the background when it is available.
+	o.mu.Lock()
+	initial := o.sess
+	fromPrompt := strings.HasPrefix(initial.Name, "prompt-") && len(initial.Tweaks) == 0
+	o.mu.Unlock()
+	if fromPrompt {
+		o.expandSeedAsync(initial)
+	}
 	// Prime the ring with a little silence: the output pump's first reads
 	// fill the system player's buffer in a burst, and without priming
 	// that burst can outrun the mixer's first write and be counted (and
@@ -209,6 +218,31 @@ func (o *Orchestrator) Start(ctx context.Context) {
 		o.wg.Add(1)
 		go func() { defer o.wg.Done(); o.sweepLoop(ctx) }()
 	}
+}
+
+// expandSeedAsync asks the helper model to enrich a prompt-seeded
+// session's vague description into structured fields, in the
+// background. Curated preset prompts are already tag-rich and skipped.
+func (o *Orchestrator) expandSeedAsync(sess *session.Session) {
+	if sess.Preset != "" || sess.Mode != session.ModeMusic {
+		return
+	}
+	o.mu.Lock()
+	epochAt := o.epoch
+	snap := sess.Snapshot()
+	o.mu.Unlock()
+	o.builder.ExpandAsync(snap, func(u prompting.SpecUpdate) {
+		o.mu.Lock()
+		changed := false
+		if o.sess == sess && o.epoch == epochAt && len(o.sess.Tweaks) == 0 {
+			changed = prompting.MergeUpdate(o.sess, u)
+		}
+		o.mu.Unlock()
+		if changed {
+			o.saveSession()
+			o.log.Info("seed prompt expanded by the helper model", "event", "seed_expanded", "prompt", snap.BasePrompt)
+		}
+	})
 }
 
 // sweepInterval paces the periodic session sweep (a variable so tests
@@ -309,6 +343,7 @@ func (o *Orchestrator) snapshotSession() (int, *session.Session) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	cp := *o.sess
+	cp.Spec = o.sess.Spec.Clone()
 	cp.Tweaks = append([]session.Entry(nil), o.sess.Tweaks...)
 	cp.History = append([]session.Entry(nil), o.sess.History...)
 	return o.epoch, &cp
