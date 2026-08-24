@@ -61,11 +61,11 @@ smoke: build ## End-to-end smoke test of the built binary (silent, sandboxed)
 
 .PHONY: browser-test
 browser-test: ## Drive the phone remote in headless Firefox (needs geckodriver, firefox, pactl; silent)
-	$(GO) test -tags browser -count=1 -v -run TestRealBrowser -timeout 6m ./internal/remote/
+	$(GO) test -tags browser -count=1 -v -run TestRealBrowser -timeout 12m ./internal/remote/
 
 .PHONY: screenshots
 screenshots: ## Re-shoot the README's phone remote screenshots into assets/ (runs browser-test)
-	IAR_SHOTS=$(CURDIR)/assets $(GO) test -tags browser -count=1 -run TestRealBrowser -timeout 6m ./internal/remote/
+	IAR_SHOTS=$(CURDIR)/assets $(GO) test -tags browser -count=1 -run TestRealBrowser -timeout 12m ./internal/remote/
 
 .PHONY: lint
 lint: ## Run go vet and check gofmt

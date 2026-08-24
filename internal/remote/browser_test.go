@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -271,8 +272,10 @@ type sandbox struct {
 	dir, bin string
 	port     int
 	base     string
+	engine   string // "noise" or "acestep" (fake daemon)
 	player   *exec.Cmd
 	stdin    io.WriteCloser
+	logFile  *os.File
 }
 
 func buildBinary(t *testing.T, dir string) string {
@@ -286,18 +289,56 @@ func buildBinary(t *testing.T, dir string) string {
 }
 
 func startSandbox(t *testing.T) *sandbox {
+	sb := prepareSandbox(t, "noise")
+	finishSandbox(t, sb)
+	return sb
+}
+
+// startMusicSandbox boots a music-mode sandbox: a fake ACE-Step engine
+// daemon (instant sine tracks) that the app adopts, so queue, prefetch
+// and steering behave as with the real engine, GPU-free.
+func startMusicSandbox(t *testing.T) (*sandbox, *fakeEngine) {
+	sb := prepareSandbox(t, "acestep")
+	// A minimal on-disk install layout so the app agrees the engine
+	// exists; generation itself goes to the fake daemon.
+	engineDir := filepath.Join(sb.dir, "data", "engine")
+	os.MkdirAll(filepath.Join(engineDir, ".venv"), 0o755)
+	os.MkdirAll(filepath.Join(engineDir, "checkpoints", "acestep-v15-turbo"), 0o755)
+	os.WriteFile(filepath.Join(engineDir, "pyproject.toml"), []byte("[project]\n"), 0o644)
+	os.WriteFile(filepath.Join(engineDir, "checkpoints", "acestep-v15-turbo", "weights.bin"), []byte("x"), 0o644)
+	fe := startFakeEngine(t, filepath.Join(sb.dir, "data", "state"))
+	finishSandbox(t, sb)
+	return sb, fe
+}
+
+// finishSandbox starts the player and waits for the remote.
+func finishSandbox(t *testing.T, sb *sandbox) {
+	t.Helper()
+	sb.startPlayer(t)
+	t.Cleanup(func() {
+		sb.stopPlayer()
+		if t.Failed() {
+			out, _ := os.ReadFile(filepath.Join(sb.dir, "player.out"))
+			t.Logf("player output:\n%s", out)
+		}
+	})
+	sb.waitListening(t)
+}
+
+// prepareSandbox builds the binary and lays out config, admin account
+// and a demo chunk, without starting the player.
+func prepareSandbox(t *testing.T, engine string) *sandbox {
 	t.Helper()
 	dir := t.TempDir()
-	sb := &sandbox{dir: dir, bin: buildBinary(t, dir), port: freePort(t)}
+	sb := &sandbox{dir: dir, bin: buildBinary(t, dir), port: freePort(t), engine: engine}
 	sb.base = fmt.Sprintf("http://127.0.0.1:%d", sb.port)
 	os.MkdirAll(filepath.Join(dir, "config"), 0o755)
 	os.WriteFile(filepath.Join(dir, "config", "config.json"),
 		[]byte(fmt.Sprintf(`{"remote":{"enabled":true,"port":%d}}`, sb.port)), 0o600)
-	env := append(os.Environ(), "IAR_DATA_DIR="+filepath.Join(dir, "data"), "IAR_CONFIG_DIR="+filepath.Join(dir, "config"))
 
 	// First admin, the way the README says.
 	setup := exec.Command(sb.bin, "remote", "setup", "--email", "admin@example.com", "--password-stdin")
-	setup.Env = env
+	setup.Env = sb.env()
 	setup.Stdin = strings.NewReader("admin-pass-1\n")
 	if out, err := setup.CombinedOutput(); err != nil {
 		t.Fatalf("remote setup: %v\n%s", err, out)
@@ -314,37 +355,64 @@ func startSandbox(t *testing.T) *sandbox {
 	if err := export.EncodeMP3(context.Background(), samples, chunk, export.MP3Options{Title: "demo tone", Album: "demo"}); err != nil {
 		t.Fatal(err)
 	}
+	return sb
+}
 
-	// The player: noise engine (no GPU), null audio, plain mode with
-	// stdin held open.
-	sb.player = exec.Command(sb.bin, "--engine", "noise", "--player", "null", "--plain")
-	sb.player.Env = env
+func (sb *sandbox) env() []string {
+	return append(os.Environ(),
+		"IAR_DATA_DIR="+filepath.Join(sb.dir, "data"),
+		"IAR_CONFIG_DIR="+filepath.Join(sb.dir, "config"))
+}
+
+// startPlayer launches (or relaunches) the player process: chosen
+// engine, null audio, plain mode with stdin held open.
+func (sb *sandbox) startPlayer(t *testing.T) {
+	t.Helper()
+	sb.player = exec.Command(sb.bin, "--engine", sb.engine, "--player", "null", "--plain")
+	sb.player.Env = sb.env()
 	var err error
 	sb.stdin, err = sb.player.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	logFile, _ := os.Create(filepath.Join(dir, "player.out"))
-	sb.player.Stdout = logFile
-	sb.player.Stderr = logFile
+	sb.logFile, _ = os.OpenFile(filepath.Join(sb.dir, "player.out"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	sb.player.Stdout = sb.logFile
+	sb.player.Stderr = sb.logFile
 	if err := sb.player.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		io.WriteString(sb.stdin, "quit\n")
-		done := make(chan struct{})
-		go func() { sb.player.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			sb.player.Process.Kill()
-		}
-		logFile.Close()
-		if t.Failed() {
-			out, _ := os.ReadFile(filepath.Join(dir, "player.out"))
-			t.Logf("player output:\n%s", out)
-		}
-	})
+}
+
+// stopPlayer asks the player to quit, killing it if it lingers.
+func (sb *sandbox) stopPlayer() {
+	if sb.player == nil {
+		return
+	}
+	io.WriteString(sb.stdin, "quit\n")
+	done := make(chan struct{})
+	go func() { sb.player.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		sb.player.Process.Kill()
+	}
+	sb.logFile.Close()
+	sb.player = nil
+}
+
+// killPlayer terminates the player abruptly (a crash or lost machine).
+func (sb *sandbox) killPlayer() {
+	if sb.player == nil {
+		return
+	}
+	sb.player.Process.Kill()
+	sb.player.Wait()
+	sb.logFile.Close()
+	sb.player = nil
+}
+
+func (sb *sandbox) waitListening(t *testing.T) {
+	t.Helper()
 	waitFor(t, 20*time.Second, "remote to listen", func() bool {
 		resp, err := http.Get(sb.base + "/login")
 		if err != nil {
@@ -353,7 +421,6 @@ func startSandbox(t *testing.T) *sandbox {
 		resp.Body.Close()
 		return resp.StatusCode == 200
 	})
-	return sb
 }
 
 func startGeckodriver(t *testing.T, sinkName string) string {
@@ -614,4 +681,256 @@ func TestRealBrowser(t *testing.T) {
 			t.Errorf("log lacks event %s", ev)
 		}
 	}
+}
+
+// --- fake ACE-Step engine daemon ---
+
+// fakeEngine serves the slice of the ACE-Step API the app uses,
+// producing short sine tracks instantly. Recording it in the engine
+// daemon state file makes the app adopt it like a real daemon.
+type fakeEngine struct {
+	mu      sync.Mutex
+	nextID  int
+	tasks   map[string]string // task id -> prompt
+	prompts []string
+}
+
+// trackSeconds is the fixed length of fake tracks: short, so track
+// boundaries arrive quickly in tests.
+const fakeTrackSeconds = 6
+
+func (f *fakeEngine) handler() http.Handler {
+	wrap := func(data any) map[string]any {
+		return map[string]any{"data": data, "code": 200, "error": nil}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(wrap(map[string]any{
+			"status": "ok", "models_initialized": true, "loaded_model": "acestep-v15-turbo",
+		}))
+	})
+	mux.HandleFunc("/release_task", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Prompt      string `json:"prompt"`
+			SampleQuery string `json:"sample_query"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		prompt := req.Prompt
+		if prompt == "" {
+			prompt = req.SampleQuery
+		}
+		f.mu.Lock()
+		f.nextID++
+		id := fmt.Sprintf("task-%d", f.nextID)
+		f.tasks[id] = prompt
+		f.prompts = append(f.prompts, prompt)
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(wrap(map[string]any{"task_id": id}))
+	})
+	mux.HandleFunc("/query_result", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			TaskIDs []string `json:"task_id_list"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		var rows []map[string]any
+		f.mu.Lock()
+		for _, id := range req.TaskIDs {
+			prompt := f.tasks[id]
+			inner, _ := json.Marshal([]map[string]any{{
+				"file": "/v1/audio?path=" + id, "status": 1,
+				"prompt": prompt, "seed_value": "7",
+			}})
+			rows = append(rows, map[string]any{"task_id": id, "status": 1, "result": string(inner)})
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(wrap(rows))
+	})
+	mux.HandleFunc("/v1/audio", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("path")
+		f.mu.Lock()
+		n := len(f.tasks[id]) // vary the tone a little per prompt
+		f.mu.Unlock()
+		freq := 220 + float64(n%12)*30
+		samples := make([]int16, fakeTrackSeconds*audio.SampleRate*audio.Channels)
+		for i := 0; i < len(samples); i += 2 {
+			v := int16(8000 * math.Sin(2*math.Pi*freq*float64(i/2)/audio.SampleRate))
+			samples[i], samples[i+1] = v, v
+		}
+		w.Write(audio.EncodeWAV(samples))
+	})
+	return mux
+}
+
+// generated returns how many tracks were requested so far.
+func (f *fakeEngine) generated() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.prompts)
+}
+
+// lastPrompt returns the most recent generation prompt.
+func (f *fakeEngine) lastPrompt() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.prompts) == 0 {
+		return ""
+	}
+	return f.prompts[len(f.prompts)-1]
+}
+
+// startFakeEngine serves the fake engine and records it as the adopted
+// engine daemon in stateDir.
+func startFakeEngine(t *testing.T, stateDir string) *fakeEngine {
+	t.Helper()
+	fe := &fakeEngine{tasks: map[string]string{}}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: fe.handler()}
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	port := l.Addr().(*net.TCPAddr).Port
+	os.MkdirAll(stateDir, 0o755)
+	state := fmt.Sprintf(`{"pid": %d, "port": %d, "engine_dir": "", "started": %q}`,
+		os.Getpid(), port, time.Now().Format(time.RFC3339))
+	if err := os.WriteFile(filepath.Join(stateDir, "engine.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return fe
+}
+
+// login drives the login form for the admin account.
+func loginAdmin(t *testing.T, w *webDriver, base string) {
+	t.Helper()
+	w.navigate(base + "/login")
+	w.typeInto("#email", "admin@example.com")
+	w.typeInto("#password", "admin-pass-1")
+	w.click("button[type=submit]")
+	waitFor(t, 10*time.Second, "player page after login", func() bool {
+		return strings.TrimSuffix(w.url(), "/") == base
+	})
+}
+
+// TestRealBrowserResilience covers the failure-and-recovery paths of
+// the phone remote against a music-mode sandbox: shared steering state
+// across reloads, the Next control, automatic stream recovery after the
+// server dies, the terminal expired-login branch, and buffered playback
+// continuing across a track boundary with the server gone.
+func TestRealBrowserResilience(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb, fe := startMusicSandbox(t)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+
+	loginAdmin(t, w, sb.base)
+	waitFor(t, 30*time.Second, "tracks generating", func() bool { return fe.generated() >= 2 })
+
+	// --- steering state is shared and survives a reload ---
+	io.WriteString(sb.stdin, "less guitars more synths\n")
+	waitFor(t, 15*time.Second, "tweak chip appears", func() bool {
+		var n int
+		w.exec(`return document.querySelectorAll('#tweaks .chip').length;`, &n)
+		return n >= 1
+	})
+	w.navigate(sb.base + "/")
+	var base string
+	waitFor(t, 15*time.Second, "steering state after reload", func() bool {
+		var chip string
+		w.exec(`var c=document.querySelector('#tweaks .chip'); return c ? c.textContent : '';`, &chip)
+		w.exec(`return document.getElementById('baseprompt').textContent;`, &base)
+		return strings.Contains(chip, "less guitars more synths") && base != "" && base != "…"
+	})
+	waitFor(t, 20*time.Second, "steer reached generation", func() bool {
+		return strings.Contains(fe.lastPrompt(), "synths")
+	})
+	if strings.Contains(fe.lastPrompt(), "guitar") {
+		t.Fatalf("negated instrument still in the prompt: %q", fe.lastPrompt())
+	}
+
+	// --- direct stream + Next ---
+	w.click("#play")
+	assertPlays(t, w, "liveaudio", 2, 30*time.Second)
+	w.click("#next")
+	var status string
+	waitFor(t, 10*time.Second, "skip acknowledged", func() bool {
+		w.exec(`return document.getElementById('steerstatus').textContent;`, &status)
+		return strings.Contains(status, "skipping")
+	})
+
+	// --- the server dies: the stream recovers with no interaction ---
+	sb.killPlayer()
+	waitFor(t, 30*time.Second, "reconnecting state", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		return strings.Contains(pill, "reconnecting")
+	})
+	sb.startPlayer(t)
+	sb.waitListening(t)
+	waitFor(t, 60*time.Second, "stream self-recovers", func() bool {
+		p, ok := w.audioState("liveaudio")
+		return ok && strings.HasPrefix(p.Pill, "playing")
+	})
+
+	// --- an expired login is terminal: no reconnect loop ---
+	w.deleteCookies()
+	sb.killPlayer()
+	sb.startPlayer(t)
+	sb.waitListening(t)
+	terminal := func(pill string) bool {
+		// Both the poll's logged-out branch and the stream's 401
+		// classification are correct terminal states.
+		return strings.Contains(pill, "session expired") || strings.Contains(pill, "logged out")
+	}
+	waitFor(t, 60*time.Second, "terminal expired-session state", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		return terminal(pill)
+	})
+	time.Sleep(3 * time.Second)
+	var pill string
+	w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+	if !terminal(pill) {
+		t.Fatalf("expired session did not stay terminal: %q", pill)
+	}
+
+	// --- buffered playback survives the server disappearing ---
+	loginAdmin(t, w, sb.base)
+	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
+	w.click("#play")
+	waitFor(t, 60*time.Second, "buffered playback starts", func() bool {
+		var st struct {
+			Time  float64 `json:"t"`
+			Ahead string  `json:"pill"`
+		}
+		w.exec(`var a=document.getElementById('bufaudio0')||document.getElementById('bufaudio1');
+			var pill=document.getElementById('streamstate');
+			return {t: a ? a.currentTime : 0, pill: pill.textContent};`, &st)
+		return st.Time > 1 && strings.Contains(st.Ahead, "ahead")
+	})
+	// Wait until at least one track is prefetched ahead.
+	waitFor(t, 60*time.Second, "a track prefetched ahead", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		return strings.Contains(pill, "1 ahead") || strings.Contains(pill, "2 ahead") ||
+			strings.Contains(pill, "3 ahead") || strings.Contains(pill, "4 ahead") ||
+			strings.Contains(pill, "5 ahead")
+	})
+	var srcBefore string
+	w.exec(`var a=document.getElementById('bufaudio0'); return a && !a.paused ? a.src : (document.getElementById('bufaudio1')||{}).src || '';`, &srcBefore)
+	sb.killPlayer()
+	// Playback must continue and cross into the next prefetched track.
+	waitFor(t, 45*time.Second, "playback continues across a boundary offline", func() bool {
+		var cur struct {
+			Src  string  `json:"src"`
+			Time float64 `json:"t"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused && a[i].currentTime>0.5) return {src:a[i].src, t:a[i].currentTime}; }
+			return {src:'', t:0};`, &cur)
+		return cur.Src != "" && cur.Src != srcBefore
+	})
+	sb.startPlayer(t)
+	sb.waitListening(t)
 }
