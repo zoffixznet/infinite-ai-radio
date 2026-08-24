@@ -855,3 +855,93 @@ func TestSnippetAckShowsOnlyTagAndFile(t *testing.T) {
 		return false
 	})
 }
+
+func TestQueueTracksAndTrackData(t *testing.T) {
+	eng := enginetest.NewMock()
+	sess := session.New()
+	o, pl := newTestOrchestrator(t, eng, sess)
+	dir := t.TempDir()
+	o.Library = library.New(dir, 100, testLogger())
+	waitFor(t, 10*time.Second, "queue filled", func() bool { return o.Status().Queued >= 1 })
+
+	epoch, tracks := o.QueueTracks()
+	queued := 0
+	for _, qt := range tracks {
+		if qt.ID == "" || qt.Seconds <= 0 || (qt.Kind != "queue" && qt.Kind != "library") {
+			t.Fatalf("bad queue row: %+v", qt)
+		}
+		if qt.Kind == "queue" {
+			queued++
+		}
+	}
+	if queued == 0 {
+		t.Fatal("no freshly generated tracks listed")
+	}
+	if st := o.Status(); st.Epoch != epoch {
+		t.Fatalf("epoch mismatch: %d vs %d", st.Epoch, epoch)
+	}
+
+	// Ids resolve to audio; unknown ids do not.
+	track, ok := o.TrackData(tracks[0].ID)
+	if !ok || len(track.Samples) == 0 {
+		t.Fatalf("TrackData(%q) failed", tracks[0].ID)
+	}
+	if _, ok := o.TrackData("nope"); ok {
+		t.Fatal("unknown id resolved")
+	}
+
+	// The playing track stays resolvable after leaving the queue.
+	waitFor(t, 10*time.Second, "a track playing", func() bool { return o.Status().TrackID != "" })
+	cur := o.Status().TrackID
+	if _, ok := o.TrackData(cur); !ok {
+		t.Fatalf("playing track %q not resolvable", cur)
+	}
+
+	// Library filler appears once tracks are banked for this vibe.
+	waitFor(t, 10*time.Second, "library banked", func() bool {
+		_, tracks := o.QueueTracks()
+		for _, qt := range tracks {
+			if qt.Kind == "library" {
+				if _, ok := o.TrackData(qt.ID); !ok {
+					t.Fatalf("library id %q not loadable", qt.ID)
+				}
+				return true
+			}
+		}
+		return false
+	})
+
+	// Serving track data never disturbs playback: hammer the queue
+	// surface while audio flows and expect zero underruns.
+	before := pl.bytes()
+	done := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				_, tracks := o.QueueTracks()
+				for _, qt := range tracks {
+					o.TrackData(qt.ID)
+				}
+			}
+		}()
+	}
+	time.Sleep(1500 * time.Millisecond)
+	close(done)
+	if pl.bytes() <= before {
+		t.Fatal("playback stalled while serving queue data")
+	}
+	if u := o.Status().Underruns; u != 0 {
+		t.Fatalf("underruns while serving queue data: %d", u)
+	}
+
+	// Noise mode lists nothing to prefetch.
+	o.Steer("pink noise")
+	if _, tracks := o.QueueTracks(); len(tracks) != 0 {
+		t.Fatalf("noise mode lists %d tracks", len(tracks))
+	}
+}

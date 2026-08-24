@@ -133,6 +133,70 @@ func (l *Library) Pick(key string) (*engine.Track, bool) {
 	}, true
 }
 
+// Entry describes one banked track without loading its audio.
+type Entry struct {
+	// ID is the track's file id inside its key directory.
+	ID string
+	// Prompt is the prompt that produced the track.
+	Prompt string
+	// Seconds is the track's play time, derived from the file size.
+	Seconds float64
+}
+
+// Entries lists the banked tracks under key, newest first.
+func (l *Library) Entries(key string) []Entry {
+	if l == nil {
+		return nil
+	}
+	dir := filepath.Join(l.dir, session.SanitizeName(key))
+	ids := l.ids(dir)
+	sort.Sort(sort.Reverse(sort.StringSlice(ids))) // ids start with a timestamp
+	var out []Entry
+	for _, id := range ids {
+		fi, err := os.Stat(filepath.Join(dir, id+".wav"))
+		if err != nil {
+			continue
+		}
+		e := Entry{ID: id}
+		if raw, err := os.ReadFile(filepath.Join(dir, id+".json")); err == nil {
+			var m meta
+			json.Unmarshal(raw, &m)
+			e.Prompt = m.Prompt
+		}
+		if bytes := fi.Size() - 44; bytes > 0 {
+			e.Seconds = float64(bytes) / (audio.SampleRate * audio.Channels * 2)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// Load reads one banked track by key and id. ok is false when the track
+// is gone (eviction races are expected and harmless).
+func (l *Library) Load(key, id string) (*engine.Track, bool) {
+	if l == nil {
+		return nil, false
+	}
+	dir := filepath.Join(l.dir, session.SanitizeName(key))
+	data, err := os.ReadFile(filepath.Join(dir, session.SanitizeName(id)+".wav"))
+	if err != nil {
+		return nil, false
+	}
+	w, err := audio.DecodeWAV(data)
+	if err != nil {
+		return nil, false
+	}
+	samples, err := w.ToInternal()
+	if err != nil {
+		return nil, false
+	}
+	var m meta
+	if raw, err := os.ReadFile(filepath.Join(dir, session.SanitizeName(id)+".json")); err == nil {
+		json.Unmarshal(raw, &m)
+	}
+	return &engine.Track{Samples: samples, Prompt: m.Prompt, Lyrics: m.Lyrics, FromLibrary: true}, true
+}
+
 // Count reports how many tracks are banked under key.
 func (l *Library) Count(key string) int {
 	if l == nil {

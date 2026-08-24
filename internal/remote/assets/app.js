@@ -18,7 +18,8 @@
   }
   function loggedOut() {
     $("conn").textContent = "logged out";
-    stopStream("logged out - reload this page to log in again", "bad");
+    if (pf.active) stopBuffered("logged out - reload this page to log in again", "bad");
+    else stopStream("logged out - reload this page to log in again", "bad");
   }
   fetch("/me").then(function (r) {
     if (r.status === 401) { loggedOut(); return null; }
@@ -83,7 +84,7 @@
     if (live) {
       savedAudio.pause();
     } else {
-      if (wantStream) stopStream("stopped (switched to saved chunks)", "");
+      stopListening("stopped (switched to saved chunks)");
       loadChunks();
     }
   }
@@ -226,15 +227,362 @@
     connectStream();
   }
 
-  playBtn.addEventListener("click", function () {
-    if (wantStream) {
-      stopStream("stopped", "");
+  // ---- buffered (prefetched) playback ------------------------------
+  // Instead of the realtime stream, download whole upcoming tracks into
+  // IndexedDB and play them through two alternating audio elements, so
+  // minutes of audio survive a network dead zone. The phone default.
+  var idbSupported = typeof indexedDB !== "undefined";
+  var phoneLike = false;
+  try { phoneLike = window.matchMedia && window.matchMedia("(pointer: coarse)").matches; } catch (e) {}
+  var transport = store.get("iar.transport", (phoneLike && idbSupported) ? "buffered" : "direct");
+  if (!idbSupported) transport = "direct";
+
+  var pf = {
+    active: false,
+    db: null,
+    epoch: -1,
+    rows: [],        // server listing, play order
+    have: {},        // id -> {url (object URL), prompt, epoch}
+    playingId: null,
+    els: [null, null],
+    cur: 0,
+    ctrl: null,      // AbortController of the in-flight download
+    fetchTimer: null,
+    queueTimer: null,
+    offline: false
+  };
+
+  function idbOpen() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open("iar-radio", 1);
+      req.onupgradeneeded = function () {
+        req.result.createObjectStore("tracks", { keyPath: "id" });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  function idbReq(r) {
+    return new Promise(function (resolve, reject) {
+      r.onsuccess = function () { resolve(r.result); };
+      r.onerror = function () { reject(r.error); };
+    });
+  }
+  function idbStore(mode) { return pf.db.transaction("tracks", mode).objectStore("tracks"); }
+
+  function pfDepth() {
+    var c = navigator.connection;
+    if (c && c.type === "wifi" && !c.saveData) return 5;
+    return 2; // cellular, save-data, or no connection API
+  }
+
+  function pfState(text, cls) { if (pf.active) streamState(text, cls); }
+
+  function pfAhead() {
+    var n = 0;
+    var passed = pf.playingId === null;
+    pf.rows.forEach(function (row) {
+      if (row.id === pf.playingId) { passed = true; return; }
+      if (passed && pf.have[row.id]) n++;
+    });
+    return n;
+  }
+
+  function startBuffered() {
+    pf.active = true;
+    playBtn.classList.add("playing");
+    playBtn.innerHTML = "&#9632;&#xFE0E; Stop listening";
+    pfState("preparing buffered playback…", "");
+    (pf.db ? Promise.resolve(pf.db) : idbOpen().then(function (db) { pf.db = db; return db; }))
+      .then(function () { return idbReq(idbStore("readonly").getAll()); })
+      .then(function (recs) {
+        (recs || []).forEach(function (rec) {
+          if (!pf.have[rec.id]) {
+            // epoch left undefined: the first queue listing decides
+            // whether the record is still current and restamps it.
+            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt };
+          }
+        });
+        pfRefreshQueue(true);
+        pf.queueTimer = setInterval(function () { pfRefreshQueue(false); }, 10000);
+      })
+      .catch(function () {
+        // No usable storage: fall back to the direct stream.
+        pf.active = false;
+        transport = "direct";
+        store.set("iar.transport", transport);
+        syncTransportUI();
+        startStream();
+      });
+  }
+
+  function stopBuffered(msg, cls) {
+    pf.active = false;
+    if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
+    if (pf.fetchTimer) { clearTimeout(pf.fetchTimer); pf.fetchTimer = null; }
+    if (pf.queueTimer) { clearInterval(pf.queueTimer); pf.queueTimer = null; }
+    pf.els.forEach(function (el, i) {
+      if (el) {
+        el.onended = null;
+        el.pause();
+        el.removeAttribute("src");
+        el.load();
+        if (el.parentNode) el.parentNode.removeChild(el);
+        pf.els[i] = null;
+      }
+    });
+    pf.playingId = null;
+    playBtn.classList.remove("playing");
+    playBtn.innerHTML = "&#9654;&#xFE0E; Play the stream";
+    streamState(msg || "", cls || "");
+    mediaPlaybackState("none");
+  }
+
+  function pfRefreshQueue(playWhenReady) {
+    fetch("/api/queue").then(function (r) {
+      if (r.status === 401 || r.status === 403) {
+        stopBuffered("session expired - reload this page and log in again", "bad");
+        $("conn").textContent = "logged out";
+        return null;
+      }
+      return r.json();
+    }).then(function (q) {
+      if (!q || !pf.active) return;
+      pf.offline = false;
+      var first = pf.epoch < 0;
+      if (!first && q.epoch !== pf.epoch) {
+        pfEpochChanged(q.epoch);
+      }
+      pf.epoch = q.epoch;
+      pf.rows = q.tracks || [];
+      if (first) {
+        // Epoch counters are per-run: leftovers from an earlier run can
+        // only be trusted if the current listing still names them.
+        var listed = {};
+        pf.rows.forEach(function (row) { listed[row.id] = true; });
+        Object.keys(pf.have).forEach(function (id) {
+          if (listed[id] || id === pf.playingId) return;
+          try { URL.revokeObjectURL(pf.have[id].url); } catch (e) {}
+          delete pf.have[id];
+          idbReq(idbStore("readwrite")["delete"](id))["catch"](function () {});
+        });
+      }
+      // Stamp the current epoch onto records that predate knowing it.
+      Object.keys(pf.have).forEach(function (id) {
+        if (pf.have[id].epoch === undefined) pf.have[id].epoch = q.epoch;
+      });
+      pfEnsureDownloads(playWhenReady);
+    }).catch(function () {
+      if (!pf.active) return;
+      // Offline: keep playing what is stored; the interval retries.
+      pf.offline = true;
+      if (!pf.playingId) pfAdvance();
+      else pfStatus();
+    });
+  }
+
+  // pfEpochChanged: steering changed what comes next. Abort the
+  // in-flight download, drop everything from the old context except the
+  // playing track, and switch to the first new-context track once it is
+  // downloaded.
+  function pfEpochChanged(newEpoch) {
+    if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
+    Object.keys(pf.have).forEach(function (id) {
+      if (id === pf.playingId) return;
+      if (pf.have[id].epoch !== newEpoch) {
+        try { URL.revokeObjectURL(pf.have[id].url); } catch (e) {}
+        delete pf.have[id];
+        idbReq(idbStore("readwrite")["delete"](id))["catch"](function () {});
+      }
+    });
+    pf.switchOnDownload = true;
+  }
+
+  function pfEnsureDownloads(playWhenReady) {
+    if (!pf.active || pf.ctrl) return;
+    var want = pfDepth();
+    if (pfAhead() >= want && !playWhenReady) return;
+    // The next row in play order that is not stored yet.
+    var next = null;
+    var passed = pf.playingId === null;
+    for (var i = 0; i < pf.rows.length; i++) {
+      var row = pf.rows[i];
+      if (row.id === pf.playingId) { passed = true; continue; }
+      if (passed && !pf.have[row.id]) { next = row; break; }
+    }
+    if (!next) {
+      if (playWhenReady && !pf.playingId) pfAdvance();
       return;
     }
-    startStream();
+    if (pfAhead() >= want) {
+      if (playWhenReady) pfPlayNext();
+      return;
+    }
+    pf.ctrl = new AbortController();
+    var row = next;
+    fetch(row.url, { signal: pf.ctrl.signal }).then(function (r) {
+      if (r.status === 401 || r.status === 403) { throw { auth: true }; }
+      if (!r.ok) { throw new Error("track " + r.status); }
+      return r.blob();
+    }).then(function (blob) {
+      pf.ctrl = null;
+      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, epoch: pf.epoch };
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, epoch: pf.epoch, blob: blob, saved: Date.now() }))["catch"](function () {});
+      pfTrimStore();
+      if (pf.switchOnDownload) {
+        pf.switchOnDownload = false;
+        pfPlay(row.id);
+      } else if (playWhenReady && !pf.playingId) {
+        pfPlay(row.id);
+      } else {
+        pfPreloadNext();
+        pfStatus();
+      }
+      pfEnsureDownloads(false);
+    })["catch"](function (e) {
+      pf.ctrl = null;
+      if (e && e.auth) {
+        stopBuffered("session expired - reload this page and log in again", "bad");
+        return;
+      }
+      if (!pf.active) return;
+      // 404 (evicted/steered away): drop the row and move on. Network
+      // errors retry shortly; playback continues from storage.
+      if (e && e.message && e.message.indexOf("track 4") === 0) {
+        pf.rows = pf.rows.filter(function (r2) { return r2.id !== row.id; });
+      }
+      if (playWhenReady && !pf.playingId) pfAdvance();
+      pf.fetchTimer = setTimeout(function () {
+        pf.fetchTimer = null;
+        pfEnsureDownloads(false);
+      }, 3000);
+    });
+  }
+
+  // pfTrimStore caps stored tracks, never evicting the playing one.
+  function pfTrimStore() {
+    idbReq(idbStore("readonly").getAll()).then(function (recs) {
+      if (!recs || recs.length <= 8) return;
+      recs.sort(function (a, b) { return a.saved - b.saved; });
+      recs.slice(0, recs.length - 8).forEach(function (rec) {
+        if (rec.id === pf.playingId) return;
+        idbReq(idbStore("readwrite")["delete"](rec.id))["catch"](function () {});
+        if (pf.have[rec.id]) {
+          try { URL.revokeObjectURL(pf.have[rec.id].url); } catch (e) {}
+          delete pf.have[rec.id];
+        }
+      });
+    })["catch"](function () {});
+  }
+
+  // pfNextId picks the id to play after the given one, in listing
+  // order, falling back to any stored track (offline loop).
+  function pfNextId(afterId) {
+    var ids = [];
+    pf.rows.forEach(function (row) { if (pf.have[row.id]) ids.push(row.id); });
+    if (!ids.length) ids = Object.keys(pf.have);
+    if (!ids.length) return null;
+    var at = ids.indexOf(afterId);
+    return ids[(at + 1) % ids.length];
+  }
+
+  function pfEl(i) {
+    if (!pf.els[i]) {
+      var el = document.createElement("audio");
+      el.id = "bufaudio" + i;
+      el.preload = "auto";
+      document.body.appendChild(el);
+      pf.els[i] = el;
+    }
+    return pf.els[i];
+  }
+
+  function pfPlay(id) {
+    var rec = pf.have[id];
+    if (!rec) { return; }
+    var el = pfEl(pf.cur);
+    pf.playingId = id;
+    if (el.src !== rec.url) { el.src = rec.url; }
+    el.onended = function () { pfAdvance(); };
+    el.play().then(function () {
+      pfStatus();
+      lastNow = rec.prompt || "buffered track";
+      lastMeta = "buffered playback";
+      applyMediaMetadata();
+      mediaPlaybackState("playing");
+      pfPreloadNext();
+      pfEnsureDownloads(false);
+    })["catch"](function (e) {
+      pfState("could not start audio: " + (e && e.message ? e.message : e), "bad");
+    });
+  }
+
+  // pfPreloadNext stages the following track on the idle element BEFORE
+  // the current one ends, so the swap is immediate.
+  function pfPreloadNext() {
+    var nextId = pfNextId(pf.playingId);
+    if (!nextId || nextId === pf.playingId) return;
+    var idle = 1 - pf.cur;
+    var el = pfEl(idle);
+    if (el.src !== pf.have[nextId].url) {
+      el.src = pf.have[nextId].url;
+      el.load();
+    }
+  }
+
+  function pfAdvance() {
+    var nextId = pfNextId(pf.playingId);
+    if (!nextId) {
+      pfState(pf.offline ? "offline - waiting for stored tracks" : "buffering next track…", "bad");
+      pf.playingId = null;
+      pfEnsureDownloads(true);
+      return;
+    }
+    pf.cur = 1 - pf.cur; // the preloaded element takes over
+    pfPlay(nextId);
+  }
+
+  function pfStatus() {
+    var rec = pf.have[pf.playingId] || {};
+    var extra = pf.offline ? " · offline, playing buffered" : "";
+    pfState("playing (buffered) · " + pfAhead() + " ahead" + extra, pf.offline ? "bad" : "good");
+    void rec;
+  }
+
+  // ---- transport choice and the play button ------------------------
+  function syncTransportUI() {
+    $("buffered").checked = transport === "buffered";
+  }
+  $("buffered").addEventListener("change", function () {
+    transport = $("buffered").checked ? "buffered" : "direct";
+    store.set("iar.transport", transport);
+    if (wantStream || pf.active) {
+      stopListening("");
+      startListening();
+    }
+  });
+
+  function startListening() {
+    if (transport === "buffered" && idbSupported) startBuffered(); else startStream();
+  }
+  function stopListening(msg) {
+    if (pf.active) stopBuffered(msg === undefined ? "stopped" : msg, "");
+    if (wantStream) stopStream(msg === undefined ? "stopped" : msg, "");
+  }
+
+  playBtn.addEventListener("click", function () {
+    if (wantStream || pf.active) {
+      stopListening("stopped");
+      return;
+    }
+    startListening();
   });
 
   $("next").addEventListener("click", function () {
+    if (pf.active) {
+      pfAdvance();
+      return;
+    }
     act($("next"), $("steerstatus"), "/next", "", "skipping…");
   });
 
@@ -263,11 +611,12 @@
     var handler = function (action, fn) {
       try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) {}
     };
-    handler("play", function () { if (mode === "live") startStream(); else savedAudio.play(); });
-    handler("pause", function () { if (mode === "live") stopStream("stopped", ""); else savedAudio.pause(); });
-    handler("stop", function () { if (mode === "live") stopStream("stopped", ""); else savedAudio.pause(); });
+    handler("play", function () { if (mode === "live") startListening(); else savedAudio.play(); });
+    handler("pause", function () { if (mode === "live") stopListening("stopped"); else savedAudio.pause(); });
+    handler("stop", function () { if (mode === "live") stopListening("stopped"); else savedAudio.pause(); });
     handler("nexttrack", function () {
       if (mode === "live") {
+        if (pf.active) { pfAdvance(); return; }
         if (me && me.steer) act(null, $("steerstatus"), "/next", "", "skipping…");
       } else {
         repeatOne = null; updateLoopState(); step(1);
@@ -425,6 +774,9 @@
       $("phase").textContent =
         s.phase ? s.phase + " (" + s.phase_info + ")" : (s.paused ? "paused at the machine" : "");
       renderSound(s);
+      if (pf.active && pf.epoch >= 0 && s.epoch !== pf.epoch) {
+        pfRefreshQueue(false);
+      }
       var now = (s.track && s.track.prompt) || s.source || s.state || "";
       var artist = s.session_desc || s.session || "";
       if (now !== lastNow || artist !== lastMeta) {
@@ -599,5 +951,6 @@
   }
   setInterval(function () { if (mode === "saved") loadChunks(); }, 30000);
 
+  syncTransportUI();
   setMode(mode);
 })();

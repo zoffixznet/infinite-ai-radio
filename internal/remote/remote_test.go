@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -18,12 +19,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"iar/internal/accounts"
+	"iar/internal/audio"
+	"iar/internal/engine"
 	"iar/internal/player"
 	"iar/internal/session"
 )
@@ -367,6 +371,30 @@ func (f *fakeCtl) Listing() session.Listing {
 		mkSess("s1", true, 0),
 		mkSess("session-20260821-100000", false, 26*time.Hour),
 	}, session.Presets())
+}
+
+// queueTracks are what QueueTracks serves; tests may replace them.
+func (f *fakeCtl) QueueTracks() (int, []player.QueueTrack) {
+	return 7, []player.QueueTrack{
+		{ID: "t-1", Prompt: "dark techno, driving", Seconds: 2, Kind: "queue"},
+		{ID: "t-2", Prompt: "dark techno, deeper", Seconds: 2, Kind: "queue"},
+		{ID: "lib:techno/20260823-000000-0001", Prompt: "banked techno", Seconds: 2, Kind: "library"},
+	}
+}
+
+func (f *fakeCtl) TrackData(id string) (*engine.Track, bool) {
+	if id == "gone" || strings.HasPrefix(id, "lib:") {
+		return nil, false
+	}
+	if id != "t-1" && id != "t-2" {
+		return nil, false
+	}
+	samples := make([]int16, 2*audio.SampleRate*audio.Channels)
+	for i := 0; i < len(samples); i += 2 {
+		v := int16(8000 * math.Sin(2*math.Pi*440*float64(i/2)/audio.SampleRate))
+		samples[i], samples[i+1] = v, v
+	}
+	return &engine.Track{ID: id, Samples: samples, Prompt: "dark techno, driving"}, true
 }
 
 func (f *fakeCtl) Announce(text string) {
@@ -1381,5 +1409,119 @@ func TestSafeNext(t *testing.T) {
 		if got := safeNext(in); got != want {
 			t.Errorf("safeNext(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// --- prefetch queue endpoints ---
+
+func TestQueueListingAndTrackServing(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+
+	// Anonymous requests are refused.
+	anon := h.client()
+	if resp, _ := anon.get("/api/queue"); resp.StatusCode != 401 {
+		t.Fatalf("anonymous /api/queue = %d", resp.StatusCode)
+	}
+	if resp, _ := anon.get("/queue/t-1.mp3"); resp.StatusCode != 401 {
+		t.Fatalf("anonymous /queue/t-1.mp3 = %d", resp.StatusCode)
+	}
+
+	resp, body := admin.get("/api/queue")
+	if resp.StatusCode != 200 {
+		t.Fatalf("/api/queue = %d", resp.StatusCode)
+	}
+	var q struct {
+		Epoch  int `json:"epoch"`
+		Tracks []struct {
+			ID        string  `json:"id"`
+			Prompt    string  `json:"prompt"`
+			DurationS float64 `json:"duration_s"`
+			Kind      string  `json:"kind"`
+			URL       string  `json:"url"`
+		} `json:"tracks"`
+	}
+	if err := json.Unmarshal([]byte(body), &q); err != nil {
+		t.Fatalf("parsing queue: %v\n%s", err, body)
+	}
+	if q.Epoch != 7 || len(q.Tracks) != 3 {
+		t.Fatalf("queue = %+v", q)
+	}
+	if q.Tracks[0].Kind != "queue" || q.Tracks[2].Kind != "library" || q.Tracks[0].URL == "" {
+		t.Fatalf("queue rows = %+v", q.Tracks)
+	}
+
+	// A queued track serves as a valid MP3.
+	resp, body = admin.get(q.Tracks[0].URL)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "audio/mpeg" {
+		t.Fatalf("track fetch = %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if len(body) < 4000 || !strings.Contains(body[:4096], "\xff") {
+		t.Fatalf("track bytes do not look like MP3 (%d bytes)", len(body))
+	}
+	full := len(body)
+
+	// Range requests work (seeking): the tail of the file.
+	req, _ := http.NewRequest("GET", admin.h.srv.URL+q.Tracks[0].URL, nil)
+	req.Header.Set("Range", "bytes=1000-1999")
+	rangeResp, err := admin.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rangeBody, _ := io.ReadAll(rangeResp.Body)
+	rangeResp.Body.Close()
+	if rangeResp.StatusCode != http.StatusPartialContent || len(rangeBody) != 1000 {
+		t.Fatalf("range = %d, %d bytes (full %d)", rangeResp.StatusCode, len(rangeBody), full)
+	}
+
+	// A gone track 404s.
+	if resp, _ = admin.get("/queue/gone.mp3"); resp.StatusCode != 404 {
+		t.Fatalf("gone track = %d", resp.StatusCode)
+	}
+	// Malformed names 404.
+	if resp, _ = admin.get("/queue/notmp3"); resp.StatusCode != 404 {
+		t.Fatalf("malformed name = %d", resp.StatusCode)
+	}
+}
+
+func TestMP3CacheSingleFlight(t *testing.T) {
+	c := newMP3Cache()
+	var calls int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data, err := c.get("x", func() ([]byte, error) {
+				atomic.AddInt32(&calls, 1)
+				time.Sleep(50 * time.Millisecond)
+				return []byte("mp3"), nil
+			})
+			if err != nil || string(data) != "mp3" {
+				t.Errorf("get = %q, %v", data, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("encode ran %d times for one id", got)
+	}
+	// Failures are not cached.
+	if _, err := c.get("bad", func() ([]byte, error) { return nil, errTrackGone }); err == nil {
+		t.Fatal("error not surfaced")
+	}
+	if data, err := c.get("bad", func() ([]byte, error) { return []byte("ok"), nil }); err != nil || string(data) != "ok" {
+		t.Fatalf("retry after failure = %q, %v", data, err)
+	}
+	// The cache stays bounded.
+	for i := 0; i < mp3CacheSlots*2; i++ {
+		id := fmt.Sprintf("id-%d", i)
+		c.get(id, func() ([]byte, error) { return make([]byte, 10), nil })
+	}
+	c.mu.Lock()
+	n := len(c.entries)
+	c.mu.Unlock()
+	if n > mp3CacheSlots {
+		t.Fatalf("cache holds %d entries", n)
 	}
 }

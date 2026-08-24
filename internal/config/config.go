@@ -27,7 +27,9 @@ type Config struct {
 	// CrossfadeSeconds is the overlap between consecutive tracks.
 	CrossfadeSeconds float64 `json:"crossfade_seconds"`
 	// BufferTracks is how many finished tracks the generate-ahead worker
-	// keeps queued beyond the one currently playing.
+	// keeps queued beyond the one currently playing. The queue also
+	// feeds remote listeners who prefetch upcoming tracks to ride out
+	// network dead zones, so it defaults to a deeper buffer.
 	BufferTracks int `json:"buffer_tracks"`
 	// Volume is the output volume in percent (0-100).
 	Volume int `json:"volume"`
@@ -155,7 +157,7 @@ func Default() Config {
 		Player:            "auto",
 		TrackSeconds:      150,
 		CrossfadeSeconds:  3,
-		BufferTracks:      2,
+		BufferTracks:      6,
 		Volume:            80,
 		PipeLatencyMS:     200,
 		NormalizeLoudness: true,
@@ -270,8 +272,8 @@ func (c *Config) sanitize() {
 	if c.BufferTracks < 1 {
 		c.BufferTracks = 1
 	}
-	if c.BufferTracks > 4 {
-		c.BufferTracks = 4
+	if c.BufferTracks > 8 {
+		c.BufferTracks = 8
 	}
 	if c.Volume < 0 {
 		c.Volume = 0

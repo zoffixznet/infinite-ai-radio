@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"iar/internal/accounts"
+	"iar/internal/engine"
 	"iar/internal/player"
 	"iar/internal/session"
 	"iar/internal/snippets"
@@ -39,6 +40,8 @@ type Controls interface {
 	Listing() session.Listing
 	CurrentName() string
 	Status() player.Status
+	QueueTracks() (int, []player.QueueTrack)
+	TrackData(id string) (*engine.Track, bool)
 	Announce(text string)
 }
 
@@ -75,6 +78,7 @@ type Server struct {
 	sessions *accounts.Sessions
 	mailer   Mailer
 	catalog  *snippets.Catalog
+	trackMP3 *mp3Cache
 	// ipLimit and acctLimit throttle failed logins per address and per
 	// account.
 	ipLimit   *accounts.Limiter
@@ -135,6 +139,7 @@ func newServer(cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (
 		sessions:  cfg.Sessions,
 		mailer:    cfg.Mailer,
 		catalog:   snippets.NewCatalog(cfg.SnippetsDir),
+		trackMP3:  newMP3Cache(),
 		ipLimit:   accounts.NewLimiter(loginAttempts, loginWindow),
 		acctLimit: accounts.NewLimiter(loginAttempts, loginWindow),
 		tmpl:      tmpl,
@@ -233,6 +238,8 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("GET /state", s.api(s.handleState))
 	mux.HandleFunc("GET /stream.mp3", s.api(s.handleStream))
 	mux.HandleFunc("GET /api/chunks", s.api(s.handleChunks))
+	mux.HandleFunc("GET /api/queue", s.api(s.handleQueueList))
+	mux.HandleFunc("GET /queue/{file}", s.api(s.handleQueueTrack))
 	mux.HandleFunc("GET /chunks/{tag}/{file}", s.api(s.handleChunkFile))
 	mux.HandleFunc("GET /account", s.page(s.handleAccountPage))
 	mux.HandleFunc("POST /account/password", s.page(s.handleAccountPassword))

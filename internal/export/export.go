@@ -186,6 +186,39 @@ func EncodeMP3(ctx context.Context, samples []int16, outPath string, opts MP3Opt
 	return nil
 }
 
+// EncodeMP3Bytes encodes PCM to an in-memory MP3 (used to serve tracks
+// over HTTP without touching the disk or the playback path).
+func EncodeMP3Bytes(ctx context.Context, samples []int16, opts MP3Options) ([]byte, error) {
+	if opts.Quality < 0 || opts.Quality > 9 {
+		opts.Quality = 0
+	}
+	args := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-f", "s16le", "-ar", fmt.Sprint(audio.SampleRate), "-ac", fmt.Sprint(audio.Channels),
+		"-i", "-",
+		"-f", "mp3", "-codec:a", "libmp3lame", "-q:a", fmt.Sprint(opts.Quality),
+	}
+	for tag, v := range map[string]string{
+		"title":  opts.Title,
+		"artist": opts.Artist,
+		"album":  opts.Album,
+	} {
+		if v != "" {
+			args = append(args, "-metadata", tag+"="+v)
+		}
+	}
+	args = append(args, "-id3v2_version", "3", "-")
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Stdin = bytes.NewReader(audio.SamplesToBytes(samples))
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg mp3 encode: %w: %s", err, bytes.TrimSpace(errBuf.Bytes()))
+	}
+	return out.Bytes(), nil
+}
+
 // DefaultPath builds the default export file name inside dir.
 func DefaultPath(dir, sessionName string, minutes int) string {
 	stamp := time.Now().Format("20060102-150405")

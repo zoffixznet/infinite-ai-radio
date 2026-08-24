@@ -157,6 +157,7 @@ footer { color: var(--dim); font-size: 12px; margin-top: 18px; text-align: cente
 .cardstatus.ok { color: var(--accent); }
 .cardstatus.err { color: var(--danger); font-weight: 600; }
 #next { margin-top: 10px; }
+#transportrow { color: var(--dim); font-size: 14px; margin-top: 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   display: inline-flex; align-items: center; gap: 8px;

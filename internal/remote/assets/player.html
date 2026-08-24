@@ -26,6 +26,9 @@
   <button id="play" aria-label="Play the live stream">&#9654;&#xFE0E; Play the stream</button>
   <div id="streamstate" role="status"></div>
   <button class="action" id="next" data-perm="steer" hidden>Next track &#9654;&#xFE0E;</button>
+  <label class="check" id="transportrow" title="Downloads upcoming tracks ahead of time so playback survives signal drops">
+    <input type="checkbox" id="buffered"> Buffered playback (rides out signal drops)
+  </label>
 
   <section class="card" aria-label="Now playing">
     <h2>Playing</h2>
