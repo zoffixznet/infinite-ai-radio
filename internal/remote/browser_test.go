@@ -991,6 +991,30 @@ func TestRealBrowserResilience(t *testing.T) {
 		// The steered session summary starts with the base prompt.
 		return strings.Contains(md.Artist, "lofi") && md.Title != "" && md.Title != "Infinite AI Radio"
 	})
+	// At maximum depth the prefetcher reaches the library-kind filler
+	// rows, whose ids contain a slash and travel through the escaped
+	// track route; a banked track landing in IndexedDB proves that
+	// path end to end in a real browser.
+	w.exec(`var sel=document.getElementById('buflevel'); sel.value='max';
+		sel.dispatchEvent(new Event('change')); return true;`, nil)
+	waitFor(t, 60*time.Second, "a library-kind track prefetched", func() bool {
+		var keys []string
+		w.execAsync(`var cb=arguments[arguments.length-1];
+			var req=indexedDB.open("iar-radio",1);
+			req.onerror=function(){cb([])};
+			req.onsuccess=function(){
+				try {
+					var tx=req.result.transaction("tracks","readonly");
+					tx.objectStore("tracks").getAllKeys().onsuccess=function(e){cb(e.target.result)};
+				} catch (err) { cb([]); }
+			};`, &keys)
+		for _, k := range keys {
+			if strings.HasPrefix(k, "lib:") {
+				return true
+			}
+		}
+		return false
+	})
 	var srcBefore string
 	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
 		for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].src; }

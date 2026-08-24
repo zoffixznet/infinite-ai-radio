@@ -383,10 +383,9 @@ func (f *fakeCtl) QueueTracks() (int, []player.QueueTrack) {
 }
 
 func (f *fakeCtl) TrackData(id string) (*engine.Track, bool) {
-	if id == "gone" || strings.HasPrefix(id, "lib:") {
-		return nil, false
-	}
-	if id != "t-1" && id != "t-2" {
+	switch id {
+	case "t-1", "t-2", "lib:techno/20260823-000000-0001":
+	default:
 		return nil, false
 	}
 	samples := make([]int16, 2*audio.SampleRate*audio.Channels)
@@ -1481,6 +1480,40 @@ func TestQueueListingAndTrackServing(t *testing.T) {
 	// Malformed names 404.
 	if resp, _ = admin.get("/queue/notmp3"); resp.StatusCode != 404 {
 		t.Fatalf("malformed name = %d", resp.StatusCode)
+	}
+
+	// Library-kind ids contain a slash ("lib:<vibe>/<stamp>"): the
+	// listing must hand out the escaped form, and only that form is
+	// served. Dead-zone prefetching depends on this exact route.
+	lib := q.Tracks[2]
+	if lib.Kind != "library" || lib.ID != "lib:techno/20260823-000000-0001" {
+		t.Fatalf("library row = %+v", lib)
+	}
+	if want := "/queue/" + url.PathEscape(lib.ID) + ".mp3"; lib.URL != want || strings.Contains(lib.URL, "/20260823") {
+		t.Fatalf("library url not escaped: %q (want %q)", lib.URL, want)
+	}
+	resp, body = admin.get(lib.URL)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "audio/mpeg" {
+		t.Fatalf("library track fetch = %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if len(body) < 4000 || !strings.Contains(body[:4096], "\xff") {
+		t.Fatalf("library track bytes do not look like MP3 (%d bytes)", len(body))
+	}
+	req, _ = http.NewRequest("GET", admin.h.srv.URL+lib.URL, nil)
+	req.Header.Set("Range", "bytes=500-999")
+	rangeResp, err = admin.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rangeBody, _ = io.ReadAll(rangeResp.Body)
+	rangeResp.Body.Close()
+	if rangeResp.StatusCode != http.StatusPartialContent || len(rangeBody) != 500 {
+		t.Fatalf("library range = %d, %d bytes", rangeResp.StatusCode, len(rangeBody))
+	}
+	// The raw-slash form is a different path entirely and must not
+	// resolve to the track.
+	if resp, _ = admin.get("/queue/" + lib.ID + ".mp3"); resp.StatusCode != 404 {
+		t.Fatalf("raw-slash library path = %d, want 404", resp.StatusCode)
 	}
 }
 
