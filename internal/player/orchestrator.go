@@ -478,9 +478,13 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		kept := epoch == o.epoch
 		o.mu.Unlock()
 		if kept {
-			// Bank the fresh track for future instant starts.
+			// Bank the fresh track for future instant starts. Tracked
+			// in the WaitGroup so shutdown never races a disk write
+			// (adding here is safe: genLoop itself holds the group).
 			key := library.Key(sess)
+			o.wg.Add(1)
 			go func(t *engine.Track) {
+				defer o.wg.Done()
 				if err := o.Library.Put(key, t); err != nil {
 					o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
 				}

@@ -1263,7 +1263,7 @@ func TestPlayerPageContainsControls(t *testing.T) {
 	admin := h.admin()
 	_, page := admin.get("/")
 	for _, want := range []string{
-		`id="play"`, `id="next"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="saveprev"`, `id="carsave"`, `id="tag"`, `id="text"`, `id="now"`,
+		`id="play"`, `id="next"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="saveprev"`, `id="carsave"`, `id="carresume"`, `id="tag"`, `id="text"`, `id="now"`, `id="nowprompt"`,
 		`id="mode-live"`, `id="mode-saved"`, `id="tags"`, `id="chunks"`, `id="savedaudio"`, `id="backloop"`,
 		`id="steerstatus"`, `id="savestatus"`, `id="sessstatus"`,
 		`href="/users"`, `href="/account"`, `action="/logout"`, "viewport", "/app.js", "manifest.webmanifest",
