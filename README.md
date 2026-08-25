@@ -208,8 +208,8 @@ your sessions:
   gym-grind                energetic electronic rock, driving...  vocals   2h ago
 presets:
   high-energy:
-    grind                  Energetic electronic rock with motivational vocals
-    nu-metal               Heavy nu-metal: down-tuned riffs, rap-sung vocals
+    grind                  Energetic electronic rock with motivation...
+    nu-metal               Heavy nu-metal: down-tuned riffs, rap-sun...
   ...
 auto-saved sessions:
   session-20260821-220425  lofi chill beats, mellow, warm analog... +2 tweaks  3d ago
