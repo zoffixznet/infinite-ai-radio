@@ -190,6 +190,13 @@ audio { width: 100%; margin-top: 10px; }
 .chunk .row { margin-top: 8px; }
 .chunk button.action { padding: 10px 8px; font-size: 14px; margin-top: 0; }
 .chunk button.looping { border-color: var(--warn); color: var(--warn); }
+/* A track already in the snippets: a distinct done style, deliberately
+   not the disabled look (disabled reads as "working"). */
+button.action.saved {
+  border-color: var(--accent); color: var(--accent);
+  background: transparent; cursor: default; opacity: 0.85;
+}
+button.action.saved::before { content: "\2713\FE0E "; }
 .empty { color: var(--dim); }
 .grouplabel {
   font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px;

@@ -945,3 +945,73 @@ func TestQueueTracksAndTrackData(t *testing.T) {
 		t.Fatalf("noise mode lists %d tracks", len(tracks))
 	}
 }
+
+func TestSaveSnippetByIDAndIdempotency(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	eng := enginetest.NewMock()
+	o, _ := newTestOrchestrator(t, eng, session.New())
+	o.SnippetsDir = t.TempDir()
+	o.Library = library.New(t.TempDir(), 100, testLogger())
+	waitFor(t, 10*time.Second, "a track playing", func() bool { return o.Status().TrackID != "" })
+
+	// Saving by explicit track id (what a buffered phone sends).
+	id := o.Status().TrackID
+	if ack := o.SaveSnippet(id, "drive"); !strings.Contains(ack, "saving this track to drive/") {
+		t.Fatalf("save-by-id ack = %q", ack)
+	}
+	waitFor(t, 15*time.Second, "saved id recorded", func() bool {
+		for _, s := range o.Status().SavedTrackIDs {
+			if s == id {
+				return true
+			}
+		}
+		return false
+	})
+	// The state surface reports the saved flag for current/previous.
+	st := o.Status()
+	if st.TrackID == id && !st.TrackSaved {
+		t.Fatalf("playing track not flagged saved: %+v", st)
+	}
+	if st.PrevTrackID == id && !st.PrevTrackSaved {
+		t.Fatalf("previous track not flagged saved: %+v", st)
+	}
+
+	// A repeat save of the same track is a success no-op, never an
+	// error and never a second file.
+	entries, _ := os.ReadDir(filepath.Join(o.SnippetsDir, "drive"))
+	before := len(entries)
+	if ack := o.SaveSnippet(id, "drive"); !strings.Contains(ack, "already saved") {
+		t.Fatalf("repeat save ack = %q", ack)
+	}
+	entries, _ = os.ReadDir(filepath.Join(o.SnippetsDir, "drive"))
+	if len(entries) != before {
+		t.Fatalf("repeat save wrote a file: %d -> %d", before, len(entries))
+	}
+
+	// Unknown and vanished ids are refused gently.
+	if ack := o.SaveSnippet("t-0-0000", ""); !strings.Contains(ack, "no longer available") {
+		t.Fatalf("unknown id ack = %q", ack)
+	}
+
+	// A banked library track saves through its lib: id.
+	var libID string
+	waitFor(t, 10*time.Second, "library filler listed", func() bool {
+		_, tracks := o.QueueTracks()
+		for _, qt := range tracks {
+			if qt.Kind == "library" {
+				libID = qt.ID
+				return true
+			}
+		}
+		return false
+	})
+	if ack := o.SaveSnippet(libID, "banked"); !strings.Contains(ack, "saving this track to banked/") {
+		t.Fatalf("library save ack = %q", ack)
+	}
+	waitFor(t, 15*time.Second, "library snippet file", func() bool {
+		entries, _ := os.ReadDir(filepath.Join(o.SnippetsDir, "banked"))
+		return len(entries) == 1
+	})
+}

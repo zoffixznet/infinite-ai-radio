@@ -81,9 +81,19 @@ type Status struct {
 	Tweaks     []session.Entry
 	Vocal      bool
 	// TrackID and TrackPrompt identify the playing generated track
-	// (empty while a stopgap source plays).
+	// (empty while a stopgap source plays); TrackSaved reports whether
+	// it is already saved as a snippet.
 	TrackID     string
 	TrackPrompt string
+	TrackSaved  bool
+	// PrevTrackID, PrevTrackPrompt and PrevTrackSaved describe the
+	// track played before the current one.
+	PrevTrackID     string
+	PrevTrackPrompt string
+	PrevTrackSaved  bool
+	// SavedTrackIDs lists the track ids saved as snippets this run
+	// (bounded), so remote clients can grey their own save buttons.
+	SavedTrackIDs []string
 	// Phase names the current startup phase ("starting engine",
 	// "loading models", "generating first track") or "playing".
 	Phase string
@@ -150,6 +160,11 @@ type Orchestrator struct {
 	curTrack     *engine.Track
 	prevTrack    *engine.Track
 	saving       bool
+	// saved remembers which track ids were saved as snippets this run
+	// (bounded by savedOrder), so save buttons can grey out and a
+	// repeat save is a no-op.
+	saved      map[string]bool
+	savedOrder []string
 
 	volume atomic.Int32
 	events chan Event

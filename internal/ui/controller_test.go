@@ -182,3 +182,20 @@ func TestControllerSessionsListingIsGrouped(t *testing.T) {
 		t.Fatalf("help grew to %d lines; it must fit an 80x24 terminal", n)
 	}
 }
+
+func TestParseSave(t *testing.T) {
+	for _, tc := range []struct{ in, which, tag string }{
+		{"", "", ""},
+		{"prev", "prev", ""},
+		{"previous gym", "prev", "gym"},
+		{"last late night drive", "prev", "late night drive"},
+		{"gym", "", "gym"},
+		{"late night drive", "", "late night drive"},
+		{"Prev Favourites", "prev", "Favourites"},
+	} {
+		which, tag := parseSave(tc.in)
+		if which != tc.which || tag != tc.tag {
+			t.Errorf("parseSave(%q) = (%q, %q); want (%q, %q)", tc.in, which, tag, tc.which, tc.tag)
+		}
+	}
+}

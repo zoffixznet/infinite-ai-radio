@@ -362,8 +362,15 @@ func (o *Orchestrator) Status() Status {
 			st.Duration = ts.track.Duration()
 			st.TrackID = ts.track.ID
 			st.TrackPrompt = ts.track.Prompt
+			st.TrackSaved = o.saved[ts.track.ID]
 		}
 	}
+	if o.prevTrack != nil {
+		st.PrevTrackID = o.prevTrack.ID
+		st.PrevTrackPrompt = o.prevTrack.Prompt
+		st.PrevTrackSaved = o.saved[o.prevTrack.ID]
+	}
+	st.SavedTrackIDs = append([]string(nil), o.savedOrder...)
 	st.State = o.stateLocked()
 	o.mu.Unlock()
 	st.Phase, st.PhaseElapsed, st.PhaseExpected, st.PhaseSlow = o.PhaseInfo()

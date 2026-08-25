@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"iar/internal/engine"
@@ -12,22 +13,46 @@ import (
 	"iar/internal/snippets"
 )
 
-// SaveSnippet captures the currently playing generated track (or the one
-// before it, when which is "prev") as a high-quality MP3 in the snippets
-// folder, under the directory for tag (empty means untagged). The track's
-// PCM is already in memory, so saving is instant for playback: the encode
-// runs in the background and completion is reported through Events.
+// SaveSnippet captures a generated track as a high-quality MP3 in the
+// snippets folder, under the directory for tag (empty means untagged).
+// which selects the track: empty for the currently playing one, "prev"
+// for the one before it, or a track id (a buffered phone saves what its
+// driver is hearing, not what the speakers play). The track's PCM is
+// already in memory or on disk, so saving is instant for playback: the
+// encode runs in the background and completion is reported through
+// Events. Saving an already-saved track is a success no-op.
 func (o *Orchestrator) SaveSnippet(which, tag string) string {
-	o.mu.Lock()
 	var track *engine.Track
-	switch which {
-	case "prev", "previous", "last":
-		track = o.prevTrack
-	default:
-		track = o.curTrack
+	if isTrackID(which) {
+		// An already-saved id is a no-op even after its audio has been
+		// evicted from memory.
+		o.mu.Lock()
+		already := o.saved[which]
+		o.mu.Unlock()
+		if already {
+			return "already saved: that track is in your snippets"
+		}
+		t, ok := o.TrackData(which)
+		if !ok {
+			return "that track is no longer available to save"
+		}
+		if t.ID == "" {
+			t.ID = which // library tracks load without an id of their own
+		}
+		track = t
 	}
+	o.mu.Lock()
+	if track == nil {
+		switch which {
+		case "prev", "previous", "last":
+			track = o.prevTrack
+		default:
+			track = o.curTrack
+		}
+	}
+	already := track != nil && track.ID != "" && o.saved[track.ID]
 	busy := o.saving
-	if track != nil && !busy {
+	if track != nil && !already && !busy {
 		o.saving = true
 	}
 	o.mu.Unlock()
@@ -37,6 +62,9 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			return "no previous track to save yet"
 		}
 		return "nothing to save yet: no generated track is playing"
+	}
+	if already {
+		return "already saved: that track is in your snippets"
 	}
 	if busy {
 		return "a snippet is already being saved; try again in a moment"
@@ -75,10 +103,41 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			o.emit("saving the track failed: " + err.Error())
 			return
 		}
+		o.markSaved(track.ID)
 		o.log.Info("snippet saved", "event", "snippet_saved", "path", path, "prompt", prompt, "tag", slug)
 		o.emit("track saved: " + shown)
 	}()
 	return "saving this track to " + shown
+}
+
+// isTrackID reports whether a save selector is a track id rather than a
+// which keyword.
+func isTrackID(which string) bool {
+	return strings.HasPrefix(which, "t-") || strings.HasPrefix(which, libFillerPrefix)
+}
+
+// maxSavedIDs bounds the remembered saved-track set.
+const maxSavedIDs = 64
+
+// markSaved records that a track id was saved this run.
+func (o *Orchestrator) markSaved(id string) {
+	if id == "" {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.saved == nil {
+		o.saved = map[string]bool{}
+	}
+	if o.saved[id] {
+		return
+	}
+	o.saved[id] = true
+	o.savedOrder = append(o.savedOrder, id)
+	for len(o.savedOrder) > maxSavedIDs {
+		delete(o.saved, o.savedOrder[0])
+		o.savedOrder = o.savedOrder[1:]
+	}
 }
 
 // snippetComment carries the lyrics (when real) into the file's tags.

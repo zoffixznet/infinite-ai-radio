@@ -38,6 +38,20 @@
     <span id="bufmins" class="hint"></span>
   </div>
 
+  <section class="card" id="savecard" aria-label="Save" data-perm="save" hidden>
+    <h2>Keep this track</h2>
+    <input id="tag" type="text" placeholder="tag (optional): gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
+    <div class="row">
+      <button class="action primary" id="save">&#9825;&#xFE0E; Save this track</button>
+      <button class="action" id="saveprev">Save previous</button>
+    </div>
+    <div id="savestatus" class="cardstatus" role="status"></div>
+    <label class="check" id="carsaverow" title="The car's previous-track button has no other job on an endless stream, so it doubles as Save">
+      <input type="checkbox" id="carsave"> Car &#9198;&#xFE0E; button saves the track
+    </label>
+    <p class="hint">In the car, the previous-track button (steering wheel, headset or screen) saves what you are hearing; the icon itself cannot be relabelled.</p>
+  </section>
+
   <section class="card" aria-label="Now playing">
     <h2>Playing</h2>
     <div id="now">&hellip;</div>
@@ -71,12 +85,6 @@
     <div id="sessions"><span class="empty">loading&hellip;</span></div>
   </section>
 
-  <section class="card" id="savecard" aria-label="Save" data-perm="save" hidden>
-    <h2>Keep this track</h2>
-    <input id="tag" type="text" placeholder="tag (optional): gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
-    <button class="action primary" id="save">&#9825;&#xFE0E; Save this track</button>
-    <div id="savestatus" class="cardstatus" role="status"></div>
-  </section>
 </section>
 
 <section id="saved" aria-label="Saved chunks" hidden>

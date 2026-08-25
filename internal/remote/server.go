@@ -454,8 +454,13 @@ type stateJSON struct {
 	BasePrompt  string      `json:"base_prompt"`
 	Tweaks      []tweakJSON `json:"tweaks"`
 	Vocals      bool        `json:"vocals"`
-	// Track is the playing generated track (absent for stopgap audio).
+	// Track is the playing generated track (absent for stopgap audio);
+	// Prev is the one before it.
 	Track *trackJSON `json:"track,omitempty"`
+	Prev  *trackJSON `json:"prev,omitempty"`
+	// SavedIDs lists track ids already saved as snippets this run, so
+	// clients grey their save buttons for whatever THEY are playing.
+	SavedIDs []string `json:"saved_ids"`
 }
 
 // tweakJSON is one steering input as the page renders it.
@@ -470,6 +475,8 @@ type trackJSON struct {
 	ID        string  `json:"id"`
 	Prompt    string  `json:"prompt"`
 	DurationS float64 `json:"duration_s"`
+	// Saved reports the track is already saved as a snippet.
+	Saved bool `json:"saved"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.User) {
@@ -496,7 +503,14 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 		})
 	}
 	if st.TrackID != "" {
-		out.Track = &trackJSON{ID: st.TrackID, Prompt: st.TrackPrompt, DurationS: st.Duration.Seconds()}
+		out.Track = &trackJSON{ID: st.TrackID, Prompt: st.TrackPrompt, DurationS: st.Duration.Seconds(), Saved: st.TrackSaved}
+	}
+	if st.PrevTrackID != "" {
+		out.Prev = &trackJSON{ID: st.PrevTrackID, Prompt: st.PrevTrackPrompt, Saved: st.PrevTrackSaved}
+	}
+	out.SavedIDs = st.SavedTrackIDs
+	if out.SavedIDs == nil {
+		out.SavedIDs = []string{}
 	}
 	if st.Phase != "" && st.Phase != "playing" {
 		out.Phase = st.Phase

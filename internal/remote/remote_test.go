@@ -332,6 +332,8 @@ func (f *fakeCtl) Status() player.Status {
 			{Time: time.Date(2026, 8, 23, 10, 1, 0, 0, time.UTC), Raw: "faster", Interpreted: "faster tempo"},
 		},
 		TrackID: "t-1", TrackPrompt: "dark techno, driving", Duration: 150 * time.Second,
+		TrackSaved: false, PrevTrackID: "t-0", PrevTrackPrompt: "dark techno, opening", PrevTrackSaved: true,
+		SavedTrackIDs: []string{"t-0"},
 	}
 }
 
@@ -770,7 +772,7 @@ func TestPermissionMatrix(t *testing.T) {
 		"/steer":           {"POST", "/steer", url.Values{"text": {"calmer"}}},
 		"/next":            {"POST", "/next", nil},
 		"/new":             {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
-		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}}},
+		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
 		"/users":           {"GET", "/users", nil},
 		"/api/sessions":    {"GET", "/api/sessions", nil},
 		"/sessions/save":   {"POST", "/sessions/save", url.Values{"name": {"web-named"}}},
@@ -838,8 +840,8 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
 		t.Fatalf("controller calls: steers=%v skips=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.news, h.ctl.saves)
 	}
-	if h.ctl.saves[0][1] != "gym" {
-		t.Fatalf("save tag not passed through: %v", h.ctl.saves)
+	if h.ctl.saves[0][1] != "gym" || h.ctl.saves[0][0] != "t-1" {
+		t.Fatalf("save which/tag not passed through: %v", h.ctl.saves)
 	}
 	// Session actions: save needs the save permission (saver + full
 	// admin), load the new-prompt permission (prompter + full admin),
@@ -1260,7 +1262,7 @@ func TestPlayerPageContainsControls(t *testing.T) {
 	admin := h.admin()
 	_, page := admin.get("/")
 	for _, want := range []string{
-		`id="play"`, `id="next"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="tag"`, `id="text"`, `id="now"`,
+		`id="play"`, `id="next"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="saveprev"`, `id="carsave"`, `id="tag"`, `id="text"`, `id="now"`,
 		`id="mode-live"`, `id="mode-saved"`, `id="tags"`, `id="chunks"`, `id="savedaudio"`, `id="backloop"`,
 		`id="steerstatus"`, `id="savestatus"`, `id="sessstatus"`,
 		`href="/users"`, `href="/account"`, `action="/logout"`, "viewport", "/app.js", "manifest.webmanifest",
@@ -1309,7 +1311,13 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 			ID        string  `json:"id"`
 			Prompt    string  `json:"prompt"`
 			DurationS float64 `json:"duration_s"`
+			Saved     bool    `json:"saved"`
 		} `json:"track"`
+		Prev *struct {
+			ID    string `json:"id"`
+			Saved bool   `json:"saved"`
+		} `json:"prev"`
+		SavedIDs []string `json:"saved_ids"`
 	}
 	if err := json.Unmarshal([]byte(body), &st); err != nil {
 		t.Fatalf("parsing /state: %v\n%s", err, body)
@@ -1320,8 +1328,14 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 	if len(st.Tweaks) != 2 || st.Tweaks[0].Raw != "less guitars" || st.Tweaks[1].Interpreted != "faster tempo" || st.Tweaks[0].Time == "" {
 		t.Fatalf("tweaks wrong: %+v", st.Tweaks)
 	}
-	if st.Track == nil || st.Track.ID != "t-1" || st.Track.Prompt != "dark techno, driving" || st.Track.DurationS != 150 {
+	if st.Track == nil || st.Track.ID != "t-1" || st.Track.Prompt != "dark techno, driving" || st.Track.DurationS != 150 || st.Track.Saved {
 		t.Fatalf("track wrong: %+v", st.Track)
+	}
+	if st.Prev == nil || st.Prev.ID != "t-0" || !st.Prev.Saved {
+		t.Fatalf("prev wrong: %+v", st.Prev)
+	}
+	if len(st.SavedIDs) != 1 || st.SavedIDs[0] != "t-0" {
+		t.Fatalf("saved_ids wrong: %+v", st.SavedIDs)
 	}
 }
 

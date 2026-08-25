@@ -212,6 +212,10 @@
     lastAdvance = Date.now();
     watchdog = setInterval(function () {
       if (!audio) return;
+      // A paused element is not "no audio arriving": after a route loss
+      // (car off) the phone pauses playback, and tearing down here
+      // would restart the stream on the phone's loudspeaker.
+      if (audio.paused) return;
       var t = audio.currentTime;
       if (t > lastTime + 0.2) {
         lastTime = t;
@@ -250,6 +254,7 @@
     rows: [],        // server listing, play order
     have: {},        // id -> {url (object URL), prompt, epoch, dur}
     playingId: null,
+    prevId: null,    // the track this device heard before the current one
     els: [null, null],
     cur: 0,
     ctrl: null,      // AbortController of the in-flight download
@@ -594,6 +599,7 @@
       other.onended = null;
       other.pause();
     }
+    if (pf.playingId && pf.playingId !== id) pf.prevId = pf.playingId;
     pf.playingId = id;
     if (el.src !== rec.url) {
       el.src = rec.url;
@@ -607,6 +613,7 @@
       lastNow = rec.prompt || "buffered track";
       applyMediaMetadata();
       mediaPlaybackState("playing");
+      updateSaveButtons(null);
       pfPreloadNext();
       pfEnsureDownloads();
     })["catch"](function (e) {
@@ -774,11 +781,79 @@
       if (d) $("text").value = "";
     });
   });
-  $("save").addEventListener("click", function () {
-    act($("save"), $("savestatus"), "/save", "tag=" + encodeURIComponent($("tag").value.trim()), "saving this track…").then(function (d) {
-      if (d && mode === "saved") loadChunks();
+  // ---- saved-track state ------------------------------------------
+  // The server remembers which track ids were saved; the page greys
+  // the save buttons for whatever THIS device is hearing (the laptop's
+  // track in direct mode, this device's own track in buffered mode).
+  var lastTrack = null;   // /state track object (direct mode)
+  var lastPrev = null;    // /state prev object
+  var savedIds = {};      // server-confirmed saved ids
+  var localSaved = {};    // optimistic marks while the encode runs
+
+  function saveTargets() {
+    if (pf.active) return { cur: pf.playingId, prev: pf.prevId };
+    return { cur: lastTrack && lastTrack.id, prev: lastPrev && lastPrev.id };
+  }
+  function isSaved(id) { return !!id && (savedIds[id] || localSaved[id]); }
+  function setSavedClass(btn, id) {
+    if (!btn) return;
+    var on = isSaved(id);
+    btn.classList.toggle("saved", on);
+    if (on) btn.setAttribute("aria-disabled", "true");
+    else btn.removeAttribute("aria-disabled");
+  }
+  // updateSaveButtons re-derives the greyed state; called on every
+  // /state poll and after local saves. s may be null to reuse the last
+  // known server state.
+  function updateSaveButtons(s) {
+    if (s) {
+      lastTrack = s.track || null;
+      lastPrev = s.prev || null;
+      savedIds = {};
+      (s.saved_ids || []).forEach(function (id) { savedIds[id] = true; });
+      if (s.track && s.track.saved) savedIds[s.track.id] = true;
+      if (s.prev && s.prev.saved) savedIds[s.prev.id] = true;
+    }
+    var ids = saveTargets();
+    setSavedClass($("save"), ids.cur);
+    setSavedClass($("saveprev"), ids.prev);
+  }
+
+  // doSave saves what the listener is hearing: the buffered player's
+  // own track ids on the phone, the laptop's current/previous track in
+  // direct mode. Saving an already-saved track is a friendly no-op.
+  function doSave(btn, wantPrev) {
+    var ids = saveTargets();
+    var id = wantPrev ? ids.prev : ids.cur;
+    if (isSaved(id)) {
+      setStatus($("savestatus"), "already saved", "ok");
+      return Promise.resolve({ ack: "already saved" });
+    }
+    var which = "";
+    if (pf.active) {
+      if (!id) {
+        setStatus($("savestatus"), wantPrev ? "no previous track on this device yet" : "nothing is playing on this device yet", "err");
+        return Promise.resolve(null);
+      }
+      which = id;
+    } else if (wantPrev) {
+      which = "prev";
+    }
+    var body = "tag=" + encodeURIComponent($("tag").value.trim());
+    if (which) body += "&which=" + encodeURIComponent(which);
+    return act(btn, $("savestatus"), "/save", body,
+      wantPrev ? "saving the previous track…" : "saving this track…").then(function (d) {
+      if (!d) return d;
+      if (id && d.ack && (d.ack.indexOf("saving") >= 0 || d.ack.indexOf("already saved") >= 0)) {
+        localSaved[id] = true;
+        updateSaveButtons(null);
+      }
+      if (mode === "saved") loadChunks();
+      return d;
     });
-  });
+  }
+  $("save").addEventListener("click", function () { doSave($("save"), false); });
+  $("saveprev").addEventListener("click", function () { doSave($("saveprev"), true); });
 
   // ---- sessions ---------------------------------------------------
   $("sesssave").addEventListener("click", function () {
@@ -948,6 +1023,7 @@
       $("phase").textContent =
         s.phase ? s.phase + " (" + s.phase_info + ")" : (s.paused ? "paused at the machine" : "");
       renderSound(s);
+      updateSaveButtons(s);
       if (pf.active && pf.epoch >= 0 && s.epoch !== pf.epoch) {
         pfRefreshQueue();
       }
