@@ -114,12 +114,60 @@
     stateEl.className = cls || "";
   }
 
+  // ---- system-pause detection (car off, route loss) ----------------
+  // Every intentional pause goes through quiet(), which marks the
+  // element; a pause event WITHOUT the mark is the system's doing
+  // (Bluetooth route gone, car off). Then the element is kept exactly
+  // as-is - an intact paused element is what keeps the media
+  // notification alive and targetable - and playback resumes on an
+  // explicit signal: the car's play command, the page becoming
+  // visible, or a tap. Never on a timer (a timed play() would blast
+  // the phone speaker in a pocket).
+  var resumePending = false;
+  var carResume = store.get("iar.carresume", true) !== false;
+
+  function quiet(el) {
+    if (el && !el.paused) el._appPause = true;
+    if (el) el.pause();
+  }
+
+  function onSystemPause(e) {
+    var el = e.target;
+    if (el._appPause) { el._appPause = false; return; }
+    if (el.ended) return;
+    if (pf.active) { if (el !== pf.els[pf.cur]) return; }
+    else if (el !== audio) return;
+    if (!(wantStream || pf.active)) return;
+    resumePending = true;
+    mediaPlaybackState("paused");
+    applyMediaMetadata();
+    streamState("paused: audio output disconnected - resumes when your car asks to play, or tap play", "bad");
+  }
+
+  // tryResume plays the kept element in place: no re-setup, no rewind,
+  // no new timers.
+  function tryResume() {
+    if (!resumePending) return false;
+    var el = pf.active ? pf.els[pf.cur] : audio;
+    if (!el) { resumePending = false; return false; }
+    resumePending = false;
+    el.play().then(function () {
+      mediaPlaybackState("playing");
+      applyMediaMetadata();
+      if (pf.active) pfStatus();
+    })["catch"](function () {
+      resumePending = true;
+      streamState("tap play to resume", "bad");
+    });
+    return true;
+  }
+
   function teardownAudio() {
     if (watchdog) { clearInterval(watchdog); watchdog = null; }
     if (audio) {
       audio.onerror = null;
       audio.onended = null;
-      audio.pause();
+      quiet(audio);
       audio.removeAttribute("src");
       audio.load();
       if (audio.parentNode) audio.parentNode.removeChild(audio);
@@ -129,6 +177,8 @@
 
   function stopStream(msg, cls) {
     wantStream = false;
+    resumePending = false;
+    store.set("iar.wasplaying", false);
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     retryDelay = 500;
     attempts = 0;
@@ -169,16 +219,26 @@
   // a stalled element down for an immediate reconnect instead of
   // waiting for the watchdog.
   function retryNow() {
-    if (!wantStream) return;
+    if (!wantStream || resumePending) return;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     if (audio) {
+      if (audio.paused) return; // paused is not stalled; never restart over it
       if (Date.now() - lastAdvance < 3000) return; // playback is progressing
       teardownAudio();
     }
     connectStream();
   }
   window.addEventListener("online", retryNow);
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) retryNow(); });
+  // Becoming visible means the user is looking at the phone: resume a
+  // pending system pause (toggle permitting), otherwise treat it as a
+  // connectivity nudge.
+  function onVisible() {
+    if (document.hidden) return;
+    if (resumePending && carResume) { tryResume(); return; }
+    retryNow();
+  }
+  document.addEventListener("visibilitychange", onVisible);
+  document.addEventListener("resume", onVisible);
   if (navigator.connection && navigator.connection.addEventListener) {
     navigator.connection.addEventListener("change", retryNow);
   }
@@ -193,6 +253,7 @@
     // A server-side drop ends the response cleanly; recover from that
     // exactly like an error.
     audio.onended = function () { streamFailed("stream ended"); };
+    audio.addEventListener("pause", onSystemPause);
     audio.addEventListener("stalled", function () { streamState("stalled - waiting for data…", "bad"); });
     audio.addEventListener("waiting", function () { streamState("buffering…", ""); });
     audio.addEventListener("playing", function () { streamState("receiving audio…", ""); mediaPlaybackState("playing"); });
@@ -340,6 +401,7 @@
   }
 
   function startBuffered() {
+    if (pf.active) return;
     pf.active = true;
     playBtn.classList.add("playing");
     playBtn.innerHTML = "&#9632;&#xFE0E; Stop listening";
@@ -357,6 +419,7 @@
         pf.wantPlay = true;
         pfShowMinutes();
         pfRefreshQueue();
+        if (pf.queueTimer) clearInterval(pf.queueTimer);
         pf.queueTimer = setInterval(function () { pfRefreshQueue(); }, 10000);
       })
       .catch(function () {
@@ -371,13 +434,15 @@
 
   function stopBuffered(msg, cls) {
     pf.active = false;
+    resumePending = false;
+    store.set("iar.wasplaying", false);
     if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
     if (pf.fetchTimer) { clearTimeout(pf.fetchTimer); pf.fetchTimer = null; }
     if (pf.queueTimer) { clearInterval(pf.queueTimer); pf.queueTimer = null; }
     pf.els.forEach(function (el, i) {
       if (el) {
         el.onended = null;
-        el.pause();
+        quiet(el);
         el.removeAttribute("src");
         el.load();
         if (el.parentNode) el.parentNode.removeChild(el);
@@ -576,6 +641,7 @@
       var el = document.createElement("audio");
       el.id = "bufaudio" + i;
       el.preload = "auto";
+      el.addEventListener("pause", onSystemPause);
       document.body.appendChild(el);
       pf.els[i] = el;
     }
@@ -598,7 +664,7 @@
     var other = pf.els[1 - pf.cur];
     if (other && other !== el) {
       other.onended = null;
-      other.pause();
+      quiet(other);
     }
     if (pf.playingId && pf.playingId !== id) pf.prevId = pf.playingId;
     pf.playingId = id;
@@ -644,7 +710,7 @@
     var out = pf.els[pf.cur];
     if (out) {
       out.onended = null;
-      out.pause();
+      quiet(out);
     }
     var nextId = pfNextId(pf.playingId);
     if (!nextId) {
@@ -704,6 +770,7 @@
   });
 
   function startListening() {
+    store.set("iar.wasplaying", true);
     if (transport === "buffered" && idbSupported) startBuffered(); else startStream();
   }
   function stopListening(msg) {
@@ -712,6 +779,7 @@
   }
 
   playBtn.addEventListener("click", function () {
+    if (resumePending) { tryResume(); return; }
     if (wantStream || pf.active) {
       stopListening("stopped");
       return;
@@ -794,7 +862,7 @@
   function msAction(action) {
     switch (action) {
       case "play":
-        if (mode === "live") startListening(); else savedAudio.play();
+        if (mode === "live") { if (!tryResume()) startListening(); } else savedAudio.play();
         break;
       case "pause":
         if (mode === "live") stopListening("stopped"); else savedAudio.pause();
@@ -837,6 +905,11 @@
     carSave = $("carsave").checked;
     store.set("iar.carsave", carSave);
     syncPrevAction();
+  });
+  $("carresume").checked = carResume;
+  $("carresume").addEventListener("change", function () {
+    carResume = $("carresume").checked;
+    store.set("iar.carresume", carResume);
   });
 
   // ---- steer / new / save ------------------------------------------
@@ -1293,4 +1366,10 @@
 
   syncTransportUI();
   setMode(mode);
+  // Cold start: a page load while listening was on (a reload, or Chrome
+  // reopened in the car) tries to pick playback straight back up; a
+  // blocked autoplay degrades to the one-tap play button.
+  if (carResume && mode === "live" && store.get("iar.wasplaying", false)) {
+    startListening();
+  }
 })();

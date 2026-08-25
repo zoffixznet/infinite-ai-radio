@@ -592,6 +592,9 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &title)
 		return n == 1 && strings.HasPrefix(title, "road-trip")
 	})
+	// Preset groups are collapsible; open them all so the target row is
+	// clickable.
+	w.exec(`document.querySelectorAll('#sessions details').forEach(function (d) { d.open = true; }); return true;`, nil)
 	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("pink-noise", "Start preset"))+"/click", nil)
 	waitFor(t, 10*time.Second, "preset start ack", func() bool {
 		w.exec(`return document.getElementById('sessstatus').textContent;`, &ackText)
@@ -1193,4 +1196,120 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	_ = after
+}
+
+// TestRealBrowserAutoResume covers the car-off pause machinery: a
+// system pause (one our code did not initiate) must keep the audio
+// element intact with an honest status instead of tearing it down and
+// restarting playback, and the media-session play action, the play
+// button and a page reload must resume it in place.
+func TestRealBrowserAutoResume(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb, fe := startMusicSandbox(t)
+	_ = fe
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+
+	pill := func() string {
+		var s string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &s)
+		return s
+	}
+
+	// --- direct mode ---
+	w.click("#play")
+	assertPlays(t, w, "liveaudio", 2, 30*time.Second)
+
+	// A pause we did not initiate is a system pause: honest status,
+	// paused media session, element kept.
+	w.exec(`document.getElementById('liveaudio').pause(); return true;`, nil)
+	waitFor(t, 10*time.Second, "system-pause status", func() bool {
+		return strings.Contains(pill(), "audio output disconnected")
+	})
+	var msState string
+	w.exec(`return navigator.mediaSession.playbackState;`, &msState)
+	if msState != "paused" {
+		t.Fatalf("media session playbackState = %q", msState)
+	}
+	// The watchdog and connectivity nudges must leave the paused
+	// element alone (no teardown, no loudspeaker restart).
+	w.exec(`window.dispatchEvent(new Event('online')); return true;`, nil)
+	time.Sleep(9 * time.Second)
+	var kept bool
+	w.exec(`var a=document.getElementById('liveaudio'); return !!a && a.paused;`, &kept)
+	if !kept {
+		t.Fatal("paused element was torn down or restarted")
+	}
+	if !strings.Contains(pill(), "audio output disconnected") {
+		t.Fatalf("paused status lost: %q", pill())
+	}
+
+	// The car's play command resumes the SAME element in place.
+	var before float64
+	w.exec(`return document.getElementById('liveaudio').currentTime;`, &before)
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "play"})); return true;`, nil)
+	waitFor(t, 15*time.Second, "resume after the play action", func() bool {
+		var st struct {
+			Time   float64 `json:"t"`
+			Paused bool    `json:"p"`
+		}
+		w.exec(`var a=document.getElementById('liveaudio'); return a ? {t:a.currentTime, p:a.paused} : {t:0,p:true};`, &st)
+		return !st.Paused && st.Time > before+0.5
+	})
+
+	// The play button resumes a pending pause too (it must not stop).
+	w.exec(`document.getElementById('liveaudio').pause(); return true;`, nil)
+	waitFor(t, 10*time.Second, "second system pause", func() bool {
+		return strings.Contains(pill(), "audio output disconnected")
+	})
+	w.click("#play")
+	waitFor(t, 15*time.Second, "resume after tapping play", func() bool {
+		var paused bool
+		w.exec(`var a=document.getElementById('liveaudio'); return a ? a.paused : true;`, &paused)
+		return !paused
+	})
+
+	// --- cold start: a reload while listening resumes by itself ---
+	w.navigate(sb.base + "/")
+	waitFor(t, 30*time.Second, "playback after a reload", func() bool {
+		var t2 float64
+		w.exec(`var a=document.getElementById('liveaudio'); return a ? a.currentTime : -1;`, &t2)
+		return t2 > 0.5
+	})
+
+	// --- buffered mode ---
+	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
+	waitFor(t, 60*time.Second, "buffered playback", func() bool {
+		var ct float64
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].currentTime; }
+			return -1;`, &ct)
+		return ct > 1
+	})
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) { a[i].pause(); break; } }
+		return true;`, nil)
+	waitFor(t, 10*time.Second, "buffered system-pause status", func() bool {
+		return strings.Contains(pill(), "audio output disconnected")
+	})
+	var pausedID string
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		for (var i=0;i<2;i++) { if (a[i] && a[i].currentTime>0 && a[i].paused) return a[i].id; }
+		return '';`, &pausedID)
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "play"})); return true;`, nil)
+	waitFor(t, 15*time.Second, "buffered resume on the same element", func() bool {
+		var ok bool
+		w.exec(`var a=document.getElementById('`+pausedID+`'); return !!a && !a.paused && a.currentTime>0.2;`, &ok)
+		return ok
+	})
+	// Exactly one element audible after the resume.
+	var playing int
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		var n=0; for (var i=0;i<2;i++) { if (a[i] && !a[i].paused && !a[i].ended) n++; }
+		return n;`, &playing)
+	if playing != 1 {
+		t.Fatalf("%d elements playing after resume", playing)
+	}
 }
