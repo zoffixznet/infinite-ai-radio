@@ -119,6 +119,7 @@ func FromPreset(p *Preset) *Session {
 	s.NoiseBed = p.NoiseBed
 	s.Vocal = p.Vocal
 	s.LyricsTheme = p.LyricsTheme
+	s.Spec = p.Spec.Clone()
 	if s.NoiseBed == "" {
 		s.NoiseBed = string(audio.NoisePink)
 	}

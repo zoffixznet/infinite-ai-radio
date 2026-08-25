@@ -92,7 +92,7 @@ func TestPresetsShipRequiredSet(t *testing.T) {
 	if !ok || pink.Mode != ModeNoise || pink.NoiseColor != "pink" {
 		t.Fatalf("pink-noise preset wrong: %+v", pink)
 	}
-	for _, name := range []string{"lofi-study", "deep-focus", "sleep", "calm-piano"} {
+	for _, name := range []string{"lofi-study", "deep-focus", "sleep", "jazz-club", "night-drive"} {
 		p, ok := byName[name]
 		if !ok {
 			t.Fatalf("preset %s missing", name)

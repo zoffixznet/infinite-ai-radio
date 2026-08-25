@@ -102,11 +102,15 @@ func versionCommand() *cobra.Command {
 	}
 }
 
-// presetLines renders the embedded presets for help output.
+// presetLines renders the embedded presets for help output, grouped by
+// energy.
 func presetLines() string {
 	out := ""
-	for _, p := range session.Presets() {
-		out += fmt.Sprintf("  %-12s %s\n", p.Name, p.Description)
+	for _, g := range session.GroupPresets(session.Presets()) {
+		out += fmt.Sprintf(" %s:\n", g.Name)
+		for _, p := range g.Presets {
+			out += fmt.Sprintf("  %-18s %s\n", p.Name, p.Description)
+		}
 	}
 	return out
 }

@@ -164,8 +164,11 @@ func (c *Controller) export(rest string) string {
 func (c *Controller) presetsText() string {
 	var b strings.Builder
 	b.WriteString("presets:\n")
-	for _, p := range c.O.Presets() {
-		fmt.Fprintf(&b, "  %-12s %s\n", p.Name, p.Description)
+	for _, g := range session.GroupPresets(c.O.Presets()) {
+		fmt.Fprintf(&b, " %s:\n", g.Name)
+		for _, p := range g.Presets {
+			fmt.Fprintf(&b, "  %-18s %s\n", p.Name, p.Description)
+		}
 	}
 	b.WriteString("use: preset <name>")
 	return b.String()

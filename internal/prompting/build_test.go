@@ -278,3 +278,40 @@ func TestBuilderUnusableWithoutProbe(t *testing.T) {
 		t.Fatalf("helper consulted %d times without a successful probe", f.chats.Load())
 	}
 }
+
+// TestPresetSpecReachesEngine asserts a preset's structured constraints
+// (tempo, language, negatives) survive all the way into the engine
+// request, for both instrumental and vocal presets.
+func TestPresetSpecReachesEngine(t *testing.T) {
+	b := NewBuilder(nil, nil)
+
+	drive, err := session.LookupPreset("night-drive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := b.BuildSpec(context.Background(), session.FromPreset(drive), 120)
+	if spec.BPM != 108 {
+		t.Fatalf("night-drive bpm = %d; want 108", spec.BPM)
+	}
+	if !strings.Contains(spec.Prompt, "synthwave") {
+		t.Fatalf("night-drive prompt = %q", spec.Prompt)
+	}
+
+	nu, err := session.LookupPreset("nu-metal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec = b.BuildSpec(context.Background(), session.FromPreset(nu), 120)
+	if spec.BPM != 100 || spec.VocalLanguage != "en" {
+		t.Fatalf("nu-metal fields: bpm=%d lang=%q", spec.BPM, spec.VocalLanguage)
+	}
+	if !strings.Contains(spec.NegativePrompt, "acoustic guitar") {
+		t.Fatalf("nu-metal negatives lost: %q", spec.NegativePrompt)
+	}
+	if spec.LMCfgScale <= 2.5 {
+		t.Fatalf("lm guidance not raised with preset negatives: %v", spec.LMCfgScale)
+	}
+	if !spec.Vocal() {
+		t.Fatal("nu-metal should request vocals")
+	}
+}

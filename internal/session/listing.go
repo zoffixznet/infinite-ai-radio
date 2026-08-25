@@ -38,8 +38,31 @@ func Group(sessions []*Session, presets []*Preset) Listing {
 	sort.SliceStable(l.Named, func(i, j int) bool { return l.Named[i].Played().After(l.Named[j].Played()) })
 	sort.SliceStable(l.Auto, func(i, j int) bool { return l.Auto[i].Created.After(l.Auto[j].Created) })
 	l.Presets = append([]*Preset(nil), presets...)
-	sort.Slice(l.Presets, func(i, j int) bool { return l.Presets[i].Name < l.Presets[j].Name })
+	SortPresets(l.Presets)
 	return l
+}
+
+// PresetGroup is one energy group of presets, in display order.
+type PresetGroup struct {
+	Name    string
+	Presets []*Preset
+}
+
+// GroupPresets splits an already-sorted preset list into its energy
+// groups, preserving order.
+func GroupPresets(presets []*Preset) []PresetGroup {
+	var out []PresetGroup
+	for _, p := range presets {
+		name := p.Group
+		if name == "" {
+			name = "other"
+		}
+		if len(out) == 0 || out[len(out)-1].Name != name {
+			out = append(out, PresetGroup{Name: name})
+		}
+		out[len(out)-1].Presets = append(out[len(out)-1].Presets, p)
+	}
+	return out
 }
 
 // Group labels shared by every listing surface.
@@ -100,8 +123,11 @@ func (l Listing) Render(now time.Time) string {
 	if len(l.Presets) == 0 {
 		b.WriteString("  (all deleted; iar sessions restore-presets brings them back)\n")
 	}
-	for _, p := range l.Presets {
-		row(p.Name, p.Description, "")
+	for _, g := range GroupPresets(l.Presets) {
+		b.WriteString("  " + g.Name + ":\n")
+		for _, p := range g.Presets {
+			row("  "+p.Name, p.Description, "")
+		}
 	}
 	b.WriteString(LabelAuto + ":\n")
 	if len(l.Auto) == 0 {

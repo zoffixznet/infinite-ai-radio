@@ -25,9 +25,32 @@ type Preset struct {
 	NoiseBed    string `json:"noise_bed"`
 	Vocal       bool   `json:"vocal"`
 	LyricsTheme string `json:"lyrics_theme,omitempty"`
+	// Group is the energy group the preset is listed under (one of
+	// GroupOrder).
+	Group string `json:"group,omitempty"`
+	// Spec carries structured constraints (tempo, language, negatives)
+	// that seed the session's steering spec so they actually reach the
+	// engine.
+	Spec *PromptSpec `json:"spec,omitempty"`
 }
 
-// Presets returns all built-in presets sorted by name.
+// GroupOrder is the fixed display order of the preset energy groups:
+// pick a feeling first, steer the genre later. Unknown groups sort
+// after these.
+var GroupOrder = []string{"high-energy", "upbeat", "cruise", "chill", "sleep-noise"}
+
+// GroupIndex ranks a preset group for sorting; unknown groups come last.
+func GroupIndex(group string) int {
+	for i, g := range GroupOrder {
+		if g == group {
+			return i
+		}
+	}
+	return len(GroupOrder)
+}
+
+// Presets returns all built-in presets in display order: by energy
+// group (GroupOrder), then by name inside each group.
 func Presets() []*Preset {
 	entries, err := presetFS.ReadDir("presets")
 	if err != nil {
@@ -45,8 +68,19 @@ func Presets() []*Preset {
 		}
 		out = append(out, &p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	SortPresets(out)
 	return out
+}
+
+// SortPresets orders presets by (group rank, name).
+func SortPresets(presets []*Preset) {
+	sort.Slice(presets, func(i, j int) bool {
+		gi, gj := GroupIndex(presets[i].Group), GroupIndex(presets[j].Group)
+		if gi != gj {
+			return gi < gj
+		}
+		return presets[i].Name < presets[j].Name
+	})
 }
 
 // LookupPreset finds a preset by name.

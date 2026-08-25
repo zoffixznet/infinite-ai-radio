@@ -600,14 +600,19 @@ type sessionJSON struct {
 	// Played says when the session last played ("" for presets).
 	Played  string `json:"played"`
 	Current bool   `json:"current"`
+	// Group is the energy group (presets only).
+	Group string `json:"group,omitempty"`
 }
 
 // sessionsJSON is the grouped listing: user-named, presets, auto-named.
 type sessionsJSON struct {
-	Current string        `json:"current"`
-	Named   []sessionJSON `json:"named"`
-	Presets []sessionJSON `json:"presets"`
-	Auto    []sessionJSON `json:"auto"`
+	Current string `json:"current"`
+	// CurrentPreset names the preset the playing session came from
+	// ("" when it did not), so the picker can open its group.
+	CurrentPreset string        `json:"current_preset"`
+	Named         []sessionJSON `json:"named"`
+	Presets       []sessionJSON `json:"presets"`
+	Auto          []sessionJSON `json:"auto"`
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request, u accounts.User) {
@@ -616,13 +621,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request, u accoun
 	cur := s.ctl.CurrentName()
 	out := sessionsJSON{Current: cur, Named: []sessionJSON{}, Presets: []sessionJSON{}, Auto: []sessionJSON{}}
 	row := func(sess *session.Session) sessionJSON {
+		if sess.Name == cur {
+			out.CurrentPreset = sess.Preset
+		}
 		return sessionJSON{Name: sess.Name, Summary: session.Summary(sess, 80), Played: session.Ago(now, sess.Played()), Current: sess.Name == cur}
 	}
 	for _, sess := range l.Named {
 		out.Named = append(out.Named, row(sess))
 	}
 	for _, p := range l.Presets {
-		out.Presets = append(out.Presets, sessionJSON{Name: p.Name, Summary: p.Description})
+		out.Presets = append(out.Presets, sessionJSON{Name: p.Name, Summary: p.Description, Group: p.Group})
 	}
 	for _, sess := range l.Auto {
 		out.Auto = append(out.Auto, row(sess))

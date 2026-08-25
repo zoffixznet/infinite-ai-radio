@@ -89,7 +89,8 @@ awk '/^your sessions:/{a=NR} /^presets:/{b=NR} /^auto-saved sessions:/{c=NR} END
   || fail "listing groups out of order"
 grep -qE "^  smoke-session +brown noise +[0-9]+[smh] ago|^  smoke-session +brown noise +just now" "$list" \
   || fail "named row lacks summary/last played: $(grep smoke-session "$list")"
-grep -qE "^  calm-piano +Gentle solo piano" "$list" || fail "preset row format"
+grep -qE "^    jazz-club +Late-night jazz combo" "$list" || fail "preset row format"
+grep -qE "^  high-energy:" "$list" || fail "preset group header missing"
 
 echo n | "$BIN" sessions delete smoke-session | grep -q "cancelled" || fail "delete without confirmation did not cancel"
 [ -f "$IAR_DATA_DIR/sessions/smoke-session.json" ] || fail "cancelled delete removed the session"

@@ -154,8 +154,11 @@ func presetsCommand() *cobra.Command {
 			defer a.close()
 			store := session.NewStore(a.paths.SessionsDir())
 			fmt.Println("built-in presets:")
-			for _, p := range store.Presets() {
-				fmt.Printf("  %-12s %s\n", p.Name, p.Description)
+			for _, g := range session.GroupPresets(store.Presets()) {
+				fmt.Printf(" %s:\n", g.Name)
+				for _, p := range g.Presets {
+					fmt.Printf("  %-18s %s\n", p.Name, p.Description)
+				}
 			}
 			if hidden := store.HiddenPresets(); len(hidden) > 0 {
 				fmt.Printf("  (%d deleted; bring back with: iar sessions restore-presets)\n", len(hidden))

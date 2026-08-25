@@ -198,5 +198,8 @@ audio { width: 100%; margin-top: 10px; }
 details > summary.grouplabel { cursor: pointer; list-style: none; }
 details > summary.grouplabel::before { content: "\25B8\FE0E "; }
 details[open] > summary.grouplabel::before { content: "\25BE\FE0E "; }
+details.presetgroup { margin-left: 4px; }
+details.presetgroup > summary.grouplabel { margin: 8px 0 2px; }
+details.presetgroup .chunk { margin-left: 14px; }
 .sess.playing .ctitle { color: var(--accent); }
 #sessname { font-family: inherit; font-size: inherit; }

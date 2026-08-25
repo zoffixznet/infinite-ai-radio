@@ -156,7 +156,7 @@ func TestControllerDeleteConfirmation(t *testing.T) {
 	if resp, _ := c.Handle("yes"); !strings.Contains(resp, "preset sleep deleted") {
 		t.Fatalf("preset delete = %q", resp)
 	}
-	if resp, _ := c.Handle("presets"); strings.Contains(resp, "sleep") {
+	if resp, _ := c.Handle("presets"); strings.Contains(resp, "\n  sleep ") {
 		t.Fatalf("tombstoned preset listed: %q", resp)
 	}
 }
@@ -165,7 +165,7 @@ func TestControllerSessionsListingIsGrouped(t *testing.T) {
 	c := newController(t)
 	c.Handle("name focus time")
 	resp, _ := c.Handle("sessions")
-	for _, want := range []string{session.LabelNamed + ":", session.LabelPresets + ":", session.LabelAuto + ":", "focus-time", "calm-piano", "just now"} {
+	for _, want := range []string{session.LabelNamed + ":", session.LabelPresets + ":", session.LabelAuto + ":", "focus-time", "jazz-club", "just now"} {
 		if !strings.Contains(resp, want) {
 			t.Fatalf("sessions listing missing %q:\n%s", want, resp)
 		}

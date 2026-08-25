@@ -859,6 +859,45 @@
     return box;
   }
 
+  // presetGroups renders the presets as collapsible energy groups, the
+  // playing preset's group open, the rest collapsed.
+  function presetGroups(presets, currentPreset) {
+    var box = document.createElement("div");
+    var head = document.createElement("div");
+    head.className = "grouplabel";
+    head.textContent = "Presets";
+    box.appendChild(head);
+    if (!presets.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "none";
+      box.appendChild(empty);
+      return box;
+    }
+    var openGroup = "";
+    presets.forEach(function (p) { if (p.name === currentPreset) openGroup = p.group || "other"; });
+    var byGroup = [];
+    presets.forEach(function (p) {
+      var g = p.group || "other";
+      if (!byGroup.length || byGroup[byGroup.length - 1].name !== g) {
+        byGroup.push({ name: g, items: [] });
+      }
+      byGroup[byGroup.length - 1].items.push(p);
+    });
+    byGroup.forEach(function (g) {
+      var det = document.createElement("details");
+      det.className = "presetgroup";
+      if (g.name === openGroup) det.open = true;
+      var sum = document.createElement("summary");
+      sum.className = "grouplabel";
+      sum.textContent = g.name + " (" + g.items.length + ")";
+      det.appendChild(sum);
+      g.items.forEach(function (item) { det.appendChild(sessionRow(item, "presets")); });
+      box.appendChild(det);
+    });
+    return box;
+  }
+
   function loadSessions() {
     fetch("/api/sessions").then(function (r) {
       if (r.status === 401) { loggedOut(); return null; }
@@ -868,7 +907,7 @@
       var box = $("sessions");
       box.innerHTML = "";
       box.appendChild(sessionGroup("Your sessions", d.named, "named", false));
-      box.appendChild(sessionGroup("Presets", d.presets, "presets", false));
+      box.appendChild(presetGroups(d.presets, d.current_preset));
       box.appendChild(sessionGroup("Auto-saved sessions", d.auto, "auto", true));
     }).catch(function () {});
   }

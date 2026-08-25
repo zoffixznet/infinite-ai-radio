@@ -671,7 +671,7 @@ func TestSessionDeleteGuardsAndTombstones(t *testing.T) {
 		t.Fatalf("LoadByName tombstoned = %q", ack)
 	}
 	// LoadByName resolves presets and sessions; the state file follows.
-	if ack := o.LoadByName("calm-piano"); !strings.Contains(ack, "preset calm-piano") {
+	if ack := o.LoadByName("jazz-club"); !strings.Contains(ack, "preset jazz-club") {
 		t.Fatalf("LoadByName preset = %q", ack)
 	}
 	if ack := o.LoadByName("road-trip"); !strings.Contains(ack, "session road-trip loaded") {

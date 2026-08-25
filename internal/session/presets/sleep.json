@@ -3,5 +3,6 @@
   "description": "Slow beatless drones for falling asleep",
   "mode": "music",
   "prompt": "dark ambient drone, beatless, no drums, no percussion, very slow, warm low pads, deep, soft, gentle, hypnotic, calm, music for falling asleep",
-  "noise_bed": "brown"
+  "noise_bed": "brown",
+  "group": "sleep-noise"
 }

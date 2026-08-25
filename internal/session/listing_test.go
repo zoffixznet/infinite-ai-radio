@@ -132,8 +132,13 @@ func TestGroupOrderAndRender(t *testing.T) {
 	for _, p := range l.Presets {
 		presets = append(presets, p.Name)
 	}
-	if got := strings.Join(presets, ","); got != "calm-piano,deep-focus,grind,lofi-study,pink-noise,sleep" {
-		t.Fatalf("preset order = %q", got)
+	want := "grind,hard-rock,liquid-dnb,nu-metal,pop-punk," +
+		"chiptune,deep-house,funk-soul,sunshine-pop," +
+		"boom-bap,epic-score,night-drive,reggae-dub,roadhouse-country," +
+		"chamber-strings,deep-focus,jazz-club,lofi-study," +
+		"pink-noise,sleep"
+	if got := strings.Join(presets, ","); got != want {
+		t.Fatalf("preset order = %q\nwant %q", got, want)
 	}
 
 	text := l.Render(now)
@@ -158,8 +163,18 @@ func TestGroupOrderAndRender(t *testing.T) {
 	if !strings.Contains(text, "  gym-grind") || !strings.Contains(text, "3h ago") || !strings.Contains(text, "2d ago") {
 		t.Fatalf("last played missing:\n%s", text)
 	}
-	if !strings.Contains(text, "  calm-piano               Gentle solo piano") {
+	// Presets render under their energy-group headers, in the fixed
+	// group order.
+	if !strings.Contains(text, "    jazz-club              Late-night jazz combo") {
 		t.Fatalf("preset row format:\n%s", text)
+	}
+	for _, g := range GroupOrder {
+		if !strings.Contains(text, "  "+g+":") {
+			t.Fatalf("group header %q missing:\n%s", g, text)
+		}
+	}
+	if strings.Index(text, "  high-energy:") > strings.Index(text, "  sleep-noise:") {
+		t.Fatalf("preset groups out of order:\n%s", text)
 	}
 	for _, ln := range lines {
 		if len(ln) > 80 {

@@ -866,7 +866,7 @@ func TestSessionsListingAndActions(t *testing.T) {
 	if l.Current != "s1" || len(l.Named) != 2 || l.Named[0].Name != "s1" || !l.Named[0].Current || l.Named[1].Name != "gym-grind" {
 		t.Fatalf("named group = %+v (current %q)", l.Named, l.Current)
 	}
-	if len(l.Presets) != len(session.Presets()) || l.Presets[0].Name != "calm-piano" || l.Presets[0].Summary == "" {
+	if len(l.Presets) != len(session.Presets()) || l.Presets[0].Name != "grind" || l.Presets[0].Group != "high-energy" || l.Presets[0].Summary == "" {
 		t.Fatalf("presets group = %+v", l.Presets)
 	}
 	if len(l.Auto) != 1 || l.Auto[0].Name != "session-20260821-100000" || l.Auto[0].Played != "26h ago" {
