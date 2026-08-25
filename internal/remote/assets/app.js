@@ -87,6 +87,7 @@
       stopListening("stopped (switched to saved chunks)");
       loadChunks();
     }
+    syncPrevAction();
   }
   $("mode-live").addEventListener("click", function () { setMode("live"); });
   $("mode-saved").addEventListener("click", function () { setMode("saved"); });
@@ -727,16 +728,21 @@
   });
 
   // ---- media session (lock screen, car displays) -------------------
-  // lastNow is the playing track's title (the laptop's track in direct
-  // mode, this device's track in buffered mode, the chunk in saved
-  // mode); msArtist is the steering summary (or the chunk's tag).
+  // lastNow is the playing track's short title (the laptop's track in
+  // direct mode, this device's track in buffered mode, the chunk in
+  // saved mode); msArtist carries "Track N" plus the genre/mood
+  // subtitle (or the chunk's tag). msFlash briefly overrides the title
+  // (the car "Saved" confirmation) and always restores through this
+  // same function, so a stale string can never stick.
   var lastNow = "";
   var msArtist = "";
+  var msFlash = "";
+  var msFlashTimer = null;
   function applyMediaMetadata() {
     if (!("mediaSession" in navigator)) return;
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: lastNow || "Infinite AI Radio",
+        title: msFlash || lastNow || "Infinite AI Radio",
         artist: msArtist || "AI-generated stream",
         album: "Infinite AI Radio",
         artwork: [
@@ -746,27 +752,92 @@
       });
     } catch (e) {}
   }
+  // flashMetadata shows a short confirmation on the car screen, then
+  // re-applies whatever is current (even if the track changed).
+  function flashMetadata(text) {
+    msFlash = text;
+    if (msFlashTimer) clearTimeout(msFlashTimer);
+    msFlashTimer = setTimeout(function () {
+      msFlash = "";
+      msFlashTimer = null;
+      applyMediaMetadata();
+    }, 2000);
+    applyMediaMetadata();
+  }
   function mediaPlaybackState(state) {
     if (!("mediaSession" in navigator)) return;
     try { navigator.mediaSession.playbackState = state; } catch (e) {}
   }
-  if ("mediaSession" in navigator) {
-    var handler = function (action, fn) {
-      try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) {}
-    };
-    handler("play", function () { if (mode === "live") startListening(); else savedAudio.play(); });
-    handler("pause", function () { if (mode === "live") stopListening("stopped"); else savedAudio.pause(); });
-    handler("stop", function () { if (mode === "live") stopListening("stopped"); else savedAudio.pause(); });
-    handler("nexttrack", function () {
-      if (mode === "live") {
-        // Same debounce/double-fire guards as the on-page controls.
-        if (pf.active) { pfSkip(); return; }
-        if (me && me.steer) act($("next"), $("steerstatus"), "/next", "", "skipping…");
-      } else {
-        repeatOne = null; updateLoopState(); step(1);
-      }
+
+  // Car ⏮ = save: an endless generated stream has no meaningful
+  // "previous track", so in live mode the slot doubles as Save (the
+  // only extra control a web page can put on a car display). Saved
+  // mode keeps the real previous behaviour. Persisted per device.
+  var carSave = store.get("iar.carsave", true) !== false;
+  var lastCarSave = 0;
+  function carSaveAction() {
+    var now = Date.now();
+    if (now - lastCarSave < 700) return; // car-button spam guard
+    lastCarSave = now;
+    if (!(me && me.save)) return;
+    var saveTitle = lastNow || "this track";
+    doSave($("save"), false).then(function (d) {
+      // Flash only on success (including the idempotent no-op); a
+      // failed save leaves the honest metadata alone.
+      if (d) flashMetadata("Saved: " + saveTitle);
     });
   }
+
+  // msAction routes every media-session action; the same dispatch is
+  // reachable through the "iar:msaction" DOM event so scripted clients
+  // can drive the car controls.
+  function msAction(action) {
+    switch (action) {
+      case "play":
+        if (mode === "live") startListening(); else savedAudio.play();
+        break;
+      case "pause":
+        if (mode === "live") stopListening("stopped"); else savedAudio.pause();
+        break;
+      case "stop":
+        if (mode === "live") stopListening("stopped"); else savedAudio.pause();
+        break;
+      case "nexttrack":
+        if (mode === "live") {
+          // Same debounce/double-fire guards as the on-page controls.
+          if (pf.active) { pfSkip(); return; }
+          if (me && me.steer) act($("next"), $("steerstatus"), "/next", "", "skipping…");
+        } else {
+          repeatOne = null; updateLoopState(); step(1);
+        }
+        break;
+      case "previoustrack":
+        if (mode === "live") { if (carSave) carSaveAction(); } else { repeatOne = null; updateLoopState(); step(-1); }
+        break;
+    }
+  }
+  function msHandler(action, fn) {
+    if (!("mediaSession" in navigator)) return;
+    try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) {}
+  }
+  ["play", "pause", "stop", "nexttrack"].forEach(function (a) {
+    msHandler(a, function () { msAction(a); });
+  });
+  // The previous-track slot registers only while it has a job (saved
+  // mode, or live mode with the car-save toggle on), so a switched-off
+  // toggle removes the dead ⏮ from the car instead of ignoring it.
+  function syncPrevAction() {
+    var active = mode === "saved" || carSave;
+    msHandler("previoustrack", active ? function () { msAction("previoustrack"); } : null);
+  }
+  syncPrevAction();
+  document.addEventListener("iar:msaction", function (e) { msAction(e.detail); });
+  $("carsave").checked = carSave;
+  $("carsave").addEventListener("change", function () {
+    carSave = $("carsave").checked;
+    store.set("iar.carsave", carSave);
+    syncPrevAction();
+  });
 
   // ---- steer / new / save ------------------------------------------
   $("steer").addEventListener("click", function () {

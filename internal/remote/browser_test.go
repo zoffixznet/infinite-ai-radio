@@ -998,6 +998,55 @@ func TestRealBrowserResilience(t *testing.T) {
 		}
 		return strings.HasPrefix(md.Artist, "Track ") && md.Title != "Infinite AI Radio"
 	})
+
+	// --- the car's previous-track button saves what the driver hears ---
+	// The media-session action is dispatched exactly as Chrome would;
+	// buffered mode must save the DEVICE's playing track, flash "Saved:"
+	// on the car metadata, and restore the honest title afterwards.
+	// Wait for the early part of a track so the played track cannot
+	// change under the assertions below.
+	waitFor(t, 30*time.Second, "early in a buffered track", func() bool {
+		var ct float64
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].currentTime; }
+			return -1;`, &ct)
+		return ct > 0.2 && ct < 3
+	})
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "previoustrack"})); return true;`, nil)
+	waitFor(t, 15*time.Second, "car save acknowledged", func() bool {
+		var ack string
+		w.exec(`return document.getElementById('savestatus').textContent;`, &ack)
+		return strings.Contains(ack, "saving this track") || strings.Contains(ack, "already saved")
+	})
+	// The on-page save button greys out for this device's track at once.
+	var greyed bool
+	w.exec(`return document.getElementById('save').classList.contains('saved');`, &greyed)
+	if !greyed {
+		t.Fatal("save button not greyed after the car save")
+	}
+	var flash string
+	w.exec(`return navigator.mediaSession.metadata ? navigator.mediaSession.metadata.title : '';`, &flash)
+	if !strings.HasPrefix(flash, "Saved: ") {
+		t.Fatalf("car metadata flash = %q", flash)
+	}
+	waitFor(t, 6*time.Second, "car metadata restored after the flash", func() bool {
+		var title string
+		w.exec(`return navigator.mediaSession.metadata ? navigator.mediaSession.metadata.title : '';`, &title)
+		return title != "" && !strings.HasPrefix(title, "Saved: ")
+	})
+	waitFor(t, 15*time.Second, "saved snippet file on disk", func() bool {
+		matches, _ := filepath.Glob(filepath.Join(sb.dir, "data", "snippets", "untagged", "*.mp3"))
+		return len(matches) == 1
+	})
+	// A rapid burst of car-button presses collapses to at most one
+	// save (debounce + per-track idempotency); the played track may
+	// legitimately have advanced once meanwhile.
+	before, _ := filepath.Glob(filepath.Join(sb.dir, "data", "snippets", "untagged", "*.mp3"))
+	w.exec(`for (var i=0;i<3;i++) document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "previoustrack"})); return true;`, nil)
+	time.Sleep(2 * time.Second)
+	if after, _ := filepath.Glob(filepath.Join(sb.dir, "data", "snippets", "untagged", "*.mp3")); len(after) > len(before)+1 {
+		t.Fatalf("car-button spam produced %d new files", len(after)-len(before))
+	}
 	// At maximum depth the prefetcher reaches the library-kind filler
 	// rows, whose ids contain a slash and travel through the escaped
 	// track route; a banked track landing in IndexedDB proves that
