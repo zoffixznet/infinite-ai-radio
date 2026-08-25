@@ -332,6 +332,7 @@ func (f *fakeCtl) Status() player.Status {
 			{Time: time.Date(2026, 8, 23, 10, 1, 0, 0, time.UTC), Raw: "faster", Interpreted: "faster tempo"},
 		},
 		TrackID: "t-1", TrackPrompt: "dark techno, driving", Duration: 150 * time.Second,
+		TrackTitle: "Dark Techno", TrackSubtitle: "driving", TrackNum: 3,
 		TrackSaved: false, PrevTrackID: "t-0", PrevTrackPrompt: "dark techno, opening", PrevTrackSaved: true,
 		SavedTrackIDs: []string{"t-0"},
 	}
@@ -378,9 +379,9 @@ func (f *fakeCtl) Listing() session.Listing {
 // queueTracks are what QueueTracks serves; tests may replace them.
 func (f *fakeCtl) QueueTracks() (int, []player.QueueTrack) {
 	return 7, []player.QueueTrack{
-		{ID: "t-1", Prompt: "dark techno, driving", Seconds: 2, Kind: "queue"},
-		{ID: "t-2", Prompt: "dark techno, deeper", Seconds: 2, Kind: "queue"},
-		{ID: "lib:techno/20260823-000000-0001", Prompt: "banked techno", Seconds: 2, Kind: "library"},
+		{ID: "t-1", Prompt: "dark techno, driving", Title: "Dark Techno", Subtitle: "driving", Seconds: 2, Kind: "queue"},
+		{ID: "t-2", Prompt: "dark techno, deeper", Title: "Deep Descent", Subtitle: "deeper", Seconds: 2, Kind: "queue"},
+		{ID: "lib:techno/20260823-000000-0001", Prompt: "banked techno", Title: "Banked Techno", Seconds: 2, Kind: "library"},
 	}
 }
 
@@ -1311,6 +1312,9 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 			ID        string  `json:"id"`
 			Prompt    string  `json:"prompt"`
 			DurationS float64 `json:"duration_s"`
+			Title     string  `json:"title"`
+			Subtitle  string  `json:"subtitle"`
+			Number    int     `json:"number"`
 			Saved     bool    `json:"saved"`
 		} `json:"track"`
 		Prev *struct {
@@ -1330,6 +1334,9 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 	}
 	if st.Track == nil || st.Track.ID != "t-1" || st.Track.Prompt != "dark techno, driving" || st.Track.DurationS != 150 || st.Track.Saved {
 		t.Fatalf("track wrong: %+v", st.Track)
+	}
+	if st.Track.Title != "Dark Techno" || st.Track.Subtitle != "driving" || st.Track.Number != 3 {
+		t.Fatalf("track display names wrong: %+v", st.Track)
 	}
 	if st.Prev == nil || st.Prev.ID != "t-0" || !st.Prev.Saved {
 		t.Fatalf("prev wrong: %+v", st.Prev)
@@ -1449,6 +1456,8 @@ func TestQueueListingAndTrackServing(t *testing.T) {
 		Tracks []struct {
 			ID        string  `json:"id"`
 			Prompt    string  `json:"prompt"`
+			Title     string  `json:"title"`
+			Subtitle  string  `json:"subtitle"`
 			DurationS float64 `json:"duration_s"`
 			Kind      string  `json:"kind"`
 			URL       string  `json:"url"`
@@ -1462,6 +1471,9 @@ func TestQueueListingAndTrackServing(t *testing.T) {
 	}
 	if q.Tracks[0].Kind != "queue" || q.Tracks[2].Kind != "library" || q.Tracks[0].URL == "" {
 		t.Fatalf("queue rows = %+v", q.Tracks)
+	}
+	if q.Tracks[0].Title != "Dark Techno" || q.Tracks[0].Subtitle != "driving" || q.Tracks[2].Title != "Banked Techno" {
+		t.Fatalf("queue rows lack display names: %+v", q.Tracks)
 	}
 
 	// A queued track serves as a valid MP3.

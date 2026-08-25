@@ -975,8 +975,9 @@ func TestRealBrowserResilience(t *testing.T) {
 			strings.Contains(pill, "5 ahead")
 	})
 	// The media session stays honest in buffered mode: the title is
-	// this device's playing track and the artist is the live steering
-	// summary, never a placeholder.
+	// this device's playing track's SHORT name (never the raw prompt),
+	// the artist carries the device-local track number and the
+	// genre/mood subtitle, and no placeholder ever shows.
 	waitFor(t, 15*time.Second, "buffered media-session metadata", func() bool {
 		var md struct {
 			Title  string `json:"title"`
@@ -988,8 +989,14 @@ func TestRealBrowserResilience(t *testing.T) {
 		if md.Artist == "buffered playback" {
 			t.Fatalf("media session artist is a placeholder: %+v", md)
 		}
-		// The steered session summary starts with the base prompt.
-		return strings.Contains(md.Artist, "lofi") && md.Title != "" && md.Title != "Infinite AI Radio"
+		if md.Title == "" {
+			return false
+		}
+		// The raw prompt is a comma-tag soup; the short title is not.
+		if strings.Contains(md.Title, ",") {
+			t.Fatalf("car title looks like a raw prompt: %q", md.Title)
+		}
+		return strings.HasPrefix(md.Artist, "Track ") && md.Title != "Infinite AI Radio"
 	})
 	// At maximum depth the prefetcher reaches the library-kind filler
 	// rows, whose ids contain a slash and travel through the escaped

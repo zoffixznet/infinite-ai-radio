@@ -13,10 +13,11 @@ import (
 
 // Info is what the catalog reads back from a saved MP3.
 type Info struct {
-	// Title and Album are the ID3 tags the save command wrote (prompt
-	// and tag).
-	Title string
-	Album string
+	// Title, Subtitle and Album are the ID3 tags the save command
+	// wrote (short track name, genre/mood line, and tag).
+	Title    string
+	Subtitle string
+	Album    string
 	// Duration is the play time, from the encoder's frame-count header
 	// when present, otherwise estimated from the bitrate.
 	Duration time.Duration
@@ -44,7 +45,7 @@ func ReadInfo(path string) (Info, error) {
 		if _, err := io.ReadFull(f, tag); err != nil {
 			return Info{}, err
 		}
-		info.Title, info.Album = parseID3Frames(header[3], header[5], tag)
+		info.Title, info.Subtitle, info.Album = parseID3Frames(header[3], header[5], tag)
 		audioStart = 10 + int64(size)
 		if header[5]&0x10 != 0 { // footer present (v2.4)
 			audioStart += 10
@@ -73,8 +74,8 @@ func syncsafe(b []byte) int {
 }
 
 // parseID3Frames walks the frames of an ID3v2.3/2.4 tag body and returns
-// the title (TIT2) and album (TALB) text.
-func parseID3Frames(version, flags byte, body []byte) (title, album string) {
+// the title (TIT2), subtitle (TIT3) and album (TALB) text.
+func parseID3Frames(version, flags byte, body []byte) (title, subtitle, album string) {
 	pos := 0
 	if flags&0x40 != 0 && len(body) >= 4 { // extended header
 		if version == 4 {
@@ -103,11 +104,13 @@ func parseID3Frames(version, flags byte, body []byte) (title, album string) {
 		switch id {
 		case "TIT2":
 			title = decodeText(data)
+		case "TIT3":
+			subtitle = decodeText(data)
 		case "TALB":
 			album = decodeText(data)
 		}
 	}
-	return title, album
+	return title, subtitle, album
 }
 
 // decodeText decodes an ID3 text frame (encoding byte + text).

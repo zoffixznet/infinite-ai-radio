@@ -71,6 +71,9 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 	}
 
 	slug := snippets.Slug(tag)
+	if track.Title == "" {
+		track.Title, track.Subtitle = prompting.TrackTitle(track.Prompt)
+	}
 	path := snippets.Path(o.SnippetsDir, tag, track.Prompt, time.Now())
 	// User-facing acknowledgments show only the tag directory and file
 	// name; the absolute path stays in the log.
@@ -92,11 +95,12 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			return
 		}
 		err := export.EncodeMP3(ctx, track.Samples, path, export.MP3Options{
-			Quality: o.cfg.MP3Quality,
-			Title:   prompt,
-			Artist:  "Infinite AI Radio",
-			Album:   slug,
-			Comment: snippetComment(track),
+			Quality:  o.cfg.MP3Quality,
+			Title:    track.Title,
+			Subtitle: track.Subtitle,
+			Artist:   "Infinite AI Radio",
+			Album:    slug,
+			Comment:  snippetComment(track),
 		})
 		if err != nil {
 			o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())

@@ -16,6 +16,8 @@ import (
 type queueTrackJSON struct {
 	ID        string  `json:"id"`
 	Prompt    string  `json:"prompt"`
+	Title     string  `json:"title,omitempty"`
+	Subtitle  string  `json:"subtitle,omitempty"`
 	DurationS float64 `json:"duration_s"`
 	Kind      string  `json:"kind"`
 	// URL is the authenticated, range-capable MP3 route for the track.
@@ -33,7 +35,8 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 	out := queueJSON{Epoch: epoch, Tracks: []queueTrackJSON{}}
 	for _, t := range tracks {
 		out.Tracks = append(out.Tracks, queueTrackJSON{
-			ID: t.ID, Prompt: t.Prompt, DurationS: t.Seconds, Kind: t.Kind,
+			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
+			DurationS: t.Seconds, Kind: t.Kind,
 			URL: "/queue/" + url.PathEscape(t.ID) + ".mp3",
 		})
 	}
@@ -55,8 +58,13 @@ func (s *Server) handleQueueTrack(w http.ResponseWriter, r *http.Request, u acco
 		if !found {
 			return nil, errTrackGone
 		}
+		title := track.Title
+		if title == "" {
+			title = track.Prompt
+		}
 		return export.EncodeMP3Bytes(r.Context(), track.Samples, export.MP3Options{
-			Title: track.Prompt, Artist: ProductName, Album: ProductName,
+			Title: title, Subtitle: track.Subtitle, Artist: ProductName, Album: ProductName,
+			Comment: track.Prompt,
 		})
 	})
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 
 	"iar/internal/engine"
 	"iar/internal/library"
+	"iar/internal/prompting"
 	"iar/internal/session"
 )
 
@@ -14,6 +15,9 @@ type QueueTrack struct {
 	ID string
 	// Prompt describes the track.
 	Prompt string
+	// Title and Subtitle are the short display names.
+	Title    string
+	Subtitle string
 	// Seconds is the track's play time.
 	Seconds float64
 	// Kind is "queue" for freshly generated upcoming tracks and
@@ -41,7 +45,10 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	key := library.Key(o.sess)
 	out := make([]QueueTrack, 0, len(o.queue)+maxLibraryFiller)
 	for _, t := range o.queue {
-		out = append(out, QueueTrack{ID: t.ID, Prompt: t.Prompt, Seconds: t.Duration().Seconds(), Kind: "queue"})
+		out = append(out, QueueTrack{
+			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
+			Seconds: t.Duration().Seconds(), Kind: "queue",
+		})
 	}
 	o.mu.Unlock()
 	for i, e := range o.Library.Entries(key) {
@@ -52,8 +59,13 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 		if prompt == "" {
 			prompt = "banked track"
 		}
+		title, subtitle := e.Title, e.Subtitle
+		if title == "" {
+			title, subtitle = prompting.TrackTitle(prompt)
+		}
 		out = append(out, QueueTrack{
-			ID: libFillerPrefix + key + "/" + e.ID, Prompt: prompt, Seconds: e.Seconds, Kind: "library",
+			ID: libFillerPrefix + key + "/" + e.ID, Prompt: prompt, Title: title, Subtitle: subtitle,
+			Seconds: e.Seconds, Kind: "library",
 		})
 	}
 	return epoch, out
@@ -68,7 +80,11 @@ func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 		if !found {
 			return nil, false
 		}
-		return o.Library.Load(key, fileID)
+		t, ok := o.Library.Load(key, fileID)
+		if ok && t.Title == "" {
+			t.Title, t.Subtitle = prompting.TrackTitle(t.Prompt)
+		}
+		return t, ok
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()

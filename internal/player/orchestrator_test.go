@@ -870,6 +870,9 @@ func TestQueueTracksAndTrackData(t *testing.T) {
 		if qt.ID == "" || qt.Seconds <= 0 || (qt.Kind != "queue" && qt.Kind != "library") {
 			t.Fatalf("bad queue row: %+v", qt)
 		}
+		if qt.Title == "" {
+			t.Fatalf("queue row without a short title: %+v", qt)
+		}
 		if qt.Kind == "queue" {
 			queued++
 		}
@@ -1014,4 +1017,32 @@ func TestSaveSnippetByIDAndIdempotency(t *testing.T) {
 		entries, _ := os.ReadDir(filepath.Join(o.SnippetsDir, "banked"))
 		return len(entries) == 1
 	})
+}
+
+// TestTracksGetTitlesAndNumbers: every generated track enters the
+// stream with a short display name, and playing tracks are numbered in
+// play order.
+func TestTracksGetTitlesAndNumbers(t *testing.T) {
+	eng := enginetest.NewMock()
+	o, _ := newTestOrchestrator(t, eng, session.New())
+	waitFor(t, 10*time.Second, "a track playing", func() bool { return o.Status().TrackID != "" })
+	st := o.Status()
+	if st.TrackTitle == "" {
+		t.Fatalf("playing track has no title: %+v", st)
+	}
+	if st.TrackNum != 1 {
+		t.Fatalf("first track number = %d; want 1", st.TrackNum)
+	}
+	first := st.TrackID
+	o.Skip()
+	waitFor(t, 10*time.Second, "second track playing", func() bool {
+		st = o.Status()
+		return st.TrackID != "" && st.TrackID != first
+	})
+	if st.TrackNum != 2 {
+		t.Fatalf("second track number = %d; want 2", st.TrackNum)
+	}
+	if st.PrevTrackID != first || st.PrevTrackTitle == "" {
+		t.Fatalf("previous track fields wrong: %+v", st)
+	}
 }

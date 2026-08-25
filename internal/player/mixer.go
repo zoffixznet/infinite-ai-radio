@@ -281,6 +281,8 @@ func (o *Orchestrator) setCurrent(s source) {
 	if isTrack && (o.curTrack == nil || o.curTrack != ts.track) {
 		o.prevTrack = o.curTrack
 		o.curTrack = ts.track
+		o.playCount++
+		o.curTrackNum = o.playCount
 	}
 	firstMusic := isTrack && !o.firstMusic
 	if firstMusic {

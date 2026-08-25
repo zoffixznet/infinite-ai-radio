@@ -335,3 +335,61 @@ func TestMergeUpdateReduceIsSoft(t *testing.T) {
 		t.Fatalf("reduce raised planner guidance: %v", r.LMCfgScale)
 	}
 }
+
+// TestTrackTitleDeterministicFallback: with no helper at all, every
+// track still gets a finished-looking short name.
+func TestTrackTitleDeterministicFallback(t *testing.T) {
+	title, subtitle := TrackTitle("lofi chill beats, mellow, warm analog, relaxed, soft piano, calm background music")
+	if title != "Lofi Chill Beats" {
+		t.Fatalf("title = %q", title)
+	}
+	if subtitle != "mellow, warm analog, relaxed, soft piano" {
+		t.Fatalf("subtitle = %q", subtitle)
+	}
+	if n := len(strings.Fields(subtitle)); n > 6 {
+		t.Fatalf("subtitle has %d words; max 6", n)
+	}
+	// Long first segments shorten word-aware.
+	title, _ = TrackTitle("a very long and winding first segment that keeps going, dark")
+	if len(title) > 32 {
+		t.Fatalf("title too long: %q", title)
+	}
+	// Degenerate input still yields something displayable.
+	if title, _ := TrackTitle(""); title == "" {
+		t.Fatal("empty prompt produced an empty title")
+	}
+	// A builder with no helper returns no model title; the fallback is
+	// what ships.
+	b := NewBuilder(nil, nil)
+	b.TitleAsync("dark techno") // must be a no-op, not a panic
+	if _, _, ok := b.TitleFor("dark techno"); ok {
+		t.Fatal("helperless builder produced a model title")
+	}
+}
+
+// TestTitleAsyncSchemaConstrained: the helper's short name arrives via
+// the schema-constrained JSON path, sanitized and cached.
+func TestTitleAsyncSchemaConstrained(t *testing.T) {
+	f := &fakeOllama{jsonReply: `{"title":"  \"Neon Rain\"  ","subtitle":"dark driving techno"}`}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	b.TitleAsync("dark techno, driving")
+	waitCond(t, "title ready", func() bool {
+		_, _, ok := b.TitleFor("dark techno, driving")
+		return ok
+	})
+	title, subtitle, ok := b.TitleFor("dark techno, driving")
+	if !ok || title != "Neon Rain" || subtitle != "dark driving techno" {
+		t.Fatalf("model title = %q / %q (ok=%v)", title, subtitle, ok)
+	}
+	if f.jsonCalls.Load() != 1 {
+		t.Fatalf("json calls = %d; want 1", f.jsonCalls.Load())
+	}
+	// Repeated asks reuse the cache: still one call.
+	b.TitleAsync("dark techno, driving")
+	time.Sleep(50 * time.Millisecond)
+	if f.jsonCalls.Load() != 1 {
+		t.Fatalf("cache miss on repeat: %d calls", f.jsonCalls.Load())
+	}
+}

@@ -475,6 +475,11 @@ type trackJSON struct {
 	ID        string  `json:"id"`
 	Prompt    string  `json:"prompt"`
 	DurationS float64 `json:"duration_s"`
+	// Title and Subtitle are the short display names; Number is the
+	// per-process play number ("Track N").
+	Title    string `json:"title,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
+	Number   int    `json:"number,omitempty"`
 	// Saved reports the track is already saved as a snippet.
 	Saved bool `json:"saved"`
 }
@@ -503,10 +508,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 		})
 	}
 	if st.TrackID != "" {
-		out.Track = &trackJSON{ID: st.TrackID, Prompt: st.TrackPrompt, DurationS: st.Duration.Seconds(), Saved: st.TrackSaved}
+		out.Track = &trackJSON{
+			ID: st.TrackID, Prompt: st.TrackPrompt, DurationS: st.Duration.Seconds(),
+			Title: st.TrackTitle, Subtitle: st.TrackSubtitle, Number: st.TrackNum, Saved: st.TrackSaved,
+		}
 	}
 	if st.PrevTrackID != "" {
-		out.Prev = &trackJSON{ID: st.PrevTrackID, Prompt: st.PrevTrackPrompt, Saved: st.PrevTrackSaved}
+		out.Prev = &trackJSON{ID: st.PrevTrackID, Prompt: st.PrevTrackPrompt, Title: st.PrevTrackTitle, Saved: st.PrevTrackSaved}
 	}
 	out.SavedIDs = st.SavedTrackIDs
 	if out.SavedIDs == nil {

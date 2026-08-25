@@ -350,7 +350,7 @@
           if (!pf.have[rec.id]) {
             // epoch left undefined: the first queue listing decides
             // whether the record is still current and restamps it.
-            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, dur: rec.dur };
+            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur };
           }
         });
         pf.wantPlay = true;
@@ -502,8 +502,8 @@
       return r.blob();
     }).then(function (blob) {
       pf.ctrl = null;
-      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, epoch: pf.epoch, dur: row.duration_s };
-      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, epoch: pf.epoch, dur: row.duration_s, blob: blob, saved: Date.now() }))["catch"](function () {});
+      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s };
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, blob: blob, saved: Date.now() }))["catch"](function () {});
       pfTrimStore();
       pfShowMinutes();
       if (pf.switchOnDownload) {
@@ -610,7 +610,9 @@
     el.onended = function () { pfAdvance(); };
     el.play().then(function () {
       pfStatus();
-      lastNow = rec.prompt || "buffered track";
+      pf.played = (pf.played || 0) + 1;
+      lastNow = rec.title || rec.prompt || "buffered track";
+      msArtist = "Track " + pf.played + (rec.subtitle ? " · " + rec.subtitle : "");
       applyMediaMetadata();
       mediaPlaybackState("playing");
       updateSaveButtons(null);
@@ -1015,8 +1017,11 @@
     }).then(function (s) {
       if (!s) return;
       $("conn").textContent = "connected";
-      $("now").textContent = (s.track && s.track.prompt) || s.source || s.state || "...";
-      var meta = s.session ? "session " + s.session : "";
+      var t = s.track;
+      $("now").textContent = (t && (t.title || t.prompt)) || s.source || s.state || "...";
+      $("nowprompt").textContent = (t && t.title && t.prompt) || "";
+      var meta = t && t.number ? "track " + t.number : "";
+      if (s.session) meta += (meta ? "  ·  " : "") + "session " + s.session;
       if (s.elapsed) meta += (meta ? "  ·  " : "") + s.elapsed + " / " + s.duration;
       meta += (meta ? "  ·  " : "") + s.queued + " ready" + (s.generating ? " · generating" : "");
       $("meta").textContent = meta;
@@ -1027,18 +1032,21 @@
       if (pf.active && pf.epoch >= 0 && s.epoch !== pf.epoch) {
         pfRefreshQueue();
       }
-      // Keep the media session honest in every mode: the artist is
-      // always the live steering summary; the title tracks the
-      // laptop's track only in direct mode (buffered mode plays this
-      // device's own track and sets its title itself).
+      // Keep the media session honest in every mode: the title is the
+      // track's short name and the artist carries "Track N" plus the
+      // genre/mood subtitle. Direct mode follows the laptop's track
+      // here; buffered mode plays this device's own track and sets its
+      // metadata in pfPlay.
       var changed = false;
-      var artist = s.session_desc || s.session || "";
-      if (mode === "live" && artist !== msArtist) {
-        msArtist = artist;
-        changed = true;
-      }
-      if (!pf.active) {
-        var now = (s.track && s.track.prompt) || s.source || s.state || "";
+      if (mode === "live" && !pf.active) {
+        var artist = t && t.number
+          ? "Track " + t.number + (t.subtitle ? " · " + t.subtitle : "")
+          : (s.session_desc || s.session || "");
+        if (artist !== msArtist) {
+          msArtist = artist;
+          changed = true;
+        }
+        var now = (t && (t.title || t.prompt)) || s.source || s.state || "";
         if (now !== lastNow) {
           lastNow = now;
           changed = true;
@@ -1119,7 +1127,7 @@
       title.textContent = c.title;
       var meta = document.createElement("div");
       meta.className = "cmeta";
-      meta.textContent = c.tag + " · " + fmtSecs(c.seconds) + " · " + fmtDate(c.saved);
+      meta.textContent = (c.subtitle ? c.subtitle + " · " : "") + c.tag + " · " + fmtSecs(c.seconds) + " · " + fmtDate(c.saved);
       var row2 = document.createElement("div");
       row2.className = "row";
       var play = document.createElement("button");
@@ -1160,7 +1168,7 @@
     $("savednow").className = "";
     $("savednow").textContent = c.title + "  (" + c.tag + ")";
     lastNow = c.title;
-    msArtist = c.tag;
+    msArtist = c.subtitle ? c.subtitle + " · " + c.tag : c.tag;
     applyMediaMetadata();
     renderChunks();
   }

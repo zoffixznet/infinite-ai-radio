@@ -207,7 +207,7 @@ func TestCatalogListsRealEncodedChunks(t *testing.T) {
 	if err := export.EncodeMP3(ctx, samples, older, export.MP3Options{Title: "energetic rock about winning", Album: "gym_grind"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := export.EncodeMP3(ctx, samples, newer, export.MP3Options{Title: "calm piano, quiet", Album: Untagged}); err != nil {
+	if err := export.EncodeMP3(ctx, samples, newer, export.MP3Options{Title: "calm piano, quiet", Subtitle: "calm, gentle", Album: Untagged}); err != nil {
 		t.Fatal(err)
 	}
 	os.Chtimes(older, now, now)
@@ -225,7 +225,7 @@ func TestCatalogListsRealEncodedChunks(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("list = %+v", list)
 	}
-	if list[0].Tag != Untagged || list[0].Title != "calm piano, quiet" || list[1].Tag != "gym_grind" {
+	if list[0].Tag != Untagged || list[0].Title != "calm piano, quiet" || list[0].Subtitle != "calm, gentle" || list[1].Tag != "gym_grind" {
 		t.Fatalf("order/tags wrong: %+v", list)
 	}
 	for _, ch := range list {

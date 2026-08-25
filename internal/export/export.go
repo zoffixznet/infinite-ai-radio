@@ -26,11 +26,13 @@ const MaxMinutes = 180
 type MP3Options struct {
 	// Quality is libmp3lame VBR quality: 0 best to 9 smallest.
 	Quality int
-	// Title, Artist, Album and Comment become ID3 tags when non-empty.
-	Title   string
-	Artist  string
-	Album   string
-	Comment string
+	// Title, Artist, Album, Subtitle and Comment become ID3 tags when
+	// non-empty (Subtitle lands in the TIT3 frame).
+	Title    string
+	Artist   string
+	Album    string
+	Subtitle string
+	Comment  string
 }
 
 // Renderer renders exports. Engine may be nil for noise-mode sessions.
@@ -164,6 +166,7 @@ func EncodeMP3(ctx context.Context, samples []int16, outPath string, opts MP3Opt
 		"title":   opts.Title,
 		"artist":  opts.Artist,
 		"album":   opts.Album,
+		"TIT3":    opts.Subtitle,
 		"comment": opts.Comment,
 	} {
 		if v != "" {
@@ -199,9 +202,11 @@ func EncodeMP3Bytes(ctx context.Context, samples []int16, opts MP3Options) ([]by
 		"-f", "mp3", "-codec:a", "libmp3lame", "-q:a", fmt.Sprint(opts.Quality),
 	}
 	for tag, v := range map[string]string{
-		"title":  opts.Title,
-		"artist": opts.Artist,
-		"album":  opts.Album,
+		"title":   opts.Title,
+		"artist":  opts.Artist,
+		"album":   opts.Album,
+		"TIT3":    opts.Subtitle,
+		"comment": opts.Comment,
 	} {
 		if v != "" {
 			args = append(args, "-metadata", tag+"="+v)

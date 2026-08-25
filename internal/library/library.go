@@ -22,9 +22,11 @@ import (
 
 // meta is the sidecar metadata stored with each banked track.
 type meta struct {
-	Prompt  string    `json:"prompt"`
-	Lyrics  string    `json:"lyrics"`
-	Created time.Time `json:"created"`
+	Prompt   string    `json:"prompt"`
+	Lyrics   string    `json:"lyrics"`
+	Title    string    `json:"title,omitempty"`
+	Subtitle string    `json:"subtitle,omitempty"`
+	Created  time.Time `json:"created"`
 }
 
 // Library is a size-capped on-disk track cache. A nil *Library is valid
@@ -77,7 +79,7 @@ func (l *Library) Put(key string, t *engine.Track) error {
 	if err := os.WriteFile(wavTmp, audio.EncodeWAV(t.Samples), 0o644); err != nil {
 		return err
 	}
-	m, err := json.Marshal(meta{Prompt: t.Prompt, Lyrics: t.Lyrics, Created: time.Now()})
+	m, err := json.Marshal(meta{Prompt: t.Prompt, Lyrics: t.Lyrics, Title: t.Title, Subtitle: t.Subtitle, Created: time.Now()})
 	if err != nil {
 		os.Remove(wavTmp)
 		return err
@@ -129,6 +131,8 @@ func (l *Library) Pick(key string) (*engine.Track, bool) {
 		Samples:     samples,
 		Prompt:      m.Prompt,
 		Lyrics:      m.Lyrics,
+		Title:       m.Title,
+		Subtitle:    m.Subtitle,
 		FromLibrary: true,
 	}, true
 }
@@ -139,6 +143,9 @@ type Entry struct {
 	ID string
 	// Prompt is the prompt that produced the track.
 	Prompt string
+	// Title and Subtitle are the short display names, when banked.
+	Title    string
+	Subtitle string
 	// Seconds is the track's play time, derived from the file size.
 	Seconds float64
 }
@@ -162,6 +169,8 @@ func (l *Library) Entries(key string) []Entry {
 			var m meta
 			json.Unmarshal(raw, &m)
 			e.Prompt = m.Prompt
+			e.Title = m.Title
+			e.Subtitle = m.Subtitle
 		}
 		if bytes := fi.Size() - 44; bytes > 0 {
 			e.Seconds = float64(bytes) / (audio.SampleRate * audio.Channels * 2)
@@ -194,7 +203,7 @@ func (l *Library) Load(key, id string) (*engine.Track, bool) {
 	if raw, err := os.ReadFile(filepath.Join(dir, session.SanitizeName(id)+".json")); err == nil {
 		json.Unmarshal(raw, &m)
 	}
-	return &engine.Track{Samples: samples, Prompt: m.Prompt, Lyrics: m.Lyrics, FromLibrary: true}, true
+	return &engine.Track{Samples: samples, Prompt: m.Prompt, Lyrics: m.Lyrics, Title: m.Title, Subtitle: m.Subtitle, FromLibrary: true}, true
 }
 
 // Count reports how many tracks are banked under key.

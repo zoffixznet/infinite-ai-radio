@@ -362,12 +362,16 @@ func (o *Orchestrator) Status() Status {
 			st.Duration = ts.track.Duration()
 			st.TrackID = ts.track.ID
 			st.TrackPrompt = ts.track.Prompt
+			st.TrackTitle = ts.track.Title
+			st.TrackSubtitle = ts.track.Subtitle
+			st.TrackNum = o.curTrackNum
 			st.TrackSaved = o.saved[ts.track.ID]
 		}
 	}
 	if o.prevTrack != nil {
 		st.PrevTrackID = o.prevTrack.ID
 		st.PrevTrackPrompt = o.prevTrack.Prompt
+		st.PrevTrackTitle = o.prevTrack.Title
 		st.PrevTrackSaved = o.saved[o.prevTrack.ID]
 	}
 	st.SavedTrackIDs = append([]string(nil), o.savedOrder...)
@@ -408,7 +412,14 @@ func (o *Orchestrator) Snapshot() (paused bool, volume int, title string) {
 	paused = o.paused
 	title = o.sess.Describe()
 	if o.curTrack != nil {
-		title = summarize(o.curTrack)
+		if o.curTrack.Title != "" {
+			title = o.curTrack.Title
+			if o.curTrack.Subtitle != "" {
+				title += " - " + o.curTrack.Subtitle
+			}
+		} else {
+			title = summarize(o.curTrack)
+		}
 	}
 	o.mu.Unlock()
 	return paused, int(o.volume.Load()), title

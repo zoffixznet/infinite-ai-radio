@@ -59,6 +59,11 @@ type Track struct {
 	// enhance or invent them).
 	Prompt string
 	Lyrics string
+	// Title and Subtitle are the short display names shown on lock
+	// screens and car displays (a 2-4 word name and a genre/mood line).
+	// The player fills them before the track enters the stream.
+	Title    string
+	Subtitle string
 	// Seed reports the seed(s) used, when known.
 	Seed string
 	// GenTime is how long generation took.

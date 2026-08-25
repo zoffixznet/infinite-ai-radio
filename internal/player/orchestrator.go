@@ -82,14 +82,20 @@ type Status struct {
 	Vocal      bool
 	// TrackID and TrackPrompt identify the playing generated track
 	// (empty while a stopgap source plays); TrackSaved reports whether
-	// it is already saved as a snippet.
-	TrackID     string
-	TrackPrompt string
-	TrackSaved  bool
+	// it is already saved as a snippet. TrackTitle and TrackSubtitle
+	// are its short display names; TrackNum is its per-process play
+	// number.
+	TrackID       string
+	TrackPrompt   string
+	TrackTitle    string
+	TrackSubtitle string
+	TrackNum      int
+	TrackSaved    bool
 	// PrevTrackID, PrevTrackPrompt and PrevTrackSaved describe the
 	// track played before the current one.
 	PrevTrackID     string
 	PrevTrackPrompt string
+	PrevTrackTitle  string
 	PrevTrackSaved  bool
 	// SavedTrackIDs lists the track ids saved as snippets this run
 	// (bounded), so remote clients can grey their own save buttons.
@@ -160,6 +166,10 @@ type Orchestrator struct {
 	curTrack     *engine.Track
 	prevTrack    *engine.Track
 	saving       bool
+	// playCount numbers the tracks as they start playing (per process);
+	// curTrackNum is the playing track's number.
+	playCount   int
+	curTrackNum int
 	// saved remembers which track ids were saved as snippets this run
 	// (bounded by savedOrder), so save buttons can grey out and a
 	// repeat save is a no-op.
@@ -388,6 +398,10 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			seconds = 60
 		}
 		spec := o.builder.BuildSpec(ctx, sess, seconds)
+		// Ask the helper for an evocative short name while the track
+		// generates; generation takes far longer, so the name is
+		// usually ready when the track lands.
+		o.builder.TitleAsync(specPromptForLog(spec))
 		o.mu.Lock()
 		o.genBusy = true
 		o.mu.Unlock()
@@ -453,6 +467,7 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			}
 		}
 		track.ID = newTrackID()
+		o.fillTitle(track, specPromptForLog(spec))
 		o.mu.Lock()
 		if epoch == o.epoch {
 			o.queue = append(o.queue, track)
@@ -480,6 +495,26 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 // newTrackID returns a unique id for a track entering the stream.
 func newTrackID() string {
 	return fmt.Sprintf("t-%d-%04d", time.Now().UnixMilli(), rand.IntN(10000))
+}
+
+// fillTitle gives a track its short display name before it enters the
+// stream (immutable afterwards): the helper model's name when it
+// arrived in time (keyed on the prompt that requested the track),
+// otherwise the deterministic fallback, which must look finished on its
+// own. requestPrompt may be empty for library tracks.
+func (o *Orchestrator) fillTitle(t *engine.Track, requestPrompt string) {
+	if t.Title == "" {
+		t.Title, t.Subtitle = prompting.TrackTitle(t.Prompt)
+	}
+	if requestPrompt == "" {
+		return
+	}
+	if title, subtitle, ok := o.builder.TitleFor(requestPrompt); ok {
+		t.Title = title
+		if subtitle != "" {
+			t.Subtitle = subtitle
+		}
+	}
 }
 
 // wantGeneration reports whether the generate-ahead worker should produce
@@ -707,6 +742,7 @@ func (o *Orchestrator) seedFromLibrary() {
 		return
 	}
 	track.ID = newTrackID()
+	o.fillTitle(track, "")
 	o.mu.Lock()
 	o.queue = append(o.queue, track)
 	o.lastGood = track

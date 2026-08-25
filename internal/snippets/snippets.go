@@ -120,8 +120,11 @@ type Chunk struct {
 	Tag string `json:"tag"`
 	// File is the file name inside the tag directory.
 	File string `json:"file"`
-	// Title is the prompt that produced the track (from the ID3 title).
+	// Title is the track's short name (from the ID3 title; older saves
+	// carry the raw prompt there).
 	Title string `json:"title"`
+	// Subtitle is the genre/mood line (from the ID3 TIT3 frame).
+	Subtitle string `json:"subtitle,omitempty"`
 	// Seconds is the play time.
 	Seconds float64 `json:"seconds"`
 	// Saved is when the chunk was written.
@@ -194,6 +197,7 @@ func (c *Catalog) List() ([]Chunk, error) {
 					continue
 				}
 				ch.Title = info.Title
+				ch.Subtitle = info.Subtitle
 				ch.Seconds = info.Duration.Seconds()
 				if ch.Title == "" {
 					ch.Title = strings.TrimSuffix(f.Name(), ".mp3")
