@@ -173,13 +173,13 @@ func TestSanitizeUpdateClampsHostileValues(t *testing.T) {
 		t.Fatal("non-positive weight kept as instrument")
 	}
 	found := false
-	for _, n := range u.Negatives {
+	for _, n := range u.Reduce {
 		if n == "hats" {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("negative-weight instrument not negated: %+v", u.Negatives)
+	if !found || len(u.Negatives) != 0 {
+		t.Fatalf("non-positive weight must dial down, not negate: reduce=%+v negatives=%+v", u.Reduce, u.Negatives)
 	}
 	if u.BPM != 300 || u.KeyScale != "" || u.TimeSignature != "" || u.VocalLanguage != "" {
 		t.Fatalf("invalid fields kept: %+v", u)
@@ -313,5 +313,25 @@ func TestPresetSpecReachesEngine(t *testing.T) {
 	}
 	if !spec.Vocal() {
 		t.Fatal("nu-metal should request vocals")
+	}
+}
+
+// TestMergeUpdateReduceIsSoft asserts a helper "reduce" proposal takes
+// the soft path: weights step down and nothing lands in negatives.
+func TestMergeUpdateReduceIsSoft(t *testing.T) {
+	s := session.New()
+	Steer(s, "more guitars")
+	Steer(s, "more guitars") // weight 2
+	if !MergeUpdate(s, SpecUpdate{Reduce: []string{"guitars"}}) {
+		t.Fatal("reduce merge changed nothing")
+	}
+	if s.Spec.Instruments["guitars"] != 1 {
+		t.Fatalf("weight after reduce = %d; want 1", s.Spec.Instruments["guitars"])
+	}
+	if len(s.Spec.Negatives) != 0 {
+		t.Fatalf("reduce landed in negatives: %+v", s.Spec.Negatives)
+	}
+	if r := Render(s); r.LMCfgScale != 0 {
+		t.Fatalf("reduce raised planner guidance: %v", r.LMCfgScale)
 	}
 }

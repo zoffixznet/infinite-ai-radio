@@ -36,10 +36,12 @@ type clause struct {
 }
 
 // markers introduce an operation; each maps to the canonical op.
+// "less"/"fewer" dial a thing down but keep it ("lessen"); only
+// "no"/"without"/"remove"/"drop" eliminate it outright ("less").
 var markers = map[string]string{
 	"more": "more", "add": "more", "extra": "more",
-	"less": "less", "fewer": "less", "no": "less", "without": "less",
-	"remove": "less", "drop": "less",
+	"less": "lessen", "fewer": "lessen",
+	"no": "less", "without": "less", "remove": "less", "drop": "less",
 }
 
 // fillerWords carry no meaning on their own inside a clause.
@@ -177,6 +179,8 @@ func applyText(s *session.Session, text string) string {
 		switch c.op {
 		case "less":
 			note(applyNegate(spec, c.text))
+		case "lessen":
+			note(applyLessen(spec, c.text))
 		case "more":
 			note(applyStrengthen(spec, c.text))
 		default:
@@ -218,12 +222,85 @@ func applyNegate(spec *session.PromptSpec, noun string) string {
 	return "avoiding " + noun
 }
 
-// applyStrengthen raises emphasis on a thing, un-negating it first.
+// hedgeWords soften a slot entry in place; "more X" strips them again.
+var hedgeWords = []string{"subtle ", "restrained "}
+
+// applyLessen dials a thing down without eliminating it: emphasized
+// instruments step down one weight level, words without weights get a
+// hedged form ("subtle X") in their slot. It never touches the
+// negatives list, the planner guidance or the base prompt.
+func applyLessen(spec *session.PromptSpec, noun string) string {
+	if noun == "" {
+		return ""
+	}
+	changed := false
+	// The mirror of applyStrengthen: 3 -> 2 -> 1, gone at 0.
+	for k, w := range spec.Instruments {
+		if wordMatch(k, noun) {
+			if w <= 1 {
+				delete(spec.Instruments, k)
+			} else {
+				spec.Instruments[k] = w - 1
+			}
+			changed = true
+		}
+	}
+	if !changed {
+		// Hedge the word where it appears; mood words read better
+		// "restrained", everything else "subtle".
+		hedge := func(list []string, form string) {
+			for i, have := range list {
+				if wordMatch(have, noun) && !hedged(have) {
+					list[i] = form + " " + have
+					changed = true
+				}
+			}
+		}
+		hedge(spec.Genre, "subtle")
+		hedge(spec.Mood, "restrained")
+		hedge(spec.Production, "subtle")
+		hedge(spec.Extra, "subtle")
+	}
+	if !changed {
+		// Heard nowhere yet (or already hedged): a soft positive hedge
+		// still nudges the model without negating anything.
+		before := len(spec.Extra)
+		addWord(&spec.Extra, "subtle "+noun)
+		changed = len(spec.Extra) != before
+	}
+	if !changed {
+		return "" // already at the floor; the caller reports the no-op
+	}
+	return "dialing back " + noun
+}
+
+// hedged reports whether a slot entry already carries a hedge word.
+func hedged(entry string) bool {
+	for _, h := range hedgeWords {
+		if strings.HasPrefix(entry, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyStrengthen raises emphasis on a thing, un-negating and
+// un-hedging it first.
 func applyStrengthen(spec *session.PromptSpec, noun string) string {
 	if noun == "" {
 		return ""
 	}
 	spec.Negatives = removeWord(spec.Negatives, noun)
+	for _, list := range []*[]string{&spec.Genre, &spec.Mood, &spec.Production, &spec.Extra} {
+		for i, have := range *list {
+			if hedged(have) && wordMatch(have, noun) {
+				for _, h := range hedgeWords {
+					have = strings.TrimPrefix(have, h)
+				}
+				(*list)[i] = have
+			}
+		}
+	}
 	for _, r := range moodRules {
 		if r.re.MatchString(noun) {
 			return applyMoodRule(spec, r)

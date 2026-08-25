@@ -844,7 +844,7 @@ func TestRealBrowserResilience(t *testing.T) {
 	waitFor(t, 30*time.Second, "tracks generating", func() bool { return fe.generated() >= 2 })
 
 	// --- steering state is shared and survives a reload ---
-	io.WriteString(sb.stdin, "less guitars more synths\n")
+	io.WriteString(sb.stdin, "no guitars more synths\n")
 	waitFor(t, 15*time.Second, "tweak chip appears", func() bool {
 		var n int
 		w.exec(`return document.querySelectorAll('#tweaks .chip').length;`, &n)
@@ -856,7 +856,7 @@ func TestRealBrowserResilience(t *testing.T) {
 		var chip string
 		w.exec(`var c=document.querySelector('#tweaks .chip'); return c ? c.textContent : '';`, &chip)
 		w.exec(`return document.getElementById('baseprompt').textContent;`, &base)
-		return strings.Contains(chip, "less guitars more synths") && base != "" && base != "…"
+		return strings.Contains(chip, "no guitars more synths") && base != "" && base != "…"
 	})
 	waitFor(t, 20*time.Second, "steer reached generation", func() bool {
 		return strings.Contains(fe.lastPrompt(), "synths")

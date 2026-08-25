@@ -238,7 +238,10 @@ type SpecUpdate struct {
 	TimeSignature string         `json:"time_signature"`
 	VocalLanguage string         `json:"vocal_language"`
 	Production    []string       `json:"production"`
-	Negatives     []string       `json:"negatives"`
+	// Reduce lists things to dial DOWN but keep (the soft "less"
+	// path); Negatives lists what the music must completely avoid.
+	Reduce    []string `json:"reduce"`
+	Negatives []string `json:"negatives"`
 }
 
 // specUpdateSchema constrains the helper model's JSON output.
@@ -253,6 +256,7 @@ var specUpdateSchema = map[string]any{
 		"time_signature": map[string]any{"type": "string"},
 		"vocal_language": map[string]any{"type": "string"},
 		"production":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"reduce":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"negatives":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 	},
 }
@@ -260,8 +264,11 @@ var specUpdateSchema = map[string]any{
 const refineSystem = `You refine steering for a music-generation model.
 Given the current structured description and one user adjustment, output a
 JSON update: only fields the adjustment affects, everything else empty.
-Weights are 1-3. "negatives" lists what the music must AVOID. Never put a
-negated thing in a positive field. bpm 0 means unchanged.`
+Weights are 1-3. "reduce" lists things to dial DOWN but keep (use it for
+"less"/"fewer" requests). "negatives" lists what the music must
+completely AVOID (use it only for "no"/"without"/"remove" requests;
+never for a mere "less"). Never put a negated thing in a positive
+field. bpm 0 means unchanged.`
 
 const expandSystem = `You expand a short music description into structured
 fields for a music-generation model: genre (1-3 tags), instruments with
@@ -358,6 +365,7 @@ func sanitizeUpdate(u *SpecUpdate) {
 	u.Genre = clampList(u.Genre)
 	u.Mood = clampList(u.Mood)
 	u.Production = clampList(u.Production)
+	u.Reduce = clampList(u.Reduce)
 	u.Negatives = clampList(u.Negatives)
 	clean := map[string]int{}
 	for k, w := range u.Instruments {
@@ -367,9 +375,10 @@ func sanitizeUpdate(u *SpecUpdate) {
 		}
 		switch {
 		case w <= 0:
-			// A zero-or-negative weight is a negation.
-			if len(u.Negatives) < 8 {
-				u.Negatives = append(u.Negatives, k)
+			// A zero-or-negative weight dials the instrument down; only
+			// an explicit negative eliminates it.
+			if len(u.Reduce) < 8 {
+				u.Reduce = append(u.Reduce, k)
 			}
 		case w > 3:
 			clean[k] = 3
@@ -433,6 +442,9 @@ func MergeUpdate(s *session.Session, u SpecUpdate) bool {
 		if !negated(spec, p) && len(spec.Production) < 8 {
 			addWord(&spec.Production, p)
 		}
+	}
+	for _, n := range u.Reduce {
+		applyLessen(spec, n)
 	}
 	for _, n := range u.Negatives {
 		removeMatching(spec, n)
