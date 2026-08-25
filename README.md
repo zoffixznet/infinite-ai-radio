@@ -141,9 +141,12 @@ and the acknowledgment estimates when the switch will be audible.
 
 Steering has real semantics, not just word-appending:
 
-- "less guitars" or "no drums" removes the instrument everywhere and
-  tells the model to avoid it from then on; "more synths" (repeatable)
-  raises the emphasis instead.
+- "less guitars" dials guitars down a notch without banishing them
+  (repeat it to go further); "no drums" (or "without", "remove",
+  "drop") removes the thing everywhere and tells the model to avoid it
+  from then on; "more synths" (repeatable) raises the emphasis. The
+  acknowledgments match: "dialing back guitars" versus "avoiding
+  drums".
 - Mood words replace their opposites: "calmer" also withdraws
   "energetic" if you asked for that earlier.
 - "120 bpm", "faster", "slower", "in C minor", "3/4 time" and
@@ -204,8 +207,10 @@ each with a short description and when it last played:
 your sessions:
   gym-grind                energetic electronic rock, driving...  vocals   2h ago
 presets:
-  calm-piano               gentle solo piano, quiet and intimate
-  deep-focus               beatless ambient pads for deep concentration
+  high-energy:
+    grind                  Energetic electronic rock with motivational vocals
+    nu-metal               Heavy nu-metal: down-tuned riffs, rap-sung vocals
+  ...
 auto-saved sessions:
   session-20260821-220425  lofi chill beats, mellow, warm analog... +2 tweaks  3d ago
 ```
@@ -231,20 +236,38 @@ in your data directory.
 
 ## Presets
 
-Six curated starting points ship built in. They behave like read-only
-sessions: starting from one seeds a fresh session you can steer and name.
+Twenty curated starting points ship built in, grouped by energy so you
+can pick a feeling first and steer the genre later. They behave like
+read-only sessions: starting from one seeds a fresh session you can
+steer and name.
 
-| Preset | Sound |
-| --- | --- |
-| `lofi-study` | chill lofi hip hop beats for studying and working |
-| `deep-focus` | beatless ambient pads for deep concentration |
-| `sleep` | slow beatless drones for falling asleep |
-| `calm-piano` | gentle solo piano, quiet and intimate |
-| `grind` | energetic electronic rock with motivational vocals |
-| `pink-noise` | steady pink noise, no music |
+| Group | Preset | Sound |
+| --- | --- | --- |
+| high-energy | `grind` | energetic electronic rock with motivational vocals |
+| | `hard-rock` | crunchy riff-driven arena hard rock (vocals) |
+| | `liquid-dnb` | fast, uplifting liquid drum and bass |
+| | `nu-metal` | heavy nu-metal: down-tuned riffs, rap-sung vocals |
+| | `pop-punk` | fast, fun pop-punk with singalong choruses (vocals) |
+| upbeat | `chiptune` | playful 8-bit video game energy |
+| | `deep-house` | warm groovy deep house |
+| | `funk-soul` | joyful 70s funk and soul with horns (vocals) |
+| | `sunshine-pop` | bright feel-good pop with catchy hooks (vocals) |
+| cruise | `boom-bap` | dusty 90s boom-bap hip-hop beats |
+| | `epic-score` | heroic cinematic orchestra with choir |
+| | `night-drive` | neon 80s synthwave for driving |
+| | `reggae-dub` | sunny reggae with spacious dub delays (vocals) |
+| | `roadhouse-country` | warm country rock for the open road (vocals) |
+| chill | `chamber-strings` | elegant classical string quartet |
+| | `deep-focus` | beatless ambient pads for deep concentration |
+| | `jazz-club` | late-night jazz combo, warm and relaxed |
+| | `lofi-study` | chill lofi hip hop beats for studying and working |
+| sleep-noise | `pink-noise` | steady pink noise, no music |
+| | `sleep` | slow beatless drones for falling asleep |
 
-Select at launch (`./iar --preset sleep`) or inside the app
-(`preset sleep`).
+`./iar presets` lists them in the terminal. Select at launch
+(`./iar --preset night-drive`) or inside the app (`preset night-drive`);
+on the phone the picker shows the same groups, with the playing group
+open.
 
 ## MP3 export
 
@@ -275,10 +298,12 @@ When a track lands just right, type:
 save
 ```
 
-and the currently playing track is written as a high-quality MP3 (with
-the prompt in its tags) into the snippets folder, path shown in the
-acknowledgment. `save prev` captures the previous track instead, for
-when it clicks a moment too late. Saving never interrupts playback.
+and the currently playing track is written as a high-quality MP3 into
+the snippets folder, path shown in the acknowledgment. Its tags carry
+the track's short title, a genre/mood line and (for vocal tracks) the
+lyrics. `save prev` captures the previous track instead, for when it
+clicks a moment too late. Saving never interrupts playback, and saving
+the same track twice is a friendly no-op.
 
 Add a tag to file the track where you will find it again:
 
@@ -302,9 +327,9 @@ live stream, the now-playing state and the shared steering context (the
 base sound plus every accumulated tweak, identical for every listener
 and after every reload), a steering box, a start-fresh action, a Next
 button, a session picker (save the current session under a name, load
-any session or preset), a save button with a tag field, and a player
-for the tracks you have saved. Everything on it needs a login, and the
-first account is created in the terminal:
+any session or preset), save buttons with a tag field at the top of the
+page, and a player for the tracks you have saved. Everything on it
+needs a login, and the first account is created in the terminal:
 
 ```sh
 ./iar remote setup          # create the first admin (email + password, typed twice)
@@ -347,12 +372,47 @@ In buffered mode the Next button skips only on that device: the
 machine's speakers and other listeners keep their own position. Use
 the direct stream's Next to skip the shared stream for everyone.
 
+Saving from the phone always captures what YOU are hearing: in
+buffered mode that is this device's playing track, which may trail the
+machine's speakers. "Save this track" and "Save previous" sit at the
+top of the page; a button turns into a ticked "saved" style once that
+track is in your snippets, and saving it again does nothing. Every
+track carries a generated short title (an evocative two-to-four word
+name) and a genre/mood line, which is what lock screens, saved-chunk
+lists and car displays show instead of the raw prompt, along with a
+"Track N" counter.
+
 The page also publishes media-session metadata, so the phone's lock
 screen, Bluetooth displays and car interfaces show what is playing
-(track prompt, steering summary, artwork) with working play, pause and
-next buttons. The remote can be installed as an app from the browser
-menu ("Add to Home screen"); how much of its identity a car display
-shows depends on the browser and is outside the page's control.
+(short title, track number and genre line, artwork) with working play,
+pause and next buttons. The remote can be installed as an app from the
+browser menu ("Add to Home screen"); how much of its identity a car
+display shows depends on the browser and is outside the page's
+control.
+
+Two conveniences are built for the car, both switchable on the page
+and remembered per device:
+
+- **The previous-track button saves the track.** Car displays only
+  offer the standard media buttons, and a web page cannot add a
+  labelled "save" to them (the only way to get one would be a small
+  native companion app). Since an endless generated stream has no
+  meaningful "previous track", that button doubles as
+  save-what-I-am-hearing: press it on the steering wheel, headset or
+  car screen and the current track lands in your snippets, confirmed
+  by a short "Saved:" flash in the track title. Be aware it captures
+  every previous-track input, including a voice assistant's "previous
+  song", and the button keeps its standard icon. Turning the toggle
+  off removes the button from the car instead of leaving a dead one.
+  In the saved-chunks player, previous keeps its normal meaning.
+- **Resume when the car reconnects.** When the car turns off (or the
+  Bluetooth route drops), playback pauses and the page keeps the
+  paused stream and its media notification alive. It resumes by itself
+  when the car asks to play, when you open the page, or with one tap
+  otherwise, and never on a timer, so a phone in a pocket stays
+  silent. For hands-free resume, enable "Automatically resume media"
+  in Android Auto's settings. Reloading the page while you were
+  listening also picks playback straight back up.
 
 <p>
 <img src="assets/remote-login.png" alt="the login page" width="190">
@@ -500,9 +560,10 @@ listeners, or the laptop's speakers.
 - Tick the tags you want (every tag with at least one saved track is
   listed; all are selected to begin with) and the player loops through
   their chunks forever.
-- Each chunk shows the prompt that produced it, its tag, length and
-  when it was saved, with *Play* and *Loop this one*. Looping one chunk
-  repeats it until you press *Back to looping the tags*.
+- Each chunk shows its short title, genre line, tag, length and when
+  it was saved, with *Play* and *Loop this one*. Looping one chunk
+  repeats it until you press *Back to looping the tags*. (Tracks saved
+  by older versions keep the raw prompt as their title.)
 - The built-in controls seek, pause and set volume as usual.
 - The mode and tag selection are remembered per browser.
 
@@ -688,6 +749,12 @@ Common cases:
 - The phone remote has no self-service password reset: an admin hands
   out reset links, and a locked-out sole admin recovers with
   `iar remote setup` in the terminal.
+- Car integration works through the browser's media session, which
+  offers only the standard buttons: the save mapping borrows the
+  previous-track button and cannot change its icon, and how long a
+  paused stream stays resumable after the car turns off depends on the
+  phone's battery management, so an overnight stop may need one tap. A
+  labelled in-car save button would need a native companion app.
 
 ## Development
 
