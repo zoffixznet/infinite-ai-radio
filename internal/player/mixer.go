@@ -188,9 +188,28 @@ func (o *Orchestrator) chooseNext(cur source) source {
 	}
 
 	if o.lastGood != nil {
-		o.log.Warn("queue empty, looping last track", "event", "loop_fallback")
-		o.emit("generator is behind; looping the last track")
-		return newTrackSource(o.lastGood, summarize(o.lastGood)+" (looping)")
+		// After a context change the last good track is the sound the
+		// listener has just moved away from: worth saying so, and worth
+		// saying only once per change so a burst of skips does not
+		// flush every other event out of the channel.
+		stale := o.lastGoodStaleLocked()
+		label := " (looping)"
+		if stale {
+			label = " (previous sound)"
+		}
+		if o.loopNoticeEpoch != o.epoch || !stale {
+			if stale {
+				o.loopNoticeEpoch = o.epoch
+				o.log.Warn("queue empty after a context change, replaying the previous sound", "event", "stale_loop_fallback")
+				o.emit("still on the previous sound while the first track in the new setting generates")
+			} else {
+				o.log.Warn("queue empty, looping last track", "event", "loop_fallback")
+				o.emit("generator is behind; looping the last track")
+			}
+		}
+		src := newTrackSource(o.lastGood, summarize(o.lastGood)+label)
+		src.loop = true
+		return src
 	}
 
 	// A finite source ended with nothing to play and no last track. With

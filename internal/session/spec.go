@@ -27,6 +27,11 @@ type PromptSpec struct {
 	TimeSignature string `json:"time_signature,omitempty"`
 	// VocalLanguage is an ISO language code for sung vocals.
 	VocalLanguage string `json:"vocal_language,omitempty"`
+	// LanguagePinned reports that the listener named this language by
+	// hand ("sing in french"). Only a pin outranks the configured
+	// vocal-language list; a language a preset happens to carry is a
+	// default the list is free to replace.
+	LanguagePinned bool `json:"language_pinned,omitempty"`
 	// VocalStyle holds vocal delivery words ("soft female vocals").
 	VocalStyle []string `json:"vocal_style,omitempty"`
 	// Production holds production and texture words.

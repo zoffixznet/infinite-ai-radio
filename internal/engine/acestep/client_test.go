@@ -232,3 +232,71 @@ func TestEngineMapsSpecs(t *testing.T) {
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+// The engine reports why a job failed inside the encoded result
+// payload, not beside it. Losing that made every failure look alike,
+// which is why the known-fatal device fault went unrecognized.
+func TestClientCarriesTheEngineFailureReason(t *testing.T) {
+	cases := []struct {
+		name    string
+		entry   map[string]any
+		wantSub string
+	}{
+		{
+			name: "reason inside the result payload",
+			entry: map[string]any{
+				"task_id": "t1", "status": 2,
+				"result": `[{"file":"","status":2,"error":"create_sample failed: RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!"}]`,
+			},
+			wantSub: "Expected all tensors to be on the same device",
+		},
+		{
+			name: "an out-of-memory reason survives too",
+			entry: map[string]any{
+				"task_id": "t1", "status": 2,
+				"result": `[{"file":"","status":2,"error":"OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB"}]`,
+			},
+			wantSub: "CUDA out of memory",
+		},
+		{
+			name: "the last log line stands in when nothing else has it",
+			entry: map[string]any{
+				"task_id": "t1", "status": 2,
+				"result":        `[{"file":"","status":2,"error":null}]`,
+				"progress_text": "  the engine gave up  ",
+			},
+			wantSub: "the engine gave up",
+		},
+		{
+			name: "a top-level error still wins",
+			entry: map[string]any{
+				"task_id": "t1", "status": 2,
+				"error":  "plain reason",
+				"result": `[{"file":"","status":2,"error":"ignored"}]`,
+			},
+			wantSub: "plain reason",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasSuffix(r.URL.Path, "/release_task") {
+					json.NewEncoder(w).Encode(wrap(map[string]any{"task_id": "t1"}))
+					return
+				}
+				json.NewEncoder(w).Encode(wrap([]map[string]any{c.entry}))
+			}))
+			defer srv.Close()
+			cl := NewClient(srv.URL)
+			cl.PollInterval = 5 * time.Millisecond
+			_, err := cl.Generate(context.Background(), GenerateRequest{AudioFormat: "wav"})
+			if err == nil {
+				t.Fatal("failed task reported success")
+			}
+			if !strings.Contains(err.Error(), c.wantSub) {
+				t.Fatalf("reason lost: %q does not contain %q", err.Error(), c.wantSub)
+			}
+		})
+	}
+}

@@ -20,6 +20,10 @@ type QueueTrack struct {
 	Subtitle string
 	// Seconds is the track's play time.
 	Seconds float64
+	// Lyrics is what the track sings, empty for instrumentals. A client
+	// playing its own downloaded copy has no other way to show the
+	// words in step with what it is hearing.
+	Lyrics string
 	// Kind is "queue" for freshly generated upcoming tracks and
 	// "library" for same-vibe banked filler.
 	Kind string
@@ -47,13 +51,35 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	for _, t := range o.queue {
 		out = append(out, QueueTrack{
 			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
-			Seconds: t.Duration().Seconds(), Kind: "queue",
+			Seconds: t.Duration().Seconds(), Kind: "queue", Lyrics: trackLyrics(t),
 		})
 	}
+	// Mid-switchover the queue is empty by design, so filler would be
+	// the whole listing - and a remote client that starts playing it is
+	// switching into audio older than what it is already playing, quite
+	// possibly in the language just switched off. Offer nothing until
+	// the first track of the new context exists, the same rule the
+	// local mixer follows.
+	switching := o.steerPending
+	langs := o.enabledLanguageNamesLocked()
+	seeded := o.seededLib
 	o.mu.Unlock()
+	if switching {
+		return epoch, out
+	}
 	for i, e := range o.Library.Entries(key) {
 		if i >= maxLibraryFiller {
 			break
+		}
+		if seeded[e.ID] {
+			continue // already queued above as an instant start
+		}
+		if langs != nil && !langs[e.Language] {
+			// A configured list means the listener said which languages
+			// they want. A banked track from before languages were
+			// recorded has an empty one, which is unknown rather than
+			// acceptable.
+			continue
 		}
 		prompt := e.Prompt
 		if prompt == "" {
@@ -65,10 +91,33 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 		}
 		out = append(out, QueueTrack{
 			ID: libFillerPrefix + key + "/" + e.ID, Prompt: prompt, Title: title, Subtitle: subtitle,
-			Seconds: e.Seconds, Kind: "library",
+			Seconds: e.Seconds, Kind: "library", Lyrics: e.Lyrics,
 		})
 	}
 	return epoch, out
+}
+
+// enabledLanguageNamesLocked is the set of language names a vocal
+// session currently sings in, or nil when the listener has not narrowed
+// it down and anything banked is fair game. Callers hold o.mu.
+func (o *Orchestrator) enabledLanguageNamesLocked() map[string]bool {
+	if !o.sess.Vocal {
+		return nil
+	}
+	states := o.languageStatesLocked()
+	if len(states) == 0 {
+		return nil
+	}
+	on := map[string]bool{}
+	for _, l := range states {
+		if l.On {
+			on[l.Name] = true
+		}
+	}
+	if len(on) == 0 {
+		return nil // every language off: the engine chooses, so anything goes
+	}
+	return on
 }
 
 // TrackData resolves a track id to its audio: queued tracks, the

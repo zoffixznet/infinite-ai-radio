@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
 	"iar/internal/audio"
@@ -124,6 +125,26 @@ func (e *TaskError) Error() string {
 		return "generation failed: " + e.Reason
 	}
 	return "generation task " + e.TaskID + " failed"
+}
+
+// failureReason digs the engine's own message out of a failed task's
+// result payload (a JSON array encoded as a string).
+func failureReason(payload string) string {
+	if payload == "" {
+		return ""
+	}
+	var rows []struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &rows); err != nil {
+		return ""
+	}
+	for _, r := range rows {
+		if msg := strings.TrimSpace(r.Error); msg != "" {
+			return msg
+		}
+	}
+	return ""
 }
 
 // taskStatus values used by the ACE-Step job store.
@@ -247,6 +268,9 @@ func (c *Client) queryResult(ctx context.Context, taskID string) (int, []Generat
 		Status int    `json:"status"`
 		Result string `json:"result"`
 		Error  string `json:"error"`
+		// ProgressText carries the engine's last log line, which is
+		// where the failure text lands when nothing else has it.
+		ProgressText string `json:"progress_text"`
 	}
 	if err := json.Unmarshal(env.Data, &entries); err != nil {
 		return 0, nil, fmt.Errorf("query_result: parsing: %w", err)
@@ -256,7 +280,19 @@ func (c *Client) queryResult(ctx context.Context, taskID string) (int, []Generat
 	}
 	entry := entries[0]
 	if entry.Status == statusFailed {
-		return entry.Status, nil, &TaskError{TaskID: taskID, Reason: entry.Error}
+		reason := entry.Error
+		if reason == "" {
+			// The server reports a failure's cause inside the encoded
+			// result payload, not beside it. Without this the reason is
+			// always empty, and every failure looks alike - so the
+			// known-fatal device fault is never recognized and the
+			// engine is restarted three failures late.
+			reason = failureReason(entry.Result)
+		}
+		if reason == "" {
+			reason = strings.TrimSpace(entry.ProgressText)
+		}
+		return entry.Status, nil, &TaskError{TaskID: taskID, Reason: reason}
 	}
 	if entry.Status != statusSucceeded || entry.Result == "" {
 		return entry.Status, nil, nil

@@ -75,7 +75,9 @@ func engineStopCommand() *cobra.Command {
 			defer a.close()
 			st, ok := a.stateD.ReadEngineState()
 			if !ok || !state.PIDAlive(st.PID) {
-				a.stateD.RemoveEngineState()
+				if ok {
+					a.stateD.RemoveEngineStateIf(st.PID)
+				}
 				fmt.Println("engine daemon is not running")
 				return nil
 			}
@@ -138,6 +140,7 @@ func runEngineDaemon() error {
 			Port:        cfg.ACEStep.Port,
 			LMModelPath: cfg.ACEStep.LMModelPath,
 			LMBackend:   cfg.ACEStep.LMBackend,
+			OffloadDIT:  cfg.ACEStep.OffloadDIT,
 		},
 		IdleTimeout: time.Duration(cfg.ACEStep.IdleMinutes) * time.Minute,
 	}, logger)

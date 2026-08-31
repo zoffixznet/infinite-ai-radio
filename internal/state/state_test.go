@@ -116,3 +116,37 @@ func TestTimings(t *testing.T) {
 	}
 	nilT.Record(PhaseFirstTrack, time.Second) // must not panic
 }
+
+// A daemon that exits must retract only its own record. Deleting a
+// successor's leaves a live engine that no client can find and no
+// command can stop, with its GPU memory pinned.
+func TestRemoveEngineStateOnlyRetractsItsOwn(t *testing.T) {
+	d, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A successor is running and owns the record.
+	successor := EngineState{PID: os.Getpid(), Port: 4321, Started: time.Now()}
+	if err := d.WriteEngineState(successor); err != nil {
+		t.Fatal(err)
+	}
+	// The predecessor exits and tries to clean up after itself.
+	d.RemoveEngineStateIf(os.Getpid() + 1)
+	got, ok := d.ReadEngineState()
+	if !ok || got.PID != successor.PID || got.Port != 4321 {
+		t.Fatalf("the successor's record was deleted: %+v ok=%v", got, ok)
+	}
+	// Its own record it may retract.
+	d.RemoveEngineStateIf(successor.PID)
+	if _, ok := d.ReadEngineState(); ok {
+		t.Fatal("a daemon could not retract its own record")
+	}
+	// A record naming a dead daemon is stale and anyone may clear it.
+	if err := d.WriteEngineState(EngineState{PID: 0x7FFFFFF0, Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	d.RemoveEngineStateIf(os.Getpid())
+	if _, ok := d.ReadEngineState(); ok {
+		t.Fatal("a stale record naming a dead daemon should be cleared")
+	}
+}

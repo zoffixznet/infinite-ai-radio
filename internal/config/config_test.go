@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -247,5 +248,67 @@ func TestLoadPurgesObsoleteTokenKey(t *testing.T) {
 	}
 	if _, changed := purgeObsoleteKeys([]byte(`{"remote":{"port":1}}`)); changed {
 		t.Fatal("purge reports a change on a clean document")
+	}
+}
+
+// The phone remote edits vocal_languages in place; every other setting
+// in the file, including ones this build does not know about, survives.
+func TestSetVocalLanguagesPreservesTheRestOfTheFile(t *testing.T) {
+	dir := t.TempDir()
+	p := Paths{ConfigDir: dir, DataDir: filepath.Join(dir, "data")}
+	original := `{"engine":"acestep","volume":42,"remote":{"enabled":true,"port":9000},"future_setting":"keep me"}`
+	if err := os.WriteFile(p.ConfigFile(), []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetVocalLanguages(p, []string{"English", "Bisaya (Cebuano)"}); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	data, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("rewritten config is not valid JSON: %v\n%s", err, data)
+	}
+	if doc["future_setting"] != "keep me" || doc["engine"] != "acestep" {
+		t.Errorf("unrelated settings were lost: %s", data)
+	}
+	if remote, ok := doc["remote"].(map[string]any); !ok || remote["port"].(float64) != 9000 {
+		t.Errorf("nested settings were lost: %s", data)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.VocalLanguages, "|") != "English|Bisaya (Cebuano)" {
+		t.Errorf("languages did not round-trip: %v", cfg.VocalLanguages)
+	}
+	// Clearing them is a first-class state, not a missing key.
+	if err := SetVocalLanguages(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.VocalLanguages) != 0 {
+		t.Errorf("languages were not cleared: %v", cfg.VocalLanguages)
+	}
+}
+
+// A machine with no config file yet still gets its languages written.
+func TestSetVocalLanguagesCreatesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	p := Paths{ConfigDir: filepath.Join(dir, "config"), DataDir: filepath.Join(dir, "data")}
+	if err := SetVocalLanguages(p, []string{"Russian"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.VocalLanguages) != 1 || cfg.VocalLanguages[0] != "Russian" {
+		t.Errorf("languages = %v", cfg.VocalLanguages)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"iar/internal/state"
@@ -20,6 +22,59 @@ type DaemonConfig struct {
 	// IdleTimeout shuts the daemon down after this long without any
 	// client heartbeat, freeing GPU memory. Zero means 15 minutes.
 	IdleTimeout time.Duration
+}
+
+// StrayDaemons lists engine-daemon processes other than the one the
+// state file names, and only those serving the same data directory as
+// this process - a sandbox and a real instance share a machine happily
+// and neither is stray to the other. A stray holds several gigabytes of
+// graphics memory while being unreachable by every client and every
+// command, so it is worth reporting.
+//
+// dataDirEnv is this process's IAR_DATA_DIR value, empty when it uses
+// the default location.
+func StrayDaemons(serving int, dataDirEnv string) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var out []int
+	self := os.Getpid()
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == serving || pid == self {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		if len(args) < 3 || !strings.HasSuffix(args[0], "iar") ||
+			args[1] != "engine" || args[2] != "daemon" {
+			continue
+		}
+		if processDataDir(pid) != dataDirEnv {
+			continue
+		}
+		out = append(out, pid)
+	}
+	return out
+}
+
+// processDataDir reports another process's IAR_DATA_DIR, empty when it
+// is unset (the default location) or unreadable.
+func processDataDir(pid int) string {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
+	if err != nil {
+		return ""
+	}
+	for _, kv := range strings.Split(string(raw), "\x00") {
+		if v, ok := strings.CutPrefix(kv, "IAR_DATA_DIR="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // RunDaemon runs the engine as a long-lived daemon: it supervises the API
@@ -67,7 +122,9 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig, log *slog.Logger) error {
 	// Grace period before the first client heartbeat arrives.
 	cfg.StateDir.Heartbeat()
 	lock.Release()
-	defer cfg.StateDir.RemoveEngineState()
+	// Only ever retract OUR OWN record: a successor may already have
+	// claimed the file by the time this daemon exits.
+	defer cfg.StateDir.RemoveEngineStateIf(st.PID)
 
 	log.Info("engine daemon starting", "event", "daemon_start", "pid", st.PID, "port", port, "idle_timeout", cfg.IdleTimeout.String())
 
@@ -85,6 +142,17 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig, log *slog.Logger) error {
 			log.Info("engine daemon stopping (signal)", "event", "daemon_stop", "reason", "signal")
 			return nil
 		case <-idle.C:
+			// A daemon whose record now names a different, living
+			// daemon has been superseded: nothing can reach it, so it
+			// would otherwise hold its GPU memory forever. The client
+			// heartbeat cannot catch this - it is one shared file that
+			// every player refreshes, so an orphan looks busy for as
+			// long as ANY player runs.
+			if cur, ok := cfg.StateDir.ReadEngineState(); ok && cur.PID != st.PID && state.PIDAlive(cur.PID) {
+				log.Info("engine daemon stopping (superseded)", "event", "daemon_stop",
+					"reason", "superseded", "pid", st.PID, "now_serving", cur.PID)
+				return nil
+			}
 			if age := cfg.StateDir.HeartbeatAge(); age > cfg.IdleTimeout {
 				log.Info("engine daemon stopping (idle)", "event", "daemon_stop", "reason", "idle", "idle_seconds", age.Seconds())
 				return nil

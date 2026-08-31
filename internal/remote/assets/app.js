@@ -7,14 +7,98 @@
   };
   var headers = { "Content-Type": "application/x-www-form-urlencoded", "X-IAR-Remote": "1" };
 
+  // ---- transport icons ---------------------------------------------
+  // Drawn rather than typed. A font glyph renders at whatever weight and
+  // aspect the device's system font feels like - on a phone the heart
+  // came out squashed - and the filled and outline hearts have to share
+  // exact geometry so the state swap does not shift anything.
+  var SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" ';
+  var HEART_PATH = "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 " +
+    "3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z";
+  var icon = {
+    play: SVG + 'fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+    stop: SVG + 'fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>',
+    pause: SVG + 'fill="currentColor"><rect x="7" y="5" width="3.6" height="14" rx="1.4"/>' +
+      '<rect x="13.4" y="5" width="3.6" height="14" rx="1.4"/></svg>',
+    next: SVG + 'fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg>',
+    prev: SVG + 'fill="currentColor"><rect x="5.6" y="6" width="2.4" height="12" rx="1.2"/><path d="M18 6l-8.5 6 8.5 6V6z"/></svg>',
+    heart: SVG + 'fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="' + HEART_PATH + '"/></svg>',
+    heartFull: SVG + 'fill="currentColor"><path d="' + HEART_PATH + '"/></svg>'
+  };
+
+  // ---- press feedback ----------------------------------------------
+  // Every control answers a touch within a frame. The listeners are
+  // delegated from the document, so rows and chips built later are
+  // covered too, and pointercancel is handled: without it a press that
+  // turns into a scroll leaves the control stuck down.
+  var pressedEl = null;
+  var pressedAt = 0;
+  // A tap on a phone is over in well under a tenth of a second. Without
+  // a floor the pressed state is gone before the screen has drawn it,
+  // which reads as "the button did nothing".
+  var minPressMs = 160;
+  function releasePress() {
+    if (!pressedEl) return;
+    var el = pressedEl;
+    pressedEl = null;
+    var held = Date.now() - pressedAt;
+    if (held >= minPressMs) {
+      el.classList.remove("is-pressed");
+      return;
+    }
+    setTimeout(function () {
+      if (pressedEl !== el) el.classList.remove("is-pressed");
+    }, minPressMs - held);
+  }
+  document.addEventListener("pointerdown", function (e) {
+    var t = e.target && e.target.closest && e.target.closest(".tap");
+    releasePress();
+    if (!t || t.getAttribute("aria-disabled") === "true") return;
+    pressedEl = t;
+    pressedAt = Date.now();
+    t.classList.add("is-pressed");
+  }, { passive: true, capture: true });
+  ["pointerup", "pointercancel", "pointerleave", "blur"].forEach(function (name) {
+    document.addEventListener(name, releasePress, { passive: true, capture: true });
+  });
+  // An empty touchstart listener is what makes :active fire on iOS.
+  document.addEventListener("touchstart", function () {}, { passive: true });
+
+  // buzz is a supplement to the visible press, never the only feedback:
+  // it is absent on iOS and on a phone with vibration switched off.
+  var haptics = store.get("iar.haptics", true) !== false;
+  function buzz() {
+    if (!haptics || !("vibrate" in navigator)) return;
+    try { navigator.vibrate(10); } catch (e) {}
+  }
+
+  // say announces a transition to a screen reader. The visible status
+  // line updates every couple of seconds with an elapsed count, which
+  // is not something anyone wants read aloud.
+  var lastSaid = "";
+  function say(text) {
+    var el = $("say");
+    if (!el || (text || "") === lastSaid) return;
+    lastSaid = text || "";
+    el.textContent = lastSaid;
+  }
+
   // ---- permissions ------------------------------------------------
   var me = null;
   function applyPerms() {
-    var perms = { steer: !!me.steer, new_prompt: !!me.new_prompt, save: !!me.save };
+    var perms = { steer: !!me.steer, new_prompt: !!me.new_prompt, save: !!me.save, admin: !!me.admin };
     Array.prototype.forEach.call(document.querySelectorAll("[data-perm]"), function (el) {
       el.hidden = !perms[el.getAttribute("data-perm")];
     });
-    $("steercard").hidden = !(perms.steer || perms.new_prompt);
+    // The sound block itself is a readout everyone may see; only the
+    // controls inside it need the permission, and the heading says
+    // which of the two the reader is looking at.
+    var canSteer = perms.steer || perms.new_prompt;
+    $("steerbox").hidden = !canSteer;
+    $("soundlabel").textContent = canSteer ? "Steer the sound" : "The sound";
+    // A card whose every control is out of reach is a heading with
+    // nothing under it.
+    $("vocalscard").hidden = !(perms.steer || perms.admin);
   }
   function loggedOut() {
     $("conn").textContent = "logged out";
@@ -29,6 +113,13 @@
   // ---- per-card statuses ------------------------------------------
   function setStatus(el, text, cls) {
     if (!el) return;
+    // An action started on the main screen answers in the transport bar
+    // as well as in its own card, which may be inside the sheet.
+    if (el.length !== undefined && el.nodeType === undefined) {
+      for (var i = 0; i < el.length; i++) setStatus(el[i], text, cls);
+      return;
+    }
+    if (el === stateEl) { toast(text, cls); return; }
     el.textContent = text || "";
     el.className = "cardstatus" + (cls ? " " + cls : "");
     if (el._clear) { clearTimeout(el._clear); el._clear = null; }
@@ -40,13 +131,22 @@
     }
   }
 
-  // act posts one mutating action with honest button feedback: the
-  // button disables itself while the request is in flight, an immediate
-  // optimistic status appears next to it, failures show in a distinct
-  // colour, and double-taps are no-ops.
+  // act posts one mutating action with honest feedback: the press has
+  // already shown, the button is marked busy for the round trip, an
+  // immediate optimistic status appears where the tap was, failures
+  // show in a distinct colour, and double-taps are no-ops.
   function act(btn, statusEl, path, body, pending) {
-    if (btn && btn.disabled) { return Promise.resolve(null); }
-    if (btn) { btn.disabled = true; btn.setAttribute("aria-busy", "true"); }
+    if (btn && btn.getAttribute("aria-disabled") === "true") { return Promise.resolve(null); }
+    if (btn) {
+      // aria-disabled rather than disabled: the button keeps its
+      // contrast and stays focusable, and the guard above is what
+      // actually stops a double tap. The ring inside .is-working only
+      // becomes visible after 400ms, so a quick round trip never
+      // flashes a spinner.
+      btn.setAttribute("aria-disabled", "true");
+      btn.classList.add("is-working");
+      releasePress();
+    }
     setStatus(statusEl, pending || "working…", "");
     return fetch(path, { method: "POST", headers: headers, body: body || "" })
       .then(function (r) {
@@ -58,14 +158,16 @@
       })
       .then(function (d) {
         setStatus(statusEl, d.ack || "done", "ok");
+        say(d.ack || "done");
         return d;
       })
       .catch(function (e) {
         setStatus(statusEl, "failed: " + e.message, "err");
+        say("failed: " + e.message);
         return null;
       })
       .finally(function () {
-        if (btn) { btn.disabled = false; btn.removeAttribute("aria-busy"); }
+        if (btn) { btn.removeAttribute("aria-disabled"); btn.classList.remove("is-working"); }
       });
   }
 
@@ -81,6 +183,9 @@
     $("mode-saved").classList.toggle("on", !live);
     $("mode-live").setAttribute("aria-selected", live ? "true" : "false");
     $("mode-saved").setAttribute("aria-selected", live ? "false" : "true");
+    $("livetransport").hidden = !live;
+    $("savedtransport").hidden = live;
+    $("scroll").scrollTop = 0;
     if (live) {
       savedAudio.pause();
     } else {
@@ -109,9 +214,48 @@
   var playBtn = $("play");
   var stateEl = $("streamstate");
 
+  // An acknowledgement owns the status line for a few seconds; the
+  // stream's own running commentary waits its turn. A failure never
+  // waits.
+  var ackUntil = 0;
+  function toast(text, cls) {
+    ackUntil = Date.now() + 4000;
+    stateEl.textContent = text || "";
+    stateEl.className = cls || "";
+    signalFor(cls === "err" ? "bad" : "");
+    say(text);
+  }
   function streamState(text, cls) {
+    if (cls !== "bad" && Date.now() < ackUntil) return;
+    ackUntil = 0;
     stateEl.textContent = text;
     stateEl.className = cls || "";
+    signalFor(cls);
+  }
+  // signalFor keeps the app bar's one coloured dot honest: green while
+  // audio is flowing, amber while it is working on it, red when it has
+  // stopped and needs a hand.
+  function signalFor(cls) {
+    var dot = $("signal");
+    if (!dot) return;
+    var on = "";
+    if (cls === "good" || cls === "ok") on = "live";
+    else if (cls === "bad" || cls === "err") on = "bad";
+    else if (wantStream || pf.active) on = "warn";
+    dot.className = "signal" + (on ? " " + on : "");
+  }
+  // setPlayButton renders intent, not readiness: while a reconnect is
+  // running the button already says Stop, because that is what tapping
+  // it does. The status line carries the honest connection state.
+  function setPlayButton(on) {
+    playBtn.classList.toggle("playing", !!on);
+    $("playglyph").innerHTML = on ? icon.stop : icon.play;
+    $("playlabel").textContent = on ? "Stop" : "Play";
+    playBtn.setAttribute("aria-label", on ? "Stop listening" : "Play the live stream");
+  }
+  function setSavedPlayButton(on) {
+    $("splayglyph").innerHTML = on ? icon.pause : icon.play;
+    $("splaylabel").textContent = on ? "Pause" : "Play";
   }
 
   // ---- system-pause detection (car off, route loss) ----------------
@@ -141,7 +285,7 @@
     resumePending = true;
     mediaPlaybackState("paused");
     applyMediaMetadata();
-    streamState("paused: audio output disconnected - resumes when your car asks to play, or tap play", "bad");
+    streamState("audio output disconnected - tap play", "bad");
   }
 
   // tryResume plays the kept element in place: no re-setup, no rewind,
@@ -160,6 +304,51 @@
       streamState("tap play to resume", "bad");
     });
     return true;
+  }
+
+  // ---- blocked autoplay --------------------------------------------
+  // A page cannot make sound until the browser has seen a gesture on
+  // it, so a reload while listening (or the car reopening the page) is
+  // refused. Rather than leaving a dead error, the next tap anywhere
+  // starts playback. The events armed here are the ones that actually
+  // count as activation on a touch screen: a finger's pointerdown does
+  // not, pointerup and touchend do. Only automatic starts arm this; an
+  // explicit tap on play is already the gesture.
+  var gestureArmed = false;
+  var autoStarting = false;
+  var gestureEvents = ["pointerup", "touchend", "keydown"];
+  function disarmGestureStart() {
+    if (!gestureArmed) return;
+    gestureArmed = false;
+    gestureEvents.forEach(function (name) {
+      document.removeEventListener(name, onGesture, true);
+    });
+  }
+  function onGesture(e) {
+    if (wantStream || pf.active || mode !== "live") { disarmGestureStart(); return; }
+    var t = e && e.target;
+    // A tap aimed at a control belongs to that control.
+    if (t && t.closest && t.closest("button, a, input, select, textarea, label, summary")) return;
+    primeAudio();
+    startListening();
+  }
+  function armGestureStart() {
+    if (!autoStarting || gestureArmed) return;
+    gestureArmed = true;
+    gestureEvents.forEach(function (name) {
+      document.addEventListener(name, onGesture, true);
+    });
+    streamState("tap anywhere to start the audio", "bad");
+  }
+  // primeAudio clears the per-element playback lock during the gesture
+  // itself. The buffered player opens its store before it can play, and
+  // a play() that only happens after that wait has already lost the
+  // gesture on some browsers; a load() now keeps the element allowed.
+  function primeAudio() {
+    if (transport !== "buffered" || !idbSupported) return;
+    for (var i = 0; i < pf.els.length; i++) {
+      try { pfEl(i).load(); } catch (err) {}
+    }
   }
 
   function teardownAudio() {
@@ -183,8 +372,7 @@
     retryDelay = 500;
     attempts = 0;
     teardownAudio();
-    playBtn.classList.remove("playing");
-    playBtn.innerHTML = "&#9654;&#xFE0E; Play the stream";
+    setPlayButton(false);
     streamState(msg || "", cls || "");
     mediaPlaybackState("none");
   }
@@ -258,13 +446,14 @@
     audio.addEventListener("waiting", function () { streamState("buffering…", ""); });
     audio.addEventListener("playing", function () { streamState("receiving audio…", ""); mediaPlaybackState("playing"); });
     audio.play().then(function () {
-      playBtn.classList.add("playing");
-      playBtn.innerHTML = "&#9632;&#xFE0E; Stop listening";
+      autoStarting = false;
+      disarmGestureStart();
       applyMediaMetadata();
       mediaPlaybackState("playing");
     }).catch(function (e) {
       if (e && e.name === "NotAllowedError") {
         stopStream("tap play to start audio", "bad");
+        armGestureStart();
         return;
       }
       streamFailed("could not start audio");
@@ -294,6 +483,10 @@
   function startStream() {
     if (wantStream) return;
     wantStream = true;
+    // The button tracks the intent from this instant: during a slow
+    // connect or a reconnect it must not invite a tap that would in
+    // fact abort what it says it is starting.
+    setPlayButton(true);
     retryDelay = 500;
     attempts = 0;
     connectStream();
@@ -323,6 +516,8 @@
     fetchTimer: null,
     queueTimer: null,
     offline: false,
+    seen: {},        // ids already heard in this context, so Next moves on
+    wrapped: false,  // the last pick came back round to something heard
     wantPlay: false  // start playback as soon as anything is stored
   };
 
@@ -403,8 +598,7 @@
   function startBuffered() {
     if (pf.active) return;
     pf.active = true;
-    playBtn.classList.add("playing");
-    playBtn.innerHTML = "&#9632;&#xFE0E; Stop listening";
+    setPlayButton(true);
     pfState("preparing buffered playback…", "");
     (pf.db ? Promise.resolve(pf.db) : idbOpen().then(function (db) { pf.db = db; return db; }))
       .then(function () { return idbReq(idbStore("readonly").getAll()); })
@@ -413,11 +607,12 @@
           if (!pf.have[rec.id]) {
             // epoch left undefined: the first queue listing decides
             // whether the record is still current and restamps it.
-            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur };
+            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "" };
           }
         });
         pf.wantPlay = true;
         pfShowMinutes();
+        updateSaveButtons(null);
         pfRefreshQueue();
         if (pf.queueTimer) clearInterval(pf.queueTimer);
         pf.queueTimer = setInterval(function () { pfRefreshQueue(); }, 10000);
@@ -451,8 +646,8 @@
     });
     pf.playingId = null;
     pf.wantPlay = false;
-    playBtn.classList.remove("playing");
-    playBtn.innerHTML = "&#9654;&#xFE0E; Play the stream";
+    updateSaveButtons(null);
+    setPlayButton(false);
     streamState(msg || "", cls || "");
     mediaPlaybackState("none");
   }
@@ -534,6 +729,7 @@
       }
     });
     pf.switchOnDownload = true;
+    pf.seen = {};
   }
 
   // pfEnsureDownloads keeps the store filled to the level's depth,
@@ -568,11 +764,14 @@
       return r.blob();
     }).then(function (blob) {
       pf.ctrl = null;
-      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s };
-      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, blob: blob, saved: Date.now() }))["catch"](function () {});
+      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "" };
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", blob: blob, saved: Date.now() }))["catch"](function () {});
       pfTrimStore();
       pfShowMinutes();
-      if (pf.switchOnDownload) {
+      // Only a freshly generated track is worth cutting the current
+      // song short for. Banked filler is older than what is playing and
+      // may be in a language the listener has just switched off.
+      if (pf.switchOnDownload && row.kind !== "library") {
         pf.switchOnDownload = false;
         pfPlay(row.id);
       } else if (pf.wantPlay && !pf.playingId) {
@@ -626,14 +825,27 @@
   }
 
   // pfNextId picks the id to play after the given one, in listing
-  // order, falling back to any stored track (offline loop).
-  function pfNextId(afterId) {
+  // order, falling back to any stored track (offline loop). In strict
+  // mode it returns null rather than wrapping onto the track already
+  // playing: a natural end may restart the only stored track, but a
+  // press of Next that silently replays it reads as a broken button.
+  function pfNextId(afterId, strict) {
     var ids = [];
     pf.rows.forEach(function (row) { if (pf.have[row.id]) ids.push(row.id); });
     if (!ids.length) ids = Object.keys(pf.have);
     if (!ids.length) return null;
     var at = ids.indexOf(afterId);
-    return ids[(at + 1) % ids.length];
+    // Prefer something not heard yet in this context: a store of three
+    // tracks otherwise cycles the same three forever.
+    pf.wrapped = false;
+    for (var i = 1; i <= ids.length; i++) {
+      var cand = ids[(at + i) % ids.length];
+      if (!pf.seen[cand]) return cand;
+    }
+    pf.wrapped = true;
+    var next = ids[(at + 1) % ids.length];
+    if (strict && next === afterId) return null;
+    return next;
   }
 
   function pfEl(i) {
@@ -668,6 +880,7 @@
     }
     if (pf.playingId && pf.playingId !== id) pf.prevId = pf.playingId;
     pf.playingId = id;
+    pf.seen[id] = true;
     if (el.src !== rec.url) {
       el.src = rec.url;
     } else if (el.ended || el.currentTime > 0) {
@@ -676,6 +889,8 @@
     }
     el.onended = function () { pfAdvance(); };
     el.play().then(function () {
+      autoStarting = false;
+      disarmGestureStart();
       pfStatus();
       pf.played = (pf.played || 0) + 1;
       lastNow = rec.title || rec.prompt || "buffered track";
@@ -686,6 +901,13 @@
       pfPreloadNext();
       pfEnsureDownloads();
     })["catch"](function (e) {
+      if (e && e.name === "NotAllowedError") {
+        // The browser will not let a page make sound until it has seen
+        // a gesture. Downloaded tracks stay banked; only playback stops.
+        stopBuffered("tap play to start audio", "bad");
+        armGestureStart();
+        return;
+      }
       pfState("could not start audio: " + (e && e.message ? e.message : e), "bad");
     });
   }
@@ -733,12 +955,19 @@
     var now = Date.now();
     if (now - lastManualSkip < 700 || !pf.active) return;
     lastManualSkip = now;
-    setStatus($("steerstatus"), "skipped on this device only - the stream and other listeners keep their own position", "ok");
+    if (!pfNextId(pf.playingId, true)) {
+      setStatus([stateEl, $("steerstatus")],
+        "nothing new to skip to yet - still downloading the next track", "warn");
+      pfEnsureDownloads();
+      return;
+    }
+    setStatus([stateEl, $("steerstatus")], "skipped on this device only", "ok");
     pfAdvance();
   }
 
   function pfStatus() {
     var extra = pf.offline ? " · offline, playing banked tracks" : "";
+    if (!pf.offline && pf.wrapped) extra = " · replaying stored tracks, nothing new yet";
     pfState("playing (buffered) · " + pfAhead() + " ahead" + extra, pf.offline ? "bad" : "good");
     pfShowMinutes();
   }
@@ -779,6 +1008,8 @@
   }
 
   playBtn.addEventListener("click", function () {
+    autoStarting = false;
+    disarmGestureStart();
     if (resumePending) { tryResume(); return; }
     if (wantStream || pf.active) {
       stopListening("stopped");
@@ -788,11 +1019,12 @@
   });
 
   $("next").addEventListener("click", function () {
+    buzz();
     if (pf.active) {
       pfSkip();
       return;
     }
-    act($("next"), $("steerstatus"), "/next", "", "skipping…");
+    act($("next"), [stateEl, $("steerstatus")], "/next", "", "skipping…");
   });
 
   // ---- media session (lock screen, car displays) -------------------
@@ -849,7 +1081,7 @@
     lastCarSave = now;
     if (!(me && me.save)) return;
     var saveTitle = lastNow || "this track";
-    doSave($("save"), false).then(function (d) {
+    doSave($("save"), false, [stateEl, $("savestatus")]).then(function (d) {
       // Flash only on success (including the idempotent no-op); a
       // failed save leaves the honest metadata alone.
       if (d) flashMetadata("Saved: " + saveTitle);
@@ -874,7 +1106,7 @@
         if (mode === "live") {
           // Same debounce/double-fire guards as the on-page controls.
           if (pf.active) { pfSkip(); return; }
-          if (me && me.steer) act($("next"), $("steerstatus"), "/next", "", "skipping…");
+          if (me && me.steer) act($("next"), [stateEl, $("steerstatus")], "/next", "", "skipping…");
         } else {
           repeatOne = null; updateLoopState(); step(1);
         }
@@ -927,6 +1159,217 @@
       if (d) $("text").value = "";
     });
   });
+  // The steering panel is set-and-forget, so it starts closed; the
+  // lyrics below it are what changes every track, so they start open.
+  // Either choice sticks once made, so nobody re-does it every load.
+  [["steercard", false], ["lyricscard", true]].forEach(function (pair) {
+    var box = $(pair[0]);
+    if (!box) return;
+    var key = "iar." + pair[0] + "open";
+    box.open = store.get(key, pair[1]) !== false;
+    box.addEventListener("toggle", function () { store.set(key, box.open); });
+  });
+
+  // ---- lyrics ------------------------------------------------------
+  // Section markers ([Verse], [Chorus]) are the writer's structure, not
+  // words anyone sings, so they are set back rather than dropped.
+  var lyricsSig = null;
+  var lyricsText = "";
+  // Buffered playback runs on this device's own copy, which is rarely
+  // the track the machine is on: the words have to follow what is
+  // coming out of THIS phone, or they arrive a track late.
+  function playingLyrics(s) {
+    if (pf.active) {
+      if (!pf.playingId) return "";
+      var rec = pf.have[pf.playingId];
+      return (rec && rec.lyrics) || "";
+    }
+    if (!wantStream && mode === "live") return "";
+    return (s.track && s.track.lyrics) || "";
+  }
+  function renderLyrics(s) {
+    var text = playingLyrics(s);
+    lyricsText = text;
+    if (text === lyricsSig) return;
+    lyricsSig = text;
+    var box = $("lyrics");
+    box.innerHTML = "";
+    if (!text) {
+      var none = document.createElement("span");
+      none.className = "empty";
+      none.textContent = !(pf.active || wantStream) ? "press play to follow the words"
+        : s.vocals ? "no words for this track" : "this track has no vocals";
+      box.appendChild(none);
+      return;
+    }
+    text.split("\n").forEach(function (line, i) {
+      if (i) box.appendChild(document.createTextNode("\n"));
+      var trimmed = line.trim();
+      if (trimmed.charAt(0) === "[" && trimmed.charAt(trimmed.length - 1) === "]") {
+        var tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = line;
+        box.appendChild(tag);
+      } else {
+        box.appendChild(document.createTextNode(line));
+      }
+    });
+  }
+
+  // ---- the settings sheet ------------------------------------------
+  // Everything set once per device lives here, one tap from anywhere,
+  // and nothing set once per device lives anywhere else.
+  var sheet = $("sheet");
+  function openSheet() {
+    if (sheet.open) return;
+    if (sheet.showModal) sheet.showModal(); else sheet.setAttribute("open", "");
+  }
+  function closeSheet() {
+    if (sheet.close) sheet.close(); else sheet.removeAttribute("open");
+  }
+  $("more").addEventListener("click", openSheet);
+  $("sheetclose").addEventListener("click", closeSheet);
+  // A tap on the backdrop is the gesture everyone reaches for first.
+  sheet.addEventListener("click", function (e) {
+    if (e.target === sheet) closeSheet();
+  });
+  $("haptics").checked = haptics;
+  $("haptics").addEventListener("change", function () {
+    haptics = $("haptics").checked;
+    store.set("iar.haptics", haptics);
+    if (haptics) buzz();
+  });
+  if (!("vibrate" in navigator)) $("hapticsrow").hidden = true;
+
+  // ---- sung languages ----------------------------------------------
+  // The configured list is the machine's; which of them this session
+  // sings in is one tap on the live screen. With nothing configured the
+  // whole surface stays out of the way and the engine keeps choosing.
+  var langSig = "";
+  function renderLanguages(s) {
+    var list = s.languages || [];
+    var sig = JSON.stringify(list);
+    if (sig === langSig) return;
+    langSig = sig;
+    $("langgroup").hidden = list.length === 0;
+    var box = $("langs");
+    box.innerHTML = "";
+    list.forEach(function (l) {
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip tap" + (l.on ? " on" : " off");
+      chip.textContent = l.name;
+      chip.setAttribute("aria-pressed", l.on ? "true" : "false");
+      if (!l.engine) {
+        chip.title = "The music engine has no voice for " + l.name +
+          "; the words are written in it and sung untagged.";
+      }
+      if (!(me && me.steer)) {
+        chip.disabled = true;
+        chip.classList.remove("tap");
+      } else {
+        chip.addEventListener("click", function () {
+          // Flip it now; the next poll confirms or corrects it.
+          var next = !l.on;
+          l.on = next;
+          langSig = "";
+          chip.classList.toggle("on", next);
+          chip.classList.toggle("off", !next);
+          chip.setAttribute("aria-pressed", next ? "true" : "false");
+          buzz();
+          act(chip, stateEl, "/language",
+            "name=" + encodeURIComponent(l.name) + "&on=" + (next ? "1" : "0"),
+            (next ? "singing in " : "dropping ") + l.name + "…");
+        });
+      }
+      box.appendChild(chip);
+    });
+    // A tooltip is invisible on a touch screen, and this one is a
+    // consequence rather than a rationale, so it goes on the page.
+    var untagged = [];
+    list.forEach(function (l) { if (!l.engine) untagged.push(l.name); });
+    var note = $("langnote");
+    note.hidden = untagged.length === 0;
+    note.textContent = untagged.length
+      ? "The music engine has no voice for " + untagged.join(", ") +
+        ": the words are written in it and sung untagged."
+      : "";
+    // The editor shows the same list, as the line it was typed on.
+    var names = [];
+    list.forEach(function (l) { names.push(l.name); });
+    var field = $("langnames");
+    if (document.activeElement !== field) field.value = names.join(", ");
+  }
+  $("langsave").addEventListener("click", function () {
+    langSig = "";
+    act($("langsave"), [$("langstatus"), stateEl], "/languages",
+      "names=" + encodeURIComponent($("langnames").value), "saving languages…");
+  });
+
+  // The page is served over plain HTTP on a home network, where the
+  // clipboard API is unavailable, so a hidden textarea is the fallback
+  // rather than an afterthought.
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error("copy refused"));
+    });
+  }
+  $("lyrcopy").addEventListener("click", function () {
+    if (!lyricsText) {
+      setStatus($("lyrcopystatus"), "nothing to copy yet", "err");
+      return;
+    }
+    buzz();
+    copyText(lyricsText).then(function () {
+      setStatus($("lyrcopystatus"), "copied", "ok");
+    })["catch"](function () {
+      setStatus($("lyrcopystatus"), "could not copy - select the words and copy by hand", "err");
+    });
+  });
+
+  // ---- lyric writer ------------------------------------------------
+  // A small select in the steering card switches which generator pens
+  // the lyrics on vocal tracks. Options come from /state; the value is
+  // never clobbered while the select has focus.
+  var lyrListSig = "";
+  function renderLyricsGen(s) {
+    var sel = $("lyricsgen");
+    var list = s.lyrics_generators || [];
+    var sig = JSON.stringify(list);
+    if (sig !== lyrListSig) {
+      lyrListSig = sig;
+      sel.innerHTML = "";
+      list.forEach(function (g) {
+        var opt = document.createElement("option");
+        opt.value = g.name;
+        opt.textContent = "lyrics by " + g.name;
+        if (g.blurb) opt.title = g.blurb;
+        sel.appendChild(opt);
+      });
+    }
+    if (document.activeElement !== sel && s.lyrics_generator) {
+      sel.value = s.lyrics_generator;
+    }
+  }
+  $("lyricsgen").addEventListener("change", function () {
+    var name = $("lyricsgen").value;
+    if (!name) return;
+    act(null, $("steerstatus"), "/lyrics-gen", "name=" + encodeURIComponent(name), "switching lyric writer…");
+  });
+
   // ---- saved-track state ------------------------------------------
   // The server remembers which track ids were saved; the page greys
   // the save buttons for whatever THIS device is hearing (the laptop's
@@ -940,21 +1383,34 @@
     if (pf.active) return { cur: pf.playingId, prev: pf.prevId };
     return { cur: lastTrack && lastTrack.id, prev: lastPrev && lastPrev.id };
   }
-  function isSaved(id) { return !!id && (savedIds[id] || localSaved[id]); }
+  // isSaved must answer with a real boolean. classList.toggle treats an
+  // undefined second argument as "no force given" and flips the class,
+  // so a bare `a || b` lookup (undefined for an unsaved id) would make
+  // the save buttons alternate on every poll.
+  function isSaved(id) { return !!id && !!(savedIds[id] || localSaved[id]); }
   function setSavedClass(btn, id) {
     if (!btn) return;
     var on = isSaved(id);
-    btn.classList.toggle("saved", on);
-    if (on) btn.setAttribute("aria-disabled", "true");
-    else btn.removeAttribute("aria-disabled");
+    btn.classList.toggle("saved", !!on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    if (btn === $("save")) {
+      // Filled heart, same geometry, so nothing moves when it flips.
+      $("saveglyph").innerHTML = on ? icon.heartFull : icon.heart;
+      $("savelabel").textContent = on ? "Saved" : "Save";
+      btn.setAttribute("aria-label", on ? "Already saved" : "Save this track");
+    }
   }
   // updateSaveButtons re-derives the greyed state; called on every
   // /state poll and after local saves. s may be null to reuse the last
   // known server state.
   function updateSaveButtons(s) {
     if (s) {
-      lastTrack = s.track || null;
-      lastPrev = s.prev || null;
+      // A stopgap or a library filler leaves /state without a track,
+      // but the machine's save target is still the last generated one -
+      // so keeping it here is what stops the control from claiming the
+      // track is saveable and then answering "already saved".
+      if (s.track) lastTrack = s.track;
+      if (s.prev) lastPrev = s.prev;
       savedIds = {};
       (s.saved_ids || []).forEach(function (id) { savedIds[id] = true; });
       if (s.track && s.track.saved) savedIds[s.track.id] = true;
@@ -968,11 +1424,12 @@
   // doSave saves what the listener is hearing: the buffered player's
   // own track ids on the phone, the laptop's current/previous track in
   // direct mode. Saving an already-saved track is a friendly no-op.
-  function doSave(btn, wantPrev) {
+  function doSave(btn, wantPrev, statusEl) {
+    statusEl = statusEl || $("savestatus");
     var ids = saveTargets();
     var id = wantPrev ? ids.prev : ids.cur;
     if (isSaved(id)) {
-      setStatus($("savestatus"), "already saved", "ok");
+      setStatus(statusEl, "already saved", "ok");
       return Promise.resolve({ ack: "already saved" });
     }
     var which = "";
@@ -985,12 +1442,15 @@
     } else if (wantPrev) {
       which = "prev";
     }
-    var body = "tag=" + encodeURIComponent($("tag").value.trim());
+    var body = "tag=" + encodeURIComponent(saveTag());
     if (which) body += "&which=" + encodeURIComponent(which);
-    return act(btn, $("savestatus"), "/save", body,
+    buzz();
+    return act(btn, statusEl, "/save", body,
       wantPrev ? "saving the previous track…" : "saving this track…").then(function (d) {
       if (!d) return d;
-      if (id && d.ack && (d.ack.indexOf("saving") >= 0 || d.ack.indexOf("already saved") >= 0)) {
+      // The server says whether the track is in the snippets; a refused
+      // save must not leave the control claiming it is.
+      if (id && d.saved) {
         localSaved[id] = true;
         updateSaveButtons(null);
       }
@@ -998,8 +1458,12 @@
       return d;
     });
   }
-  $("save").addEventListener("click", function () { doSave($("save"), false); });
-  $("saveprev").addEventListener("click", function () { doSave($("saveprev"), true); });
+  // The tag is a standing preference, not something to retype per save.
+  function saveTag() { return $("tag").value.trim(); }
+  $("tag").value = store.get("iar.tag", "");
+  $("tag").addEventListener("change", function () { store.set("iar.tag", saveTag()); });
+  $("save").addEventListener("click", function () { doSave($("save"), false, [stateEl, $("savestatus")]); });
+  $("saveprev").addEventListener("click", function () { doSave($("saveprev"), true, $("savestatus")); });
 
   // ---- sessions ---------------------------------------------------
   $("sesssave").addEventListener("click", function () {
@@ -1011,89 +1475,92 @@
   });
 
   function sessionRow(item, group) {
-    var row = document.createElement("div");
-    row.className = "chunk sess" + (item.current ? " playing" : "");
-    var title = document.createElement("div");
+    var wrap = document.createElement("div");
+    wrap.className = "rowwrap sess" + (item.current ? " playing" : "");
+    var canLoad = me && me.new_prompt && !item.current;
+    var main = document.createElement(canLoad ? "button" : "div");
+    main.className = "rowbtn" + (canLoad ? " tap" : "") + (item.current ? " playing" : "");
+    var title = document.createElement("span");
     title.className = "ctitle";
-    title.textContent = item.name + (item.current ? "  (playing)" : "");
-    var meta = document.createElement("div");
+    title.textContent = item.name + (item.current ? "  ·  playing" : "");
+    var meta = document.createElement("span");
     meta.className = "cmeta";
     meta.textContent = item.summary + (item.played ? " · " + item.played : "");
-    row.appendChild(title);
-    row.appendChild(meta);
-    var canLoad = me && me.new_prompt && !item.current;
-    var canDelete = me && me.admin && !item.current;
-    if (canLoad || canDelete) {
-      var buttons = document.createElement("div");
-      buttons.className = "row";
-      if (canLoad) {
-        var load = document.createElement("button");
-        load.className = "action";
-        load.textContent = group === "presets" ? "Start preset" : "Load";
-        load.addEventListener("click", function () {
-          act(load, $("sessstatus"), "/sessions/load", "name=" + encodeURIComponent(item.name), "loading…").then(function (d) {
-            if (d) loadSessions();
-          });
+    main.appendChild(title);
+    main.appendChild(meta);
+    wrap.appendChild(main);
+    if (canLoad) {
+      // The whole row is the button: a separate Load control would be
+      // a second target for the thing the row already names.
+      main.type = "button";
+      main.setAttribute("data-action", group === "presets" ? "Start preset" : "Load");
+      main.addEventListener("click", function () {
+        buzz();
+        act(main, [stateEl, $("sessstatus")], "/sessions/load",
+          "name=" + encodeURIComponent(item.name), "starting " + item.name + "…").then(function (d) {
+          if (d) loadSessions();
         });
-        buttons.appendChild(load);
-      }
-      if (canDelete) {
-        var del = document.createElement("button");
-        del.className = "action danger";
-        del.textContent = "Delete";
-        del.addEventListener("click", function () {
-          var what = group === "presets" ? "Hide preset " : "Delete session ";
-          if (!window.confirm(what + item.name + "?")) return;
-          act(del, $("sessstatus"), "/sessions/delete", "name=" + encodeURIComponent(item.name), "deleting…").then(function (d) {
-            if (d) loadSessions();
-          });
-        });
-        buttons.appendChild(del);
-      }
-      row.appendChild(buttons);
+      });
     }
-    return row;
+    if (me && me.admin && !item.current) {
+      var del = document.createElement("button");
+      del.type = "button";
+      del.className = "rowicon tap danger";
+      del.setAttribute("data-action", "Delete");
+      del.setAttribute("aria-label", (group === "presets" ? "Hide preset " : "Delete session ") + item.name);
+      del.innerHTML = SVG + 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+        '<path d="M6 6l12 12M18 6L6 18"/></svg>';
+      del.addEventListener("click", function () {
+        var what = group === "presets" ? "Hide preset " : "Delete session ";
+        if (!window.confirm(what + item.name + "?")) return;
+        act(del, [stateEl, $("sessstatus")], "/sessions/delete",
+          "name=" + encodeURIComponent(item.name), "deleting…").then(function (d) {
+          if (d) loadSessions();
+        });
+      });
+      wrap.appendChild(del);
+    }
+    return wrap;
   }
 
-  function sessionGroup(label, items, group, collapsed) {
-    var box;
-    if (collapsed) {
-      box = document.createElement("details");
-      var sum = document.createElement("summary");
-      sum.className = "grouplabel";
-      sum.textContent = label + " (" + items.length + ")";
-      box.appendChild(sum);
-    } else {
-      box = document.createElement("div");
-      var h = document.createElement("div");
-      h.className = "grouplabel";
-      h.textContent = label;
-      box.appendChild(h);
-    }
+  // sessionGroup is one collapsible band of the station list. The count
+  // rides in the summary so a closed band still says how much is in it.
+  function sessionGroup(label, items, group, open) {
+    var det = document.createElement("details");
+    det.className = "grp";
+    det.open = !!open;
+    var sum = document.createElement("summary");
+    sum.className = "tap";
+    sum.appendChild(document.createTextNode(label));
+    var count = document.createElement("span");
+    count.className = "count";
+    count.textContent = items.length;
+    sum.appendChild(count);
+    var chev = document.createElement("span");
+    chev.className = "chev";
+    chev.setAttribute("aria-hidden", "true");
+    sum.appendChild(chev);
+    det.appendChild(sum);
     if (!items.length) {
-      var empty = document.createElement("div");
+      var empty = document.createElement("span");
       empty.className = "empty";
-      empty.textContent = group === "named" ? "none yet - save this session under a name" : "none";
-      box.appendChild(empty);
+      empty.textContent = group === "named" ? "none yet - name this session in Settings" : "none";
+      det.appendChild(empty);
     }
-    items.forEach(function (item) { box.appendChild(sessionRow(item, group)); });
-    return box;
+    items.forEach(function (item) { det.appendChild(sessionRow(item, group)); });
+    return det;
   }
 
-  // presetGroups renders the presets as collapsible energy groups, the
-  // playing preset's group open, the rest collapsed.
+  // presetGroups renders the presets as energy bands, the playing
+  // preset's band open and the rest closed.
   function presetGroups(presets, currentPreset) {
-    var box = document.createElement("div");
-    var head = document.createElement("div");
-    head.className = "grouplabel";
-    head.textContent = "Presets";
-    box.appendChild(head);
+    var frag = document.createDocumentFragment();
     if (!presets.length) {
-      var empty = document.createElement("div");
+      var empty = document.createElement("span");
       empty.className = "empty";
-      empty.textContent = "none";
-      box.appendChild(empty);
-      return box;
+      empty.textContent = "no presets";
+      frag.appendChild(empty);
+      return frag;
     }
     var openGroup = "";
     presets.forEach(function (p) { if (p.name === currentPreset) openGroup = p.group || "other"; });
@@ -1105,18 +1572,13 @@
       }
       byGroup[byGroup.length - 1].items.push(p);
     });
+    // With nothing playing from a preset, open the first band so the
+    // list never opens as a wall of closed headings.
+    if (!openGroup) openGroup = byGroup[0].name;
     byGroup.forEach(function (g) {
-      var det = document.createElement("details");
-      det.className = "presetgroup";
-      if (g.name === openGroup) det.open = true;
-      var sum = document.createElement("summary");
-      sum.className = "grouplabel";
-      sum.textContent = g.name + " (" + g.items.length + ")";
-      det.appendChild(sum);
-      g.items.forEach(function (item) { det.appendChild(sessionRow(item, "presets")); });
-      box.appendChild(det);
+      frag.appendChild(sessionGroup(g.name, g.items, "presets", g.name === openGroup));
     });
-    return box;
+    return frag;
   }
 
   function loadSessions() {
@@ -1127,9 +1589,11 @@
       if (!d) return;
       var box = $("sessions");
       box.innerHTML = "";
-      box.appendChild(sessionGroup("Your sessions", d.named, "named", false));
+      // Presets first: they are what gets started, and the owner should
+      // not scroll past anything to reach them.
       box.appendChild(presetGroups(d.presets, d.current_preset));
-      box.appendChild(sessionGroup("Auto-saved sessions", d.auto, "auto", true));
+      box.appendChild(sessionGroup("Your sessions", d.named, "named", d.named.length > 0));
+      box.appendChild(sessionGroup("Auto-saved", d.auto, "auto", false));
     }).catch(function () {});
   }
   setInterval(loadSessions, 30000);
@@ -1160,18 +1624,31 @@
       return r.json();
     }).then(function (s) {
       if (!s) return;
+      pollFails = 0;
       $("conn").textContent = "connected";
       var t = s.track;
       $("now").textContent = (t && (t.title || t.prompt)) || s.source || s.state || "...";
       $("nowprompt").textContent = (t && t.title && t.prompt) || "";
-      var meta = t && t.number ? "track " + t.number : "";
-      if (s.session) meta += (meta ? "  ·  " : "") + "session " + s.session;
+      var meta = t && t.number ? "Track " + t.number : "";
+      if (t && t.subtitle) meta += (meta ? "  ·  " : "") + t.subtitle;
+      if (s.session) meta += (meta ? "  ·  " : "") + s.session;
       if (s.elapsed) meta += (meta ? "  ·  " : "") + s.elapsed + " / " + s.duration;
+      if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
       meta += (meta ? "  ·  " : "") + s.queued + " ready" + (s.generating ? " · generating" : "");
+
       $("meta").textContent = meta;
-      $("phase").textContent =
-        s.phase ? s.phase + " (" + s.phase_info + ")" : (s.paused ? "paused at the machine" : "");
+      // A pause at the machine is a fact about a room this listener is
+      // not in and cannot act on, so it is not mentioned. What is worth
+      // saying is why the music is not what they just asked for yet.
+      var phaseText = "";
+      if (s.phase) phaseText = s.phase + " (" + s.phase_info + ")";
+      else if (s.switching) phaseText = "New setting saved - the first track in it is generating.";
+      else if (s.looping) phaseText = "Replaying the last track while the next one generates.";
+      $("phase").textContent = phaseText;
       renderSound(s);
+      renderLyrics(s);
+      renderLyricsGen(s);
+      renderLanguages(s);
       updateSaveButtons(s);
       if (pf.active && pf.epoch >= 0 && s.epoch !== pf.epoch) {
         pfRefreshQueue();
@@ -1198,9 +1675,13 @@
       }
       if (changed && (wantStream || pf.active)) applyMediaMetadata();
     }).catch(function () {
-      $("conn").textContent = "disconnected";
+      // One missed poll on mobile data is normal. Saying "disconnected"
+      // on the first one and taking it back on the next just strobes.
+      pollFails++;
+      if (pollFails >= 3) $("conn").textContent = "disconnected";
     });
   }
+  var pollFails = 0;
   poll();
   setInterval(poll, 2000);
 
@@ -1238,7 +1719,7 @@
     }
     tags.forEach(function (tag) {
       var label = document.createElement("label");
-      label.className = "chip" + (tagOn(tag) ? " on" : "");
+      label.className = "chip tap" + (tagOn(tag) ? " on" : "");
       var cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = tagOn(tag);
@@ -1262,33 +1743,44 @@
       box.innerHTML = '<span class="empty">nothing saved yet - save a track from the live stream</span>';
       return;
     }
+    var shown = 0;
     chunks.forEach(function (c) {
       if (!tagOn(c.tag)) return;
-      var row = document.createElement("div");
-      row.className = "chunk" + (current && current.url === c.url ? " playing" : "");
-      var title = document.createElement("div");
+      shown++;
+      var looping = repeatOne && repeatOne.url === c.url;
+      var wrap = document.createElement("div");
+      wrap.className = "rowwrap chunk" + (current && current.url === c.url ? " playing" : "") +
+        (looping ? " looping" : "");
+      var main = document.createElement("button");
+      main.type = "button";
+      main.className = "rowbtn tap" + (current && current.url === c.url ? " playing" : "");
+      main.setAttribute("data-action", "Play");
+      var title = document.createElement("span");
       title.className = "ctitle";
       title.textContent = c.title;
-      var meta = document.createElement("div");
+      var meta = document.createElement("span");
       meta.className = "cmeta";
       meta.textContent = (c.subtitle ? c.subtitle + " · " : "") + c.tag + " · " + fmtSecs(c.seconds) + " · " + fmtDate(c.saved);
-      var row2 = document.createElement("div");
-      row2.className = "row";
-      var play = document.createElement("button");
-      play.className = "action";
-      play.textContent = "Play";
-      play.addEventListener("click", function () { playChunk(c); });
+      main.appendChild(title);
+      main.appendChild(meta);
+      main.addEventListener("click", function () { playChunk(c); });
       var loop = document.createElement("button");
-      loop.className = "action" + (repeatOne && repeatOne.url === c.url ? " looping" : "");
-      loop.textContent = repeatOne && repeatOne.url === c.url ? "Looping this one" : "Loop this one";
-      loop.addEventListener("click", function () { loopOne(c); });
-      row2.appendChild(play);
-      row2.appendChild(loop);
-      row.appendChild(title);
-      row.appendChild(meta);
-      row.appendChild(row2);
-      box.appendChild(row);
+      loop.type = "button";
+      loop.className = "rowicon tap" + (looping ? " on" : "");
+      loop.setAttribute("data-action", "Loop");
+      loop.setAttribute("aria-pressed", looping ? "true" : "false");
+      loop.setAttribute("aria-label", (looping ? "Stop looping " : "Loop ") + c.title);
+      loop.innerHTML = SVG + 'fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M4 12a8 8 0 0 1 8-8 8 8 0 0 1 6.9 4M20 12a8 8 0 0 1-8 8 8 8 0 0 1-6.9-4"/>' +
+        '<path d="M19 3v5h-5M5 21v-5h5"/></svg>';
+      loop.addEventListener("click", function () { looping ? unloopOne() : loopOne(c); });
+      wrap.appendChild(main);
+      wrap.appendChild(loop);
+      box.appendChild(wrap);
     });
+    if (!shown) {
+      box.innerHTML = '<span class="empty">no chunks in the selected tags</span>';
+    }
   }
 
   function updateLoopState() {
@@ -1314,6 +1806,12 @@
     lastNow = c.title;
     msArtist = c.subtitle ? c.subtitle + " · " + c.tag : c.tag;
     applyMediaMetadata();
+    renderChunks();
+  }
+
+  function unloopOne() {
+    repeatOne = null;
+    updateLoopState();
     renderChunks();
   }
 
@@ -1346,8 +1844,8 @@
     step(1);
   });
   savedAudio.addEventListener("ended", function () { if (!repeatOne) step(1); });
-  savedAudio.addEventListener("play", function () { $("splay").innerHTML = "&#10074;&#10074;&#xFE0E; Pause"; mediaPlaybackState("playing"); });
-  savedAudio.addEventListener("pause", function () { $("splay").innerHTML = "&#9654;&#xFE0E; Play"; mediaPlaybackState("paused"); });
+  savedAudio.addEventListener("play", function () { setSavedPlayButton(true); mediaPlaybackState("playing"); });
+  savedAudio.addEventListener("pause", function () { setSavedPlayButton(false); mediaPlaybackState("paused"); });
 
   function loadChunks() {
     fetch("/api/chunks").then(function (r) {
@@ -1370,6 +1868,17 @@
   // reopened in the car) tries to pick playback straight back up; a
   // blocked autoplay degrades to the one-tap play button.
   if (carResume && mode === "live" && store.get("iar.wasplaying", false)) {
-    startListening();
+    autoStarting = true;
+    // Only skip the attempt when the browser says outright that this
+    // page may not make sound. An untouched document is not proof of
+    // that: an installed web app, a per-site allowance or a desktop
+    // browser that already trusts the site will all play. Everywhere
+    // else the attempt is refused and degrades to the tap.
+    var policy = navigator.getAutoplayPolicy;
+    if (policy && policy.call(navigator, "mediaelement") === "disallowed") {
+      armGestureStart();
+    } else {
+      startListening();
+    }
   }
 })();

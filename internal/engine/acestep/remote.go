@@ -123,12 +123,17 @@ func (r *Remote) ensureDaemon() {
 	}
 	defer lock.Release()
 
-	if st, ok := r.dir.ReadEngineState(); ok && state.PIDAlive(st.PID) {
+	st, ok := r.dir.ReadEngineState()
+	if ok && state.PIDAlive(st.PID) {
 		r.setState(st, true)
 		r.log.Info("adopted running engine daemon", "event", "engine_adopted", "pid", st.PID, "port", st.Port)
 		return
 	}
-	r.dir.RemoveEngineState()
+	if ok {
+		// Retract only the dead record we just read; a daemon that
+		// started in the meantime keeps its own.
+		r.dir.RemoveEngineStateIf(st.PID)
+	}
 	r.spawnDaemon()
 }
 
@@ -293,7 +298,9 @@ func (r *Remote) RestartEngine(reason string) bool {
 			r.log.Error("engine daemon ignored SIGTERM", "event", "engine_forced_restart_stuck", "pid", pid)
 		}
 	}
-	r.dir.RemoveEngineState()
+	// The record belongs to the daemon just terminated; anything else
+	// there now is a live successor and must survive.
+	r.dir.RemoveEngineStateIf(pid)
 	r.ensureDaemon()
 	return true
 }

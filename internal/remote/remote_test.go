@@ -288,6 +288,10 @@ type fakeCtl struct {
 	skips   int
 	news    []string
 	saves   [][2]string
+	lyrGens []string
+	langs   []player.LanguageState
+	langSet [][2]string
+	langAll [][]string
 	notes   []string
 	named   []string
 	loaded  []string
@@ -299,6 +303,56 @@ func (f *fakeCtl) Steer(text string) string {
 	defer f.mu.Unlock()
 	f.steers = append(f.steers, text)
 	return "steering with: " + text
+}
+
+func (f *fakeCtl) LyricsGen(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lyrGens = append(f.lyrGens, name)
+	return "lyric writer: " + name
+}
+
+func (f *fakeCtl) Languages() []player.LanguageState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]player.LanguageState(nil), f.langs...)
+}
+
+func (f *fakeCtl) SetLanguage(name string, on bool) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state := "off"
+	if on {
+		state = "on"
+	}
+	f.langSet = append(f.langSet, [2]string{name, state})
+	for i, l := range f.langs {
+		if l.Name == name {
+			f.langs[i].On = on
+		}
+	}
+	return "singing in " + name
+}
+
+func (f *fakeCtl) SetLanguages(names []string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.langAll = append(f.langAll, append([]string(nil), names...))
+	f.langs = nil
+	for _, n := range names {
+		f.langs = append(f.langs, player.LanguageState{Name: n, Engine: true, On: true})
+	}
+	return "languages set"
+}
+
+// languagesSet returns the most recent list handed to SetLanguages.
+func (f *fakeCtl) languagesSet() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.langAll) == 0 {
+		return nil
+	}
+	return f.langAll[len(f.langAll)-1]
 }
 
 func (f *fakeCtl) Skip() string {
@@ -325,7 +379,7 @@ func (f *fakeCtl) SaveSnippet(which, tag string) string {
 func (f *fakeCtl) Status() player.Status {
 	return player.Status{
 		State: "playing", Source: "test prompt", Session: "s1", Volume: 70,
-		Epoch: 7, BasePrompt: "dark techno", Vocal: true,
+		Epoch: 7, BasePrompt: "dark techno", Vocal: true, LyricsGenerator: "scribe",
 		SessionDesc: "dark techno +2 tweaks vocals",
 		Tweaks: []session.Entry{
 			{Time: time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC), Raw: "less guitars", Interpreted: "fewer guitars"},
@@ -335,6 +389,8 @@ func (f *fakeCtl) Status() player.Status {
 		TrackTitle: "Dark Techno", TrackSubtitle: "driving", TrackNum: 3,
 		TrackSaved: false, PrevTrackID: "t-0", PrevTrackPrompt: "dark techno, opening", PrevTrackSaved: true,
 		SavedTrackIDs: []string{"t-0"},
+		TrackLanguage: "Bisaya (Cebuano)", Switching: true, Looping: true,
+		TrackLyrics: "[Verse]\nnaay usa ka gabii",
 	}
 }
 
@@ -771,6 +827,9 @@ func TestPermissionMatrix(t *testing.T) {
 		"/api/chunks":      {"GET", "/api/chunks", nil},
 		"/account":         {"GET", "/account", nil},
 		"/steer":           {"POST", "/steer", url.Values{"text": {"calmer"}}},
+		"/lyrics-gen":      {"POST", "/lyrics-gen", url.Values{"name": {"smoothbrain"}}},
+		"/language":        {"POST", "/language", url.Values{"name": {"English"}, "on": {"1"}}},
+		"/languages":       {"POST", "/languages", url.Values{"names": {"English, Russian"}}},
 		"/next":            {"POST", "/next", nil},
 		"/new":             {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
 		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
@@ -796,26 +855,26 @@ func TestPermissionMatrix(t *testing.T) {
 		want expect
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
-			"/steer": auth, "/next": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
+			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
 			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/next": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/next": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/next": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/next": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/next": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/next": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok}},
 	}
 	for who, row := range matrix {
@@ -841,6 +900,11 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
 		t.Fatalf("controller calls: steers=%v skips=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.news, h.ctl.saves)
 	}
+	// The lyric-writer switch rides the steer permission (steerer +
+	// full admin).
+	if len(h.ctl.lyrGens) != 2 || h.ctl.lyrGens[0] != "smoothbrain" {
+		t.Fatalf("lyric writer calls: %v", h.ctl.lyrGens)
+	}
 	if h.ctl.saves[0][1] != "gym" || h.ctl.saves[0][0] != "t-1" {
 		t.Fatalf("save which/tag not passed through: %v", h.ctl.saves)
 	}
@@ -850,7 +914,16 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.named) != 2 || len(h.ctl.loaded) != 2 || len(h.ctl.deleted) != 2 {
 		t.Fatalf("session calls: named=%v loaded=%v deleted=%v", h.ctl.named, h.ctl.loaded, h.ctl.deleted)
 	}
-	if len(h.ctl.notes) != 14 {
+	// Switching one language rides the steer permission (steerer + full
+	// admin); editing the configured list is admin-only (admin-only +
+	// full admin), because it rewrites the machine's config file.
+	if len(h.ctl.langSet) != 2 || h.ctl.langSet[0] != [2]string{"English", "on"} {
+		t.Fatalf("language switches: %v", h.ctl.langSet)
+	}
+	if len(h.ctl.langAll) != 2 || strings.Join(h.ctl.langAll[0], "|") != "English|Russian" {
+		t.Fatalf("configured language lists: %v", h.ctl.langAll)
+	}
+	if len(h.ctl.notes) != 20 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
 	}
 }
@@ -892,10 +965,10 @@ func TestSessionsListingAndActions(t *testing.T) {
 			t.Fatalf("%s without a name = %d", tc.path, resp.StatusCode)
 		}
 	}
-	// The page carries the sessions card; the page script drives the
-	// session endpoints.
+	// The page carries the station list and the naming controls; the
+	// page script drives the session endpoints.
 	_, page := admin.get("/")
-	for _, want := range []string{`id="sessioncard"`, `id="sessname"`, `id="sesssave"`, `id="sessions"`} {
+	for _, want := range []string{`id="sessionsave"`, `id="sessname"`, `id="sesssave"`, `id="sessions"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("page missing %q", want)
 		}
@@ -1291,6 +1364,35 @@ func TestPlayerPageContainsControls(t *testing.T) {
 	}
 }
 
+func TestLanguageListIsNotTruncatedIntoFragments(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	// A full catalogue is longer than a steering phrase. Cutting it mid
+	// name leaves a fragment that still parses as a language, and the
+	// answer then reports the mangled list as saved.
+	names := []string{}
+	for i := 0; i < 20; i++ {
+		names = append(names, "Language Number "+strconv.Itoa(i))
+	}
+	joined := strings.Join(names, ", ")
+	if len(joined) <= 300 {
+		t.Fatalf("test list is only %d bytes; it must exceed the phrase cap", len(joined))
+	}
+	resp, _ := admin.postForm("/languages", url.Values{"names": {joined}})
+	if resp.StatusCode != 200 {
+		t.Fatalf("POST /languages = %d", resp.StatusCode)
+	}
+	got := h.ctl.languagesSet()
+	if len(got) != len(names) {
+		t.Fatalf("saved %d of %d languages: %v", len(got), len(names), got)
+	}
+	for i, n := range names {
+		if got[i] != n {
+			t.Fatalf("language %d = %q, want %q", i, got[i], n)
+		}
+	}
+}
+
 func TestStateCarriesSharedSteeringContext(t *testing.T) {
 	h := newHarness(t, nil)
 	admin := h.admin()
@@ -1316,18 +1418,39 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 			Subtitle  string  `json:"subtitle"`
 			Number    int     `json:"number"`
 			Saved     bool    `json:"saved"`
+			Lang      string  `json:"lang"`
+			Lyrics    string  `json:"lyrics"`
 		} `json:"track"`
-		Prev *struct {
+		Switching bool `json:"switching"`
+		Looping   bool `json:"looping"`
+		Prev      *struct {
 			ID    string `json:"id"`
 			Saved bool   `json:"saved"`
 		} `json:"prev"`
-		SavedIDs []string `json:"saved_ids"`
+		SavedIDs         []string `json:"saved_ids"`
+		LyricsGenerator  string   `json:"lyrics_generator"`
+		LyricsGenerators []struct {
+			Name  string `json:"name"`
+			Blurb string `json:"blurb"`
+		} `json:"lyrics_generators"`
 	}
 	if err := json.Unmarshal([]byte(body), &st); err != nil {
 		t.Fatalf("parsing /state: %v\n%s", err, body)
 	}
 	if st.Epoch != 7 || st.BasePrompt != "dark techno" || !st.Vocals || st.SessionDesc == "" {
 		t.Fatalf("steering context wrong: %+v", st)
+	}
+	// The page needs all three to answer "did my language change land":
+	// what the track is sung in, that a change is still generating, and
+	// that what is playing is a replay rather than something new.
+	if st.Track == nil || st.Track.Lang != "Bisaya (Cebuano)" {
+		t.Fatalf("track language missing: %+v", st.Track)
+	}
+	if st.Track.Lyrics != "[Verse]\nnaay usa ka gabii" {
+		t.Fatalf("track lyrics missing: %q", st.Track.Lyrics)
+	}
+	if !st.Switching || !st.Looping {
+		t.Fatalf("switching/looping missing: switching=%v looping=%v", st.Switching, st.Looping)
 	}
 	if len(st.Tweaks) != 2 || st.Tweaks[0].Raw != "less guitars" || st.Tweaks[1].Interpreted != "faster tempo" || st.Tweaks[0].Time == "" {
 		t.Fatalf("tweaks wrong: %+v", st.Tweaks)
@@ -1343,6 +1466,10 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 	}
 	if len(st.SavedIDs) != 1 || st.SavedIDs[0] != "t-0" {
 		t.Fatalf("saved_ids wrong: %+v", st.SavedIDs)
+	}
+	if st.LyricsGenerator != "scribe" || len(st.LyricsGenerators) < 2 ||
+		st.LyricsGenerators[0].Name == "" || st.LyricsGenerators[0].Blurb == "" {
+		t.Fatalf("lyric writer state wrong: %q %+v", st.LyricsGenerator, st.LyricsGenerators)
 	}
 }
 
@@ -1582,5 +1709,47 @@ func TestMP3CacheSingleFlight(t *testing.T) {
 	c.mu.Unlock()
 	if n > mp3CacheSlots {
 		t.Fatalf("cache holds %d entries", n)
+	}
+}
+
+// The page is no-store and the stylesheet is inlined into it, so a
+// phone always gets the current layout. The script has to keep up: a
+// plain max-age with no validator let a browser run an hour-old app.js
+// against a fresh page, which is indistinguishable from a fix that did
+// not work.
+func TestStaticAssetsRevalidate(t *testing.T) {
+	h := newHarness(t, nil)
+	anon := h.client()
+	for _, path := range []string{"/app.js", "/manifest.webmanifest"} {
+		resp, body := anon.get(path)
+		if resp.StatusCode != 200 || body == "" {
+			t.Fatalf("%s = %d (%d bytes)", path, resp.StatusCode, len(body))
+		}
+		cc := resp.Header.Get("Cache-Control")
+		if strings.Contains(cc, "max-age") && !strings.Contains(cc, "max-age=0") {
+			t.Fatalf("%s may be pinned by a browser: Cache-Control %q", path, cc)
+		}
+		etag := resp.Header.Get("ETag")
+		if etag == "" {
+			t.Fatalf("%s has no validator, so a stale copy is never noticed", path)
+		}
+		// The same tag comes back unconditionally, and a matching
+		// request costs a 304 rather than the whole body.
+		req, err := http.NewRequest("GET", h.srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("If-None-Match", etag)
+		again, err := anon.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again.Body.Close()
+		if again.StatusCode != http.StatusNotModified {
+			t.Fatalf("%s with a matching If-None-Match = %d, want 304", path, again.StatusCode)
+		}
+		if again.Header.Get("ETag") != etag {
+			t.Fatalf("%s changed its tag between identical requests", path)
+		}
 	}
 }

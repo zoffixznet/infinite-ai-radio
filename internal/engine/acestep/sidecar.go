@@ -36,6 +36,9 @@ type SidecarConfig struct {
 	// PollInterval is how often health is polled during startup. Zero
 	// means one second.
 	PollInterval time.Duration
+	// OffloadDIT keeps the music model in system memory between
+	// tracks instead of resident on the graphics card.
+	OffloadDIT bool
 }
 
 // Sidecar supervises the ACE-Step API server as a child process: it starts
@@ -101,6 +104,12 @@ func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
 	)
 	if s.cfg.LMModelPath != "" {
 		cmd.Env = append(cmd.Env, "ACESTEP_LM_MODEL_PATH="+s.cfg.LMModelPath)
+	}
+	if s.cfg.OffloadDIT {
+		// The engine implements this but its API server never reads the
+		// GPU-tier default that would switch it on, so it stays
+		// resident unless we say otherwise.
+		cmd.Env = append(cmd.Env, "ACESTEP_OFFLOAD_DIT_TO_CPU=true")
 	}
 	cmd.Env = append(cmd.Env, s.lmBackendEnv()...)
 	return cmd, nil
@@ -371,6 +380,29 @@ func (s *Sidecar) drain(r io.Reader, stream string) {
 		}
 		s.mu.Unlock()
 		s.log.Debug("sidecar output", "event", "sidecar_output", "stream", stream, "line", line)
+		s.noteMemoryPressure(line)
+	}
+}
+
+// memoryPressureNeedles are the engine's own wording for a graphics
+// card with no room left, in the order of how bad the news is.
+var memoryPressureNeedles = []struct{ needle, event, msg string }{
+	{"CUDA out of memory", "engine_out_of_memory",
+		"the graphics card ran out of memory during generation"},
+	{"auto-enabling CPU VAE decode", "engine_cpu_fallback",
+		"low graphics memory: this track is being finished on the processor, which is much slower"},
+}
+
+// noteMemoryPressure lifts the two lines that matter out of the
+// sidecar's very chatty output into the app's own log. Both mean the
+// graphics card is short, and both were previously findable only by
+// grepping tens of megabytes of engine output.
+func (s *Sidecar) noteMemoryPressure(line string) {
+	for _, n := range memoryPressureNeedles {
+		if strings.Contains(line, n.needle) {
+			s.log.Warn(n.msg, "event", n.event, "line", line)
+			return
+		}
 	}
 }
 

@@ -26,6 +26,19 @@ type Event struct {
 	Text string
 }
 
+// LanguageState is one configured vocal language and whether the
+// playing session sings in it.
+type LanguageState struct {
+	// Name is the language as configured ("Bisaya (Cebuano)").
+	Name string
+	// Engine reports that the music engine has a tag for the language.
+	// The rest are still sung: the words are written in them and the
+	// engine sings them without a language hint.
+	Engine bool
+	// On reports that the session currently sings in it.
+	On bool
+}
+
 // Status is a point-in-time snapshot for status displays.
 type Status struct {
 	// State summarizes what is audible: starting, playing, noise,
@@ -80,6 +93,12 @@ type Status struct {
 	BasePrompt string
 	Tweaks     []session.Entry
 	Vocal      bool
+	// LyricsGenerator is the effective lyric writer for vocal tracks.
+	LyricsGenerator string
+	// Languages lists the configured vocal languages and whether this
+	// session sings in each. Empty means the music engine picks the
+	// language on its own.
+	Languages []LanguageState
 	// TrackID and TrackPrompt identify the playing generated track
 	// (empty while a stopgap source plays); TrackSaved reports whether
 	// it is already saved as a snippet. TrackTitle and TrackSubtitle
@@ -109,6 +128,20 @@ type Status struct {
 	PhaseExpected time.Duration
 	// PhaseSlow reports the phase has exceeded ~2.5x its usual duration.
 	PhaseSlow bool
+	// Switching reports a context change waiting for its first fresh
+	// track: the queue was dropped and the mixer crosses over as soon
+	// as one is generated.
+	Switching bool
+	// Looping reports the mixer is replaying the last good track for
+	// want of anything newer.
+	Looping bool
+	// TrackLanguage is the language the playing track was sung in, in
+	// the listener's own wording; empty when the engine chose.
+	TrackLanguage string
+	// TrackLyrics is what the playing track is actually singing: the
+	// sheet the lyric writer produced, or the one the engine invented
+	// for itself. Empty for instrumentals and stopgap audio.
+	TrackLyrics string
 }
 
 // Orchestrator owns the stream: session state, generation queue, mixing and
@@ -130,8 +163,10 @@ type Orchestrator struct {
 	Library *library.Library
 	// SnippetsDir is where the save command writes captured tracks.
 	SnippetsDir string
-	// Tap, when set before Start, receives a copy of every PCM chunk
-	// sent to the audio backend (the mastered stream). Its Write must
+	// Tap, when set before Start, receives the mastered stream at the
+	// single pump chokepoint: every PCM chunk the mixer produces, at
+	// full level. It sits before pause and volume, which control the
+	// speakers in the room rather than the station. Its Write must
 	// never block.
 	Tap interface{ Write(p []byte) (int, error) }
 	// Retention is how long auto-named sessions are kept after they last
@@ -147,7 +182,18 @@ type Orchestrator struct {
 	queue    []*engine.Track
 	epoch    int
 	lastGood *engine.Track
-	cur      source
+	// lastGoodEpoch is the steering epoch lastGood was generated in.
+	// When it is behind, looping lastGood replays the sound the
+	// listener has just moved away from, which is worth saying out loud
+	// and worth refusing to skip into.
+	lastGoodEpoch int
+	// loopNoticeEpoch remembers which epoch already announced the loop
+	// fallback, so a burst of skips does not flush the event channel.
+	loopNoticeEpoch int
+	// seededLib holds the library ids already queued as an instant
+	// start, so the same audio is not also listed as filler.
+	seededLib map[string]bool
+	cur       source
 	// switchReq forces the mixer to the next source; steerPending asks
 	// for the same switch, but only once a post-steer track is queued.
 	switchReq    bool
@@ -175,6 +221,10 @@ type Orchestrator struct {
 	// repeat save is a no-op.
 	saved      map[string]bool
 	savedOrder []string
+	// saveLanguages persists an edited vocal-language catalogue and
+	// which of its languages are switched off. Nil means both only live
+	// for this run.
+	saveLanguages func(names, off []string) error
 
 	volume atomic.Int32
 	events chan Event
@@ -342,6 +392,12 @@ func (o *Orchestrator) emit(text string) {
 	}
 }
 
+// lastGoodStaleLocked reports that the loop fallback would replay audio
+// from before the last context change. Callers hold o.mu.
+func (o *Orchestrator) lastGoodStaleLocked() bool {
+	return o.lastGood != nil && o.lastGoodEpoch != o.epoch
+}
+
 func (o *Orchestrator) kickGen() {
 	select {
 	case o.wake <- struct{}{}:
@@ -363,20 +419,19 @@ func (o *Orchestrator) saveSession() {
 }
 
 // snapshotSession returns the epoch and a copy of the session safe to read
-// without the lock.
+// without the lock. The session's own Snapshot is the single copier:
+// a hand-rolled one here drifted out of date and left the language map
+// aliased, which the generator reads while the controls write it.
 func (o *Orchestrator) snapshotSession() (int, *session.Session) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	cp := *o.sess
-	cp.Spec = o.sess.Spec.Clone()
-	cp.Tweaks = append([]session.Entry(nil), o.sess.Tweaks...)
-	cp.History = append([]session.Entry(nil), o.sess.History...)
-	return o.epoch, &cp
+	return o.epoch, o.sess.Snapshot()
 }
 
 // genLoop keeps the queue filled while in music mode.
 func (o *Orchestrator) genLoop(ctx context.Context) {
 	failures := 0
+	oomStreak := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -420,19 +475,34 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			failures++
 			reason := err.Error()
 			deviceFault := isDeviceFault(reason)
+			// A full graphics card is somebody else's memory, not a
+			// broken engine. Restarting would reload every model and
+			// take exactly the memory the other program is waiting for,
+			// so an out-of-memory failure neither counts toward the
+			// restart streak nor retries at the usual pace.
+			oom := isOutOfMemory(reason)
+			if oom {
+				oomStreak++
+			} else {
+				oomStreak = 0
+				failures++
+			}
 			o.mu.Lock()
 			o.failStreak = failures
 			o.lastFailure = reason
 			o.mu.Unlock()
 			o.log.Error("generation failed", "event", "generation_failed",
-				"error", reason, "failures", failures, "device_fault", deviceFault)
+				"error", reason, "failures", failures, "device_fault", deviceFault,
+				"out_of_memory", oom)
+			if oom {
+				o.emit("the graphics card is full right now; waiting for room before generating again")
+			}
 			// Health checks alone cannot catch a poisoned engine that
 			// still answers /health: restart on a failure streak, and
 			// immediately on the known-fatal device fault.
-			if deviceFault || failures >= restartStreak {
+			if !oom && (deviceFault || failures >= restartStreak) {
 				if rst, ok := o.eng.(interface{ RestartEngine(string) bool }); ok && rst.RestartEngine(reason) {
 					why := "repeated generation failures"
 					if deviceFault {
@@ -445,17 +515,22 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 				} else if failures%5 == 0 || deviceFault {
 					o.emit("generation keeps failing and the engine cannot be restarted from here (see log and 'iar doctor')")
 				}
-			} else if failures == 1 {
+			} else if !oom && failures == 1 {
 				o.emit("generation failed; retrying (details in the log)")
+			}
+			wait := backoff(failures)
+			if oom {
+				wait = oomBackoff(oomStreak)
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff(failures)):
+			case <-time.After(wait):
 			}
 			continue
 		}
 		failures = 0
+		oomStreak = 0
 		o.mu.Lock()
 		o.failStreak = 0
 		o.lastFailure = ""
@@ -472,6 +547,7 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		if epoch == o.epoch {
 			o.queue = append(o.queue, track)
 			o.lastGood = track
+			o.lastGoodEpoch = epoch
 			o.genCount++
 			o.lastGen = elapsed
 		}
@@ -549,6 +625,33 @@ func backoff(n int) time.Duration {
 // automatic engine restart even while health checks still pass.
 const restartStreak = 3
 
+// oomBackoff waits out a full graphics card. The wait grows faster than
+// the ordinary one and climbs higher: whatever else is using the card
+// needs room, and generating again immediately is what denies it.
+func oomBackoff(n int) time.Duration {
+	d := time.Duration(n) * 4 * failureBackoffBase
+	if d > 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return d
+}
+
+// oomNeedles identify a generation that failed only because the
+// graphics card had no room left, in the wording torch and the engine
+// use for it.
+var oomNeedles = []string{"CUDA out of memory", "OutOfMemoryError", "out of memory"}
+
+// isOutOfMemory reports whether a failure reason is a full graphics
+// card rather than a broken engine.
+func isOutOfMemory(reason string) bool {
+	for _, needle := range oomNeedles {
+		if strings.Contains(reason, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // deviceFaultNeedle identifies the known-fatal device-placement fault:
 // once the engine is in that state it never recovers on its own, so it
 // is restarted on the first occurrence.
@@ -563,6 +666,15 @@ func isDeviceFault(reason string) bool {
 // pumpLoop moves audio from the ring buffer to the playback backend,
 // applying volume and pause. The backend's own pacing provides
 // backpressure; the ring's non-blocking reads make silence the floor.
+//
+// The ring is drained on every pass, pause included. Holding the reads
+// back stalls the mixer against a two-second buffer within seconds, and
+// a stalled mixer stops the queue draining, which stops generation and
+// leaves anyone listening on the phone circling the same few tracks.
+// Pause and volume are controls for the speakers in this room, so they
+// are applied after the stream has been handed to the tap: a listener
+// on the phone is not in that room, and muting a laptop is no reason to
+// broadcast dead air to them.
 func (o *Orchestrator) pumpLoop(ctx context.Context) {
 	const chunkFrames = audio.SampleRate / 10 // 100 ms
 	buf := make([]byte, audio.FramesToBytes(chunkFrames))
@@ -572,27 +684,25 @@ func (o *Orchestrator) pumpLoop(ctx context.Context) {
 		o.mu.Lock()
 		paused := o.paused
 		o.mu.Unlock()
-		var out []byte
+		if _, err := o.ring.Read(buf); err != nil {
+			return // ring closed and drained
+		}
+		if u := o.ring.Underruns(); u != lastUnderruns {
+			o.log.Warn("output underrun", "event", "underrun", "total", u)
+			lastUnderruns = u
+		}
+		// BytesToSamples allocates, so buf is never mutated behind the
+		// tap's back.
+		if o.Tap != nil {
+			o.Tap.Write(buf)
+		}
+		out := buf
 		if paused {
 			out = silence
-		} else {
-			if _, err := o.ring.Read(buf); err != nil {
-				return // ring closed and drained
-			}
-			out = buf
-			if u := o.ring.Underruns(); u != lastUnderruns {
-				o.log.Warn("output underrun", "event", "underrun", "total", u)
-				lastUnderruns = u
-			}
-			vol := float64(o.volume.Load()) / 100
-			if vol < 1 {
-				samples := audio.BytesToSamples(out)
-				audio.ApplyGain(samples, vol*vol) // perceptual taper
-				out = audio.SamplesToBytes(samples)
-			}
-		}
-		if o.Tap != nil {
-			o.Tap.Write(out)
+		} else if vol := float64(o.volume.Load()) / 100; vol < 1 {
+			samples := audio.BytesToSamples(out)
+			audio.ApplyGain(samples, vol*vol) // perceptual taper
+			out = audio.SamplesToBytes(samples)
 		}
 		if _, err := o.player.Write(out); err != nil {
 			if ctx.Err() != nil {
@@ -741,7 +851,7 @@ func (o *Orchestrator) seedFromLibrary() {
 	if o.eng == nil || mode != session.ModeMusic {
 		return
 	}
-	track, ok := o.Library.Pick(library.Key(sessCopy))
+	track, libID, ok := o.Library.Pick(library.Key(sessCopy))
 	if !ok {
 		return
 	}
@@ -750,6 +860,13 @@ func (o *Orchestrator) seedFromLibrary() {
 	o.mu.Lock()
 	o.queue = append(o.queue, track)
 	o.lastGood = track
+	o.lastGoodEpoch = o.epoch
+	// The same file must not also be offered as filler under its
+	// library id: a remote client would list and play it twice.
+	if o.seededLib == nil {
+		o.seededLib = map[string]bool{}
+	}
+	o.seededLib[libID] = true
 	o.mu.Unlock()
 	o.log.Info("instant start from library", "event", "library_start", "prompt", track.Prompt)
 	o.emit("playing a saved track for this vibe while a fresh one generates")

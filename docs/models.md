@@ -38,6 +38,18 @@ terms. Without Ollama, it uses a built-in deterministic path and the
 engine's own planner for lyrics, so this integration is a bonus, not a
 requirement.
 
+## Embedded word data (built in)
+
+The lyric writer embeds two small datasets in the binary, used to check
+syllable counts, rhymes and vocabulary offline:
+
+- The [CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict)
+  (Carnegie Mellon University, BSD-style license; notice included under
+  `internal/prosody/data/LICENSE`).
+- An English word-frequency list from Peter Norvig's
+  [Natural Language Corpus Data](https://norvig.com/ngrams/), derived
+  from the Google Web Trillion Word Corpus.
+
 ## Noise synthesis (built in)
 
 White, pink and brown noise are synthesized directly by the player in pure Go

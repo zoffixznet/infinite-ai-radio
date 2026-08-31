@@ -54,6 +54,14 @@ type Session struct {
 	// Vocal asks for sung vocals; LyricsTheme steers what they are about.
 	Vocal       bool   `json:"vocal"`
 	LyricsTheme string `json:"lyrics_theme,omitempty"`
+	// LyricsGenerator names the lyric writer for vocal tracks
+	// ("scribe", "smoothbrain"); empty uses the configured default.
+	LyricsGenerator string `json:"lyrics_generator,omitempty"`
+	// Languages says which of the configured vocal languages this
+	// session sings in. A language the map says nothing about counts as
+	// on, so adding one to the configuration starts using it right
+	// away; switching them all off hands the choice back to the engine.
+	Languages map[string]bool `json:"languages,omitempty"`
 
 	// Spec is the structured steering state derived from the tweaks.
 	// Sessions saved before it existed load with a nil Spec; it is then
@@ -183,5 +191,11 @@ func (s *Session) Snapshot() *Session {
 	cp.Spec = s.Spec.Clone()
 	cp.Tweaks = append([]Entry(nil), s.Tweaks...)
 	cp.History = append([]Entry(nil), s.History...)
+	if s.Languages != nil {
+		cp.Languages = make(map[string]bool, len(s.Languages))
+		for k, v := range s.Languages {
+			cp.Languages[k] = v
+		}
+	}
 	return &cp
 }

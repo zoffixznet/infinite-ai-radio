@@ -75,8 +75,23 @@ func (d Dir) ReadEngineState() (EngineState, bool) {
 	return st, st.PID > 0 && st.Port > 0
 }
 
-// RemoveEngineState deletes the daemon state file.
+// RemoveEngineState deletes the daemon state file unconditionally. Only
+// a caller that has just verified ownership should use it; everything
+// else wants RemoveEngineStateIf.
 func (d Dir) RemoveEngineState() { os.Remove(d.enginePath()) }
+
+// RemoveEngineStateIf unlinks the daemon state only when it still
+// describes pid, or when the recorded daemon is dead so the file is
+// stale anyway. Without the check a departing daemon deletes its
+// SUCCESSOR's record, leaving a live engine that no client can find and
+// no command can stop - and its several gigabytes of GPU memory pinned
+// until the machine is rebooted.
+func (d Dir) RemoveEngineStateIf(pid int) {
+	st, ok := d.ReadEngineState()
+	if !ok || st.PID == pid || !PIDAlive(st.PID) {
+		os.Remove(d.enginePath())
+	}
+}
 
 func (d Dir) sessionFile() string { return filepath.Join(d.path, "session.json") }
 

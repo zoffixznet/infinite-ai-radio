@@ -109,6 +109,15 @@ func (a *app) buildBuilder(ctx context.Context, noLLM bool) *prompting.Builder {
 		oll = prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model)
 	}
 	b := prompting.NewBuilder(oll, a.log)
+	if name := a.cfg.LyricsGenerator; name != "" {
+		if _, ok := prompting.GeneratorByName(name); ok {
+			b.SetDefaultGenerator(name)
+		} else {
+			a.log.Warn("unknown lyrics_generator in config; using the default",
+				"configured", name, "default", prompting.DefaultGeneratorName)
+		}
+	}
+	b.SetLanguages(a.cfg.VocalLanguages)
 	b.ProbeAsync(ctx)
 	return b
 }
@@ -143,6 +152,17 @@ func (a *app) initialSessionPrompt(presetName, sessionName, prompt string) (*ses
 	case sessionName != "":
 		return store.Load(sessionName)
 	default:
+		// A cold start plays the configured preset. A preset that has
+		// been hidden or renamed must not stop the radio booting, so a
+		// miss falls back to the built-in sound.
+		if name := a.cfg.DefaultPreset; name != "" {
+			if p, err := store.LookupPreset(name); err == nil {
+				return session.FromPreset(p), nil
+			} else {
+				a.log.Warn("unknown default_preset in config; starting from the built-in sound",
+					"event", "default_preset_missing", "preset", name, "error", err.Error())
+			}
+		}
 		return session.New(), nil
 	}
 }

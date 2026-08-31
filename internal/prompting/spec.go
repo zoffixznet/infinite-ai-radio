@@ -171,6 +171,7 @@ func applyText(s *session.Session, text string) string {
 	if m := langRe.FindStringSubmatch(text); m != nil {
 		if code, ok := vocalLanguages[m[1]]; ok {
 			spec.VocalLanguage = code
+			spec.LanguagePinned = true
 			note(m[1] + " vocals")
 		}
 	}
@@ -462,6 +463,9 @@ type Rendered struct {
 	KeyScale      string
 	TimeSignature string
 	VocalLanguage string
+	// LanguagePinned reports that the language was named by hand and
+	// must not be replaced by the configured list.
+	LanguagePinned bool
 	// NegativePrompt is the comma-joined negatives (with plural
 	// variants) for the planner LM; LMCfgScale is raised when negatives
 	// exist (0 otherwise).
@@ -470,8 +474,10 @@ type Rendered struct {
 }
 
 // negativeLMCfgScale is the raised planner guidance used whenever a
-// negative prompt is sent (engine default is 2.5).
-const negativeLMCfgScale = 3.25
+// negative prompt is sent (engine default is 2.5). Capped at 3.0: the
+// engine's own guidance calls 2.5-3.0 "strong", and values above 3.0
+// carry an unresolved crash report on RTX 50-series GPUs.
+const negativeLMCfgScale = 3.0
 
 // Render turns the session's spec into the caption and request fields.
 // This is the single choke point between steering state and the engine.
@@ -538,11 +544,12 @@ func Render(s *session.Session) Rendered {
 	}
 
 	out := Rendered{
-		Caption:       strings.Join(parts, ", "),
-		BPM:           spec.BPM,
-		KeyScale:      spec.KeyScale,
-		TimeSignature: spec.TimeSignature,
-		VocalLanguage: spec.VocalLanguage,
+		Caption:        strings.Join(parts, ", "),
+		BPM:            spec.BPM,
+		KeyScale:       spec.KeyScale,
+		TimeSignature:  spec.TimeSignature,
+		VocalLanguage:  spec.VocalLanguage,
+		LanguagePinned: spec.LanguagePinned,
 	}
 	if len(spec.Negatives) > 0 {
 		var negs []string

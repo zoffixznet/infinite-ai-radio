@@ -22,10 +22,14 @@ import (
 
 // meta is the sidecar metadata stored with each banked track.
 type meta struct {
-	Prompt   string    `json:"prompt"`
-	Lyrics   string    `json:"lyrics"`
-	Title    string    `json:"title,omitempty"`
-	Subtitle string    `json:"subtitle,omitempty"`
+	Prompt   string `json:"prompt"`
+	Lyrics   string `json:"lyrics"`
+	Title    string `json:"title,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
+	// Language is the language the track was sung in, in the listener's
+	// own wording. Empty for instrumentals, and for tracks banked
+	// before it was recorded.
+	Language string    `json:"language,omitempty"`
 	Created  time.Time `json:"created"`
 }
 
@@ -79,7 +83,10 @@ func (l *Library) Put(key string, t *engine.Track) error {
 	if err := os.WriteFile(wavTmp, audio.EncodeWAV(t.Samples), 0o644); err != nil {
 		return err
 	}
-	m, err := json.Marshal(meta{Prompt: t.Prompt, Lyrics: t.Lyrics, Title: t.Title, Subtitle: t.Subtitle, Created: time.Now()})
+	m, err := json.Marshal(meta{
+		Prompt: t.Prompt, Lyrics: t.Lyrics, Title: t.Title, Subtitle: t.Subtitle,
+		Language: t.Spec.VocalLanguageName, Created: time.Now(),
+	})
 	if err != nil {
 		os.Remove(wavTmp)
 		return err
@@ -96,31 +103,33 @@ func (l *Library) Put(key string, t *engine.Track) error {
 	return nil
 }
 
-// Pick loads a random banked track for key. ok is false when none exist.
-func (l *Library) Pick(key string) (*engine.Track, bool) {
+// Pick loads a random banked track for key, returning its file id so
+// callers can tell it apart from the same track offered as filler. ok is
+// false when none exist.
+func (l *Library) Pick(key string) (*engine.Track, string, bool) {
 	if l == nil {
-		return nil, false
+		return nil, "", false
 	}
 	dir := filepath.Join(l.dir, session.SanitizeName(key))
 	ids := l.ids(dir)
 	if len(ids) == 0 {
-		return nil, false
+		return nil, "", false
 	}
 	id := ids[rand.IntN(len(ids))]
 	data, err := os.ReadFile(filepath.Join(dir, id+".wav"))
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	w, err := audio.DecodeWAV(data)
 	if err != nil {
 		l.log.Warn("banked track unreadable, removing", "event", "library_corrupt", "id", id)
 		os.Remove(filepath.Join(dir, id+".wav"))
 		os.Remove(filepath.Join(dir, id+".json"))
-		return nil, false
+		return nil, "", false
 	}
 	samples, err := w.ToInternal()
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	var m meta
 	if raw, err := os.ReadFile(filepath.Join(dir, id+".json")); err == nil {
@@ -129,12 +138,13 @@ func (l *Library) Pick(key string) (*engine.Track, bool) {
 	l.log.Info("track loaded from library", "event", "library_pick", "key", key, "id", id)
 	return &engine.Track{
 		Samples:     samples,
+		Spec:        engine.Spec{VocalLanguageName: m.Language},
 		Prompt:      m.Prompt,
 		Lyrics:      m.Lyrics,
 		Title:       m.Title,
 		Subtitle:    m.Subtitle,
 		FromLibrary: true,
-	}, true
+	}, id, true
 }
 
 // Entry describes one banked track without loading its audio.
@@ -148,6 +158,12 @@ type Entry struct {
 	Subtitle string
 	// Seconds is the track's play time, derived from the file size.
 	Seconds float64
+	// Language is the language the track was sung in, in the listener's
+	// own wording. Empty for instrumentals and for tracks banked before
+	// it was recorded, which is indistinguishable from "unknown".
+	Language string
+	// Lyrics is what the track sings, empty for instrumentals.
+	Lyrics string
 }
 
 // Entries lists the banked tracks under key, newest first.
@@ -171,6 +187,10 @@ func (l *Library) Entries(key string) []Entry {
 			e.Prompt = m.Prompt
 			e.Title = m.Title
 			e.Subtitle = m.Subtitle
+			e.Language = m.Language
+			if m.Lyrics != engine.InstrumentalLyrics {
+				e.Lyrics = m.Lyrics
+			}
 		}
 		if bytes := fi.Size() - 44; bytes > 0 {
 			e.Seconds = float64(bytes) / (audio.SampleRate * audio.Channels * 2)
@@ -203,7 +223,11 @@ func (l *Library) Load(key, id string) (*engine.Track, bool) {
 	if raw, err := os.ReadFile(filepath.Join(dir, session.SanitizeName(id)+".json")); err == nil {
 		json.Unmarshal(raw, &m)
 	}
-	return &engine.Track{Samples: samples, Prompt: m.Prompt, Lyrics: m.Lyrics, Title: m.Title, Subtitle: m.Subtitle, FromLibrary: true}, true
+	return &engine.Track{
+		Samples: samples, Spec: engine.Spec{VocalLanguageName: m.Language},
+		Prompt: m.Prompt, Lyrics: m.Lyrics, Title: m.Title, Subtitle: m.Subtitle,
+		FromLibrary: true,
+	}, true
 }
 
 // Count reports how many tracks are banked under key.

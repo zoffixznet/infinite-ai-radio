@@ -19,6 +19,9 @@ everything else keeps its default.
   "mp3_quality": 0,
   "snippets_dir": "",
   "library_max_mb": 600,
+  "lyrics_generator": "scribe",
+  "vocal_languages": [],
+  "default_preset": "nu-metal",
   "remote": {
     "enabled": false,
     "port": 8246,
@@ -40,6 +43,7 @@ everything else keeps its default.
     "lm_backend": "auto",
     "inference_steps": 12,
     "thinking": true,
+    "offload_dit": false,
     "repo_url": "https://github.com/ace-step/ACE-Step-1.5",
     "tag": "v0.1.8"
   },
@@ -86,6 +90,37 @@ everything else keeps its default.
 - `library_max_mb`: total size cap for the on-disk track library that
   powers instant starts (0 disables the library).
 
+- `lyrics_generator`: which lyric writer pens the words on vocal
+  tracks: `"scribe"` (default; plans, drafts and revises against
+  dictionary-checked rhyme, syllable, repetition and topic rules) or
+  `"smoothbrain"` (the original quick one-shot prompt). This sets the
+  default for new sessions; the `lyrics` command and the phone remote
+  switch it per session at runtime. Lyric writing uses Ollama; without
+  a daemon the engine's own planner invents the words.
+- `default_preset`: the preset the radio starts on when you run `iar`
+  with no `--preset`, `--session` or prompt. Empty starts from the
+  built-in fallback sound instead. A name that no longer exists is
+  logged and falls back rather than stopping the radio.
+- `vocal_languages`: the languages sung vocals are sung in, written
+  the way you would say them: `["English", "Russian", "French",
+  "Bisaya (Cebuano)"]`. Every song picks one of them at random, so the
+  same language can come up twice in a row. Empty - the default -
+  leaves the choice to the music engine, which sings in whatever
+  language it likes. The `languages` command and the phone remote edit
+  this list, and both write it back here; the remote's switches then
+  narrow it down for the playing session without changing the list.
+  The music engine publishes about fifty language tags but never checks
+  a request against the list, and the model behind it knows more
+  languages than the list names - Cebuano among them, asked for by its
+  own tag. Anything it does not know still works: the words are written
+  in it and sung with no tag at all. On tracks where the engine writes
+  the words itself, the tag decides which language they are written in,
+  so a near-miss tag gets a different language rather than an accent.
+  A language steered in by hand ("sing in
+  French") pins the session to it and outranks the list; a preset that
+  names a language of its own does not. Editing the list releases that
+  pin, drops the tracks queued ahead and starts generating in the new
+  languages.
 ## remote
 
 The phone remote (page + live MP3 stream + saved-chunk player); see the
@@ -143,6 +178,16 @@ admin; the Users page does the rest).
   little more brightness.
 - `thinking`: when true, the engine's planner LM sketches the track
   before synthesis, which improves musical coherence at some speed cost.
+- `offload_dit`: when true, the music model is kept in system memory
+  between tracks instead of staying resident on the graphics card. Turn
+  it on when something else needs the card - a speech-to-text model, a
+  game, another generator. The radio only computes for about a fifth of
+  the time it runs, so this hands roughly four and a half gigabytes of
+  video memory back for the rest of it. It costs a few seconds per
+  track while the weights move back, and about the same amount of
+  system memory to hold them; the music itself is identical. It does
+  not lower the peak during generation, so it fixes the collisions that
+  happen between tracks, not the ones during them.
 - `repo_url`, `tag`: which engine version `iar setup` installs. Change
   only if you know you want a different release.
 

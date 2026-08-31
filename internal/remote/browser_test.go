@@ -170,8 +170,11 @@ func (w *webDriver) acceptAlert() {
 }
 
 // sessionButton is the XPath of an action button inside a session row.
-func sessionButton(name, label string) string {
-	return fmt.Sprintf(`//div[@id='sessions']//div[contains(@class,'sess')][.//div[@class='ctitle'][starts-with(normalize-space(),'%s')]]//button[normalize-space()='%s']`, name, label)
+// sessionButton locates a station row's action by what the action does.
+// The row itself is the button that starts the station, so the match is
+// on data-action rather than on visible text.
+func sessionButton(name, action string) string {
+	return fmt.Sprintf(`//div[@id='sessions']//*[contains(@class,'sess')][.//*[contains(@class,'ctitle')][starts-with(normalize-space(),'%s')]]/descendant-or-self::button[@data-action='%s']`, name, action)
 }
 
 func (w *webDriver) screenshot(path string) {
@@ -560,10 +563,10 @@ func TestRealBrowser(t *testing.T) {
 	if !liveGone {
 		t.Fatal("switching to saved mode must stop the live stream element")
 	}
-	w.click("#chunks .chunk button.action")
+	w.click(`#chunks .chunk button[data-action="Play"]`)
 	saved := assertPlays(t, w, "savedaudio", 1.5, 20*time.Second)
 	t.Logf("saved chunk: currentTime %.1fs readyState %d", saved.Time, saved.Ready)
-	w.click("#chunks .chunk button.action:nth-of-type(2)") // Loop this one
+	w.click(`#chunks .chunk button[data-action="Loop"]`)
 	var loopText string
 	w.exec(`return document.getElementById('loopstate').textContent;`, &loopText)
 	if !strings.Contains(loopText, "Looping one chunk") {
@@ -578,6 +581,9 @@ func TestRealBrowser(t *testing.T) {
 	w.click("#mode-live")
 
 	// --- sessions: save under a name, start a preset, delete one ---
+	// Naming a session is a configure-once action and lives in the
+	// settings sheet; starting and deleting are on the main screen.
+	w.click("#more")
 	w.typeInto("#sessname", "Road Trip")
 	w.click("#sesssave")
 	var ackText string
@@ -592,7 +598,8 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &title)
 		return n == 1 && strings.HasPrefix(title, "road-trip")
 	})
-	// Preset groups are collapsible; open them all so the target row is
+	w.click("#sheetclose")
+	// Station bands are collapsible; open them all so the target row is
 	// clickable.
 	w.exec(`document.querySelectorAll('#sessions details').forEach(function (d) { d.open = true; }); return true;`, nil)
 	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("pink-noise", "Start preset"))+"/click", nil)
@@ -663,7 +670,7 @@ func TestRealBrowser(t *testing.T) {
 	// Denied actions are hidden...
 	waitFor(t, 10*time.Second, "permission hiding", func() bool {
 		var hidden []bool
-		w.exec(`return [document.getElementById('savecard').hidden, document.getElementById('steercard').hidden, document.querySelector('a[href="/users"]') === null, document.getElementById('sessionsave').hidden, document.querySelectorAll('#sessions button').length === 0 && document.querySelectorAll('#sessions .sess').length > 0];`, &hidden)
+		w.exec(`return [document.getElementById('savecard').hidden, document.getElementById('steerbox').hidden, document.querySelector('a[href="/users"]') === null, document.getElementById('sessionsave').hidden, document.querySelectorAll('#sessions button').length === 0 && document.querySelectorAll('#sessions .sess').length > 0];`, &hidden)
 		return len(hidden) == 5 && hidden[0] && hidden[1] && hidden[2] && hidden[3] && hidden[4]
 	})
 	// ...and rejected server-side even when forced.
@@ -757,6 +764,9 @@ func (f *fakeEngine) handler() http.Handler {
 			inner, _ := json.Marshal([]map[string]any{{
 				"file": "/v1/audio?path=" + id, "status": 1,
 				"prompt": prompt, "seed_value": "7",
+				// The engine echoes back the words it sang; the page
+				// shows them, so the fake has to return some.
+				"lyrics": "[Verse]\nthe words for " + id + "\n\n[Chorus]\nand its chorus",
 			}})
 			rows = append(rows, map[string]any{"task_id": id, "status": 1, "result": string(inner)})
 		}
@@ -846,6 +856,29 @@ func TestRealBrowserResilience(t *testing.T) {
 	loginAdmin(t, w, sb.base)
 	waitFor(t, 30*time.Second, "tracks generating", func() bool { return fe.generated() >= 2 })
 
+	// --- the save button holds still between polls ---
+	// The "already saved" look is re-derived on every /state poll. It
+	// once came from a lookup that answered undefined rather than
+	// false, which classList.toggle reads as "no value given" and so
+	// flipped the class: the button flashed between its two looks
+	// forever. Nothing here has been saved, so the class must not
+	// change at all.
+	waitFor(t, 20*time.Second, "the save card", func() bool {
+		var hidden bool
+		w.exec(`return document.getElementById('savecard').hidden;`, &hidden)
+		return !hidden
+	})
+	w.exec(`window.__saveFlips = 0;
+		new MutationObserver(function (ms) { window.__saveFlips += ms.length; })
+			.observe(document.getElementById('save'), {attributes: true, attributeFilter: ['class']});
+		return 0;`, new(int))
+	time.Sleep(7 * time.Second) // three /state polls
+	var flips int
+	w.exec(`return window.__saveFlips;`, &flips)
+	if flips != 0 {
+		t.Fatalf("the save button changed its look %d times while nothing was saved", flips)
+	}
+
 	// --- steering state is shared and survives a reload ---
 	io.WriteString(sb.stdin, "no guitars more synths\n")
 	waitFor(t, 15*time.Second, "tweak chip appears", func() bool {
@@ -860,6 +893,23 @@ func TestRealBrowserResilience(t *testing.T) {
 		w.exec(`var c=document.querySelector('#tweaks .chip'); return c ? c.textContent : '';`, &chip)
 		w.exec(`return document.getElementById('baseprompt').textContent;`, &base)
 		return strings.Contains(chip, "no guitars more synths") && base != "" && base != "…"
+	})
+	// The steering panel is set-and-forget, so it starts collapsed; the
+	// lyrics under it change every track and start open.
+	var steerOpen, lyricsOpen bool
+	w.exec(`return document.getElementById('steercard').open;`, &steerOpen)
+	w.exec(`return document.getElementById('lyricscard').open;`, &lyricsOpen)
+	if steerOpen {
+		t.Error("the steering panel started open")
+	}
+	if !lyricsOpen {
+		t.Error("the lyrics panel started closed")
+	}
+	// The words the engine sang reach the page, section markers and all.
+	waitFor(t, 20*time.Second, "lyrics on the page", func() bool {
+		var lyr string
+		w.exec(`return document.getElementById('lyrics').textContent;`, &lyr)
+		return strings.Contains(lyr, "the words for task-") && strings.Contains(lyr, "[Chorus]")
 	})
 	waitFor(t, 20*time.Second, "steer reached generation", func() bool {
 		return strings.Contains(fe.lastPrompt(), "synths")
@@ -1019,7 +1069,10 @@ func TestRealBrowserResilience(t *testing.T) {
 	waitFor(t, 15*time.Second, "car save acknowledged", func() bool {
 		var ack string
 		w.exec(`return document.getElementById('savestatus').textContent;`, &ack)
-		return strings.Contains(ack, "saving this track") || strings.Contains(ack, "already saved")
+		// The optimistic line already says "saving this track…", so wait
+		// for the server's answer - which names the file - rather than
+		// racing the request that is still in flight.
+		return strings.Contains(ack, "saving this track to ") || strings.Contains(ack, "already saved:")
 	})
 	// The on-page save button greys out for this device's track at once.
 	var greyed bool

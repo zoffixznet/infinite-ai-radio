@@ -111,6 +111,10 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return c.O.LoadPreset(rest), false
 	case "mp3", "export":
 		return c.export(rest), false
+	case "lyrics", "writer":
+		return c.O.LyricsGen(rest), false
+	case "lang", "languages":
+		return c.languages(rest), false
 	case "status":
 		return statusText(c.O.Status()), false
 	case "engine":
@@ -174,6 +178,62 @@ func (c *Controller) presetsText() string {
 	return b.String()
 }
 
+// languages lists, switches or replaces the configured vocal
+// languages. Bare: the list. "+name"/"-name": switch one on or off.
+// Anything else: the new comma-separated list.
+func (c *Controller) languages(rest string) string {
+	rest = strings.TrimSpace(rest)
+	switch {
+	case rest == "":
+		states := c.O.Languages()
+		if len(states) == 0 {
+			return "no vocal languages configured; the music engine picks the language.\n" +
+				"use: languages English, Russian, French"
+		}
+		var b strings.Builder
+		b.WriteString("vocal languages (each song picks one at random):\n")
+		for _, l := range states {
+			mark := " "
+			if l.On {
+				mark = "*"
+			}
+			note := ""
+			if !l.Engine {
+				note = "   (sung untagged: the engine has no voice tag for it)"
+			}
+			fmt.Fprintf(&b, " %s %s%s\n", mark, l.Name, note)
+		}
+		b.WriteString("use: languages +English | languages -Russian | languages English, Russian")
+		return b.String()
+	case strings.HasPrefix(rest, "+"):
+		return c.O.SetLanguage(strings.TrimSpace(rest[1:]), true)
+	case strings.HasPrefix(rest, "-"):
+		return c.O.SetLanguage(strings.TrimSpace(rest[1:]), false)
+	case rest == "none", rest == "off":
+		return c.O.SetLanguages(nil)
+	default:
+		var names []string
+		for _, part := range strings.Split(rest, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				names = append(names, p)
+			}
+		}
+		return c.O.SetLanguages(names)
+	}
+}
+
+// sungIn lists the vocal languages currently switched on, empty when
+// none are configured (the engine then picks the language itself).
+func sungIn(states []player.LanguageState) string {
+	var on []string
+	for _, l := range states {
+		if l.On {
+			on = append(on, l.Name)
+		}
+	}
+	return strings.Join(on, ", ")
+}
+
 // statusText renders a multi-line status snapshot.
 func statusText(st player.Status) string {
 	var b strings.Builder
@@ -187,6 +247,12 @@ func statusText(st player.Status) string {
 		fmt.Fprintf(&b, "position: %s / %s\n", fmtDur(st.Elapsed), fmtDur(st.Duration))
 	}
 	fmt.Fprintf(&b, "session:  %s (%s)\n", st.Session, st.SessionDesc)
+	if st.LyricsGenerator != "" {
+		fmt.Fprintf(&b, "lyrics:   %s\n", st.LyricsGenerator)
+	}
+	if sung := sungIn(st.Languages); sung != "" {
+		fmt.Fprintf(&b, "sung in:  %s\n", sung)
+	}
 	engine := "none (noise only)"
 	if st.EngineName != "" {
 		switch {
@@ -220,8 +286,7 @@ func fmtDur(d time.Duration) string {
 
 // helpText is kept compact (two command columns) so the whole block fits
 // a standard 80x24 terminal's message area in one screen.
-const helpText = `steer with plain text: "more energetic", "calmer", "switch to piano",
-  "add vocals about winning", "pink noise" - each shapes the next track
+const helpText = `steer with plain text ("calmer", "add vocals about winning", "pink noise")
 commands (leading / optional):
   clear             wipe steering        name <name>      save this session
   new <prompt>      fresh session        sessions         list saved + presets
@@ -229,4 +294,5 @@ commands (leading / optional):
   mp3 <min> [file]  export MP3           preset <name>    switch preset
   skip              next track           delete <name>    delete a session
   pause | resume    pause / continue     volume <0-100>   set volume
-  status | engine   show status          help | quit      this list / exit`
+  lyrics [name]     pick lyric writer    status | engine  show status
+  languages [list]  sung languages       help | quit      this list / exit`

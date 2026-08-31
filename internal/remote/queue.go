@@ -20,6 +20,7 @@ type queueTrackJSON struct {
 	Subtitle  string  `json:"subtitle,omitempty"`
 	DurationS float64 `json:"duration_s"`
 	Kind      string  `json:"kind"`
+	Lyrics    string  `json:"lyrics,omitempty"`
 	// URL is the authenticated, range-capable MP3 route for the track.
 	URL string `json:"url"`
 }
@@ -36,7 +37,7 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 	for _, t := range tracks {
 		out.Tracks = append(out.Tracks, queueTrackJSON{
 			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
-			DurationS: t.Seconds, Kind: t.Kind,
+			DurationS: t.Seconds, Kind: t.Kind, Lyrics: t.Lyrics,
 			URL: "/queue/" + url.PathEscape(t.ID) + ".mp3",
 		})
 	}

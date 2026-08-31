@@ -28,7 +28,7 @@ func TestPutPickRoundTrip(t *testing.T) {
 	if got := lib.Count("lofi-study"); got != 1 {
 		t.Fatalf("count = %d", got)
 	}
-	tr, ok := lib.Pick("lofi-study")
+	tr, _, ok := lib.Pick("lofi-study")
 	if !ok {
 		t.Fatal("pick failed")
 	}
@@ -45,7 +45,7 @@ func TestPutPickRoundTrip(t *testing.T) {
 
 func TestPickMissingKey(t *testing.T) {
 	lib := New(t.TempDir(), 100, testLog())
-	if _, ok := lib.Pick("nothing-here"); ok {
+	if _, _, ok := lib.Pick("nothing-here"); ok {
 		t.Fatal("picked from empty library")
 	}
 }
@@ -75,7 +75,7 @@ func TestDisabledLibraryIsNil(t *testing.T) {
 	if err := lib.Put("k", track(10, 1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := lib.Pick("k"); ok {
+	if _, _, ok := lib.Pick("k"); ok {
 		t.Fatal("nil library picked something")
 	}
 	if lib.Count("k") != 0 {
@@ -116,7 +116,7 @@ func TestCorruptTrackIsDroppedGracefully(t *testing.T) {
 	if err := writeFile(path, []byte("not a wav")); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := lib.Pick("k"); ok {
+	if _, _, ok := lib.Pick("k"); ok {
 		t.Fatal("picked a corrupt track")
 	}
 	if got := lib.Count("k"); got != 0 {

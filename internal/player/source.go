@@ -29,6 +29,10 @@ type trackSource struct {
 	track *engine.Track
 	pos   atomic.Int64 // frames consumed
 	name  string
+	// loop marks a source the mixer installed for want of anything
+	// newer, so status surfaces can say so instead of presenting it as
+	// a fresh track.
+	loop bool
 }
 
 func newTrackSource(t *engine.Track, name string) *trackSource {

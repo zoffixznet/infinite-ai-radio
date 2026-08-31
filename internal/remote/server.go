@@ -2,7 +2,9 @@ package remote
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -17,6 +19,7 @@ import (
 	"iar/internal/accounts"
 	"iar/internal/engine"
 	"iar/internal/player"
+	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/snippets"
 )
@@ -31,6 +34,10 @@ const ProductName = "Infinite AI Radio"
 // implements it (the same methods the terminal UI drives).
 type Controls interface {
 	Steer(text string) string
+	LyricsGen(name string) string
+	Languages() []player.LanguageState
+	SetLanguage(name string, on bool) string
+	SetLanguages(names []string) string
 	NewSession(prompt string) string
 	Skip() string
 	SaveSnippet(which, tag string) string
@@ -245,6 +252,11 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /account/password", s.page(s.handleAccountPassword))
 	// Per-permission actions.
 	mux.HandleFunc("POST /steer", s.apiPerm("steer", permSteer, s.handleSteer))
+	mux.HandleFunc("POST /lyrics-gen", s.apiPerm("steer", permSteer, s.handleLyricsGen))
+	// Switching a configured language on or off is steering; editing
+	// the configured list writes the machine's config file.
+	mux.HandleFunc("POST /language", s.apiPerm("steer", permSteer, s.handleLanguage))
+	mux.HandleFunc("POST /languages", s.apiPerm("languages", permAdmin, s.handleLanguages))
 	mux.HandleFunc("POST /next", s.apiPerm("steer", permSteer, s.handleNext))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
@@ -327,18 +339,50 @@ func staticPath(p string) bool {
 	return p == "/app.js" || p == "/manifest.webmanifest" || strings.HasPrefix(p, "/icons/")
 }
 
-// staticAsset serves one embedded file with light caching.
+// staticAsset serves one embedded file, revalidated on every load.
+//
+// The pages themselves are no-store and the stylesheet is inlined into
+// them, so the page always arrives current - but the page's script did
+// not. Served with a plain max-age and no validator, a phone kept
+// running an hour-old app.js against a freshly updated page, which
+// looks exactly like a fix that did not work. no-cache still lets the
+// browser keep the bytes; it just has to ask first, and the ETag makes
+// the answer a 304 almost every time.
 func (s *Server) staticAsset(name, contentType string) http.HandlerFunc {
+	data, err := assetFS.ReadFile(name)
+	if err != nil {
+		return func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
+	}
+	etag := assetETag(data)
 	return func(w http.ResponseWriter, r *http.Request) {
-		data, err := assetFS.ReadFile(name)
-		if err != nil {
-			http.NotFound(w, r)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("ETag", etag)
+		if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, etag) {
+			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "public, max-age=3600")
 		w.Write(data)
 	}
+}
+
+// assetETag is a strong validator over the embedded bytes, computed
+// once at startup because the assets cannot change while we run.
+func assetETag(data []byte) string {
+	sum := sha256.Sum256(data)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+// etagMatches reports whether an If-None-Match header names this tag.
+// The header may carry several tags, and a cache may weaken them.
+func etagMatches(header, etag string) bool {
+	for _, tag := range strings.Split(header, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "*" || tag == etag || strings.TrimPrefix(tag, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // handleIcon serves one embedded icon by file name.
@@ -373,9 +417,25 @@ func (s *Server) nav(u accounts.User, page string) navData {
 	return navData{Product: ProductName, Email: u.Email, Admin: u.Perms.Admin, Page: page}
 }
 
+// permData is what the player page needs to decide, at render time,
+// which controls this account may see. Rendering them hidden server-side
+// keeps the page from reflowing under a thumb when /me comes back.
+type permData struct {
+	Steer     bool
+	NewPrompt bool
+	Save      bool
+	Admin     bool
+}
+
 // handlePlayer serves the main page.
 func (s *Server) handlePlayer(w http.ResponseWriter, r *http.Request, u accounts.User) {
-	s.render(w, http.StatusOK, "player.html", map[string]any{"Nav": s.nav(u, "player")})
+	s.render(w, http.StatusOK, "player.html", map[string]any{
+		"Nav": s.nav(u, "player"),
+		"Perms": permData{
+			Steer: u.Perms.Steer, NewPrompt: u.Perms.NewPrompt,
+			Save: u.Perms.Save, Admin: u.Perms.Admin,
+		},
+	})
 }
 
 // meJSON tells the page who is logged in and what they may do, so it can
@@ -454,6 +514,10 @@ type stateJSON struct {
 	BasePrompt  string      `json:"base_prompt"`
 	Tweaks      []tweakJSON `json:"tweaks"`
 	Vocals      bool        `json:"vocals"`
+	// LyricsGenerator is the effective lyric writer for vocal tracks;
+	// LyricsGenerators lists the ones that can be switched to.
+	LyricsGenerator  string    `json:"lyrics_generator"`
+	LyricsGenerators []genJSON `json:"lyrics_generators"`
 	// Track is the playing generated track (absent for stopgap audio);
 	// Prev is the one before it.
 	Track *trackJSON `json:"track,omitempty"`
@@ -461,6 +525,31 @@ type stateJSON struct {
 	// SavedIDs lists track ids already saved as snippets this run, so
 	// clients grey their save buttons for whatever THEY are playing.
 	SavedIDs []string `json:"saved_ids"`
+	// Languages lists the configured vocal languages and which of them
+	// the session sings in; empty means the engine chooses.
+	Languages []langJSON `json:"languages"`
+	// Looping reports the playing track is being replayed for want of
+	// anything newer, so the page can say so instead of presenting it
+	// as a fresh track.
+	Looping bool `json:"looping,omitempty"`
+	// Switching reports a steering or language change whose first fresh
+	// track is still generating.
+	Switching bool `json:"switching,omitempty"`
+}
+
+// langJSON is one configured vocal language as the page renders it.
+type langJSON struct {
+	Name string `json:"name"`
+	// Engine reports the music engine has a tag for the language; the
+	// others are sung from lyrics written in them, untagged.
+	Engine bool `json:"engine"`
+	On     bool `json:"on"`
+}
+
+// genJSON is one selectable lyric writer as the page renders it.
+type genJSON struct {
+	Name  string `json:"name"`
+	Blurb string `json:"blurb"`
 }
 
 // tweakJSON is one steering input as the page renders it.
@@ -482,25 +571,34 @@ type trackJSON struct {
 	Number   int    `json:"number,omitempty"`
 	// Saved reports the track is already saved as a snippet.
 	Saved bool `json:"saved"`
+	// Lang names the language the track is sung in, in the listener's
+	// own wording; empty when the music engine chose for itself.
+	Lang string `json:"lang,omitempty"`
+	// Lyrics is what the track is singing, absent for instrumentals.
+	Lyrics string `json:"lyrics,omitempty"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	st := s.ctl.Status()
 	out := stateJSON{
-		State:       st.State,
-		Source:      st.Source,
-		Session:     st.Session,
-		Queued:      st.Queued,
-		Generating:  st.Generating,
-		Paused:      st.Paused,
-		Volume:      st.Volume,
-		Underruns:   st.Underruns,
-		Listeners:   s.streamer.Listeners(),
-		Epoch:       st.Epoch,
-		SessionDesc: st.SessionDesc,
-		BasePrompt:  st.BasePrompt,
-		Tweaks:      []tweakJSON{},
-		Vocals:      st.Vocal,
+		State:           st.State,
+		Source:          st.Source,
+		Session:         st.Session,
+		Queued:          st.Queued,
+		Generating:      st.Generating,
+		Paused:          st.Paused,
+		Volume:          st.Volume,
+		Underruns:       st.Underruns,
+		Listeners:       s.streamer.Listeners(),
+		Epoch:           st.Epoch,
+		SessionDesc:     st.SessionDesc,
+		BasePrompt:      st.BasePrompt,
+		Tweaks:          []tweakJSON{},
+		Vocals:          st.Vocal,
+		LyricsGenerator: st.LyricsGenerator,
+	}
+	for _, g := range prompting.Generators() {
+		out.LyricsGenerators = append(out.LyricsGenerators, genJSON{Name: g.Name(), Blurb: g.Blurb()})
 	}
 	for _, tw := range st.Tweaks {
 		out.Tweaks = append(out.Tweaks, tweakJSON{
@@ -510,7 +608,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 	if st.TrackID != "" {
 		out.Track = &trackJSON{
 			ID: st.TrackID, Prompt: st.TrackPrompt, DurationS: st.Duration.Seconds(),
-			Title: st.TrackTitle, Subtitle: st.TrackSubtitle, Number: st.TrackNum, Saved: st.TrackSaved,
+			Title: st.TrackTitle, Subtitle: st.TrackSubtitle, Number: st.TrackNum,
+			Saved: st.TrackSaved, Lang: st.TrackLanguage, Lyrics: st.TrackLyrics,
 		}
 	}
 	if st.PrevTrackID != "" {
@@ -520,6 +619,12 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 	if out.SavedIDs == nil {
 		out.SavedIDs = []string{}
 	}
+	out.Languages = []langJSON{}
+	for _, l := range st.Languages {
+		out.Languages = append(out.Languages, langJSON{Name: l.Name, Engine: l.Engine, On: l.On})
+	}
+	out.Looping = st.Looping
+	out.Switching = st.Switching
 	if st.Phase != "" && st.Phase != "playing" {
 		out.Phase = st.Phase
 		out.PhaseInfo = st.PhaseElapsed.Round(time.Second).String() + " of ~" + st.PhaseExpected.Round(time.Second).String()
@@ -562,6 +667,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 type actionResponse struct {
 	OK  bool   `json:"ok"`
 	Ack string `json:"ack"`
+	// Saved answers /save without the page having to read English: the
+	// track is in the snippets, or on its way there.
+	Saved bool `json:"saved,omitempty"`
 }
 
 func (s *Server) reply(w http.ResponseWriter, ack string) {
@@ -570,13 +678,21 @@ func (s *Server) reply(w http.ResponseWriter, ack string) {
 
 // textField pulls a form/query text field with a length cap.
 func textField(r *http.Request, name string) string {
+	return textFieldN(r, name, 300)
+}
+
+// textFieldN reads one form field, capped at max bytes. Fields that
+// carry a list rather than a phrase need a larger cap: cutting one in
+// half leaves a fragment that still parses as a value, and the caller
+// then reports it as accepted.
+func textFieldN(r *http.Request, name string, max int) string {
 	r.ParseForm()
 	v := strings.TrimSpace(r.PostFormValue(name))
 	if v == "" {
 		v = strings.TrimSpace(r.FormValue(name))
 	}
-	if len(v) > 300 {
-		v = v[:300]
+	if len(v) > max {
+		v = v[:max]
 	}
 	return v
 }
@@ -589,6 +705,44 @@ func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request, u accounts.
 	}
 	ack := s.ctl.Steer(text)
 	s.ctl.Announce("remote steer by " + u.Email + ": " + text + " -> " + ack)
+	s.reply(w, ack)
+}
+
+func (s *Server) handleLyricsGen(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	name := textField(r, "name")
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	ack := s.ctl.LyricsGen(name)
+	s.ctl.Announce("remote lyric writer by " + u.Email + ": " + name + " -> " + ack)
+	s.reply(w, ack)
+}
+
+// handleLanguage switches one configured vocal language on or off.
+func (s *Server) handleLanguage(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	name := textField(r, "name")
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	on := textField(r, "on") == "1"
+	ack := s.ctl.SetLanguage(name, on)
+	s.ctl.Announce("remote language by " + u.Email + ": " + name + " -> " + ack)
+	s.reply(w, ack)
+}
+
+// handleLanguages replaces the configured vocal-language list. The
+// field is one comma-separated line, the way it is typed.
+func (s *Server) handleLanguages(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	var names []string
+	for _, part := range strings.Split(textFieldN(r, "names", 1200), ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			names = append(names, p)
+		}
+	}
+	ack := s.ctl.SetLanguages(names)
+	s.ctl.Announce("remote languages by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 
@@ -612,7 +766,14 @@ func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, u accounts.Us
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.SaveSnippet(textField(r, "which"), textField(r, "tag"))
 	s.ctl.Announce("remote save by " + u.Email + ": " + ack)
-	s.reply(w, ack)
+	writeJSON(w, http.StatusOK, actionResponse{OK: true, Ack: ack, Saved: savedAck(ack)})
+}
+
+// savedAck reports whether an acknowledgment from SaveSnippet means the
+// track is in the snippets or on its way there, so the page can grey
+// its save control without matching on English.
+func savedAck(ack string) bool {
+	return strings.HasPrefix(ack, "saving this track to ") || strings.HasPrefix(ack, "already saved:")
 }
 
 // sessionJSON is one row of the web session picker.

@@ -3,9 +3,11 @@ package player
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"iar/internal/audio"
+	"iar/internal/engine"
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/state"
@@ -63,15 +65,16 @@ func (o *Orchestrator) Steer(text string) string {
 	if musicMode {
 		response += o.steerContextNote(text)
 		if ack.ContextChanged {
-			response += o.switchEstimateNote()
+			response += o.switchEstimateNote("sound")
 		}
 	}
 	o.log.Info("steering accepted", "event", "steering", "input", text, "ack", response)
 	return response
 }
 
-// switchEstimateNote says when a context change will be audible.
-func (o *Orchestrator) switchEstimateNote() string {
+// switchEstimateNote says when a context change will be audible. what
+// names what is changing ("sound", "language").
+func (o *Orchestrator) switchEstimateNote(what string) string {
 	if o.eng == nil || !o.eng.Ready() {
 		return ""
 	}
@@ -84,7 +87,7 @@ func (o *Orchestrator) switchEstimateNote() string {
 	if est <= 0 {
 		return "; switching as soon as the new track is generated"
 	}
-	return fmt.Sprintf("; switching to the new sound in about %s", est.Round(5*time.Second))
+	return fmt.Sprintf("; switching to the new %s in about %s", what, est.Round(5*time.Second))
 }
 
 // steerContextNote appends honesty about when a steering input can be
@@ -124,15 +127,79 @@ func (o *Orchestrator) Clear() string {
 	return "steering context cleared; back to the session's base sound"
 }
 
+// LyricsGen shows or switches the lyric writer for vocal tracks. An
+// empty name reports the current one and the options.
+func (o *Orchestrator) LyricsGen(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		o.mu.Lock()
+		current := o.builder.GeneratorName(o.sess)
+		o.mu.Unlock()
+		var b strings.Builder
+		fmt.Fprintf(&b, "lyric writer: %s\navailable:\n", current)
+		for _, g := range prompting.Generators() {
+			marker := " "
+			if g.Name() == current {
+				marker = "*"
+			}
+			fmt.Fprintf(&b, " %s %-12s %s\n", marker, g.Name(), g.Blurb())
+		}
+		b.WriteString("use: lyrics <name>")
+		return b.String()
+	}
+	gen, ok := prompting.GeneratorByName(name)
+	if !ok {
+		names := make([]string, 0, len(prompting.Generators()))
+		for _, g := range prompting.Generators() {
+			names = append(names, g.Name())
+		}
+		return "unknown lyric writer " + name + " (available: " + strings.Join(names, ", ") + ")"
+	}
+	o.mu.Lock()
+	if o.builder.GeneratorName(o.sess) == gen.Name() {
+		o.mu.Unlock()
+		return gen.Name() + " is already writing the lyrics"
+	}
+	o.sess.LyricsGenerator = gen.Name()
+	ack := "lyric writer: " + gen.Name()
+	o.sess.RecordOnly("lyrics "+gen.Name(), ack)
+	// Only vocal music tracks sound different under a new writer;
+	// drop the queue then so the change is heard soon.
+	refresh := o.sess.Vocal && o.sess.Mode == session.ModeMusic
+	if refresh {
+		o.epoch++
+		o.queue = nil
+		o.steerPending = true
+	}
+	o.mu.Unlock()
+	o.saveSession()
+	o.kickGen()
+	if refresh {
+		ack += " (takes effect on the next track)"
+	} else {
+		ack += " (applies when vocals are on)"
+	}
+	o.log.Info("lyric writer switched", "event", "lyrics_generator", "name", gen.Name())
+	return ack
+}
+
 // Skip jumps to the next source at the following mix iteration. The
 // acknowledgment is honest about what will actually play when the queue
 // is empty.
 func (o *Orchestrator) Skip() string {
 	o.mu.Lock()
-	o.switchReq = true
 	noise := o.sess.Mode == session.ModeNoise
 	queued := len(o.queue)
-	looping := o.lastGood != nil
+	stale := o.lastGoodStaleLocked()
+	looping := o.lastGood != nil && !stale
+	// A switch is only armed when there is somewhere to go. With an
+	// empty queue the mixer's next stop is the last good track, so
+	// skipping would restart the recording already playing and crossfade
+	// it against itself - which is what "skipping" looked like from the
+	// outside.
+	if noise || queued > 0 {
+		o.switchReq = true
+	}
 	o.mu.Unlock()
 	o.log.Info("skip requested", "event", "skip", "queued", queued)
 	switch {
@@ -140,10 +207,12 @@ func (o *Orchestrator) Skip() string {
 		return "noise mode: nothing to skip"
 	case queued > 0:
 		return "skipping to the next track"
+	case stale:
+		return "nothing new to skip to yet - still on the previous sound while the first track in the new setting generates" + o.switchEstimateNote("sound")
 	case looping:
-		return "skipping - next track still generating, looping the last one meanwhile"
+		return "nothing new to skip to yet - the next track is still generating, so this one keeps looping" + o.switchEstimateNote("sound")
 	default:
-		return "skipping - next track still generating"
+		return "nothing new to skip to yet - the next track is still generating" + o.switchEstimateNote("sound")
 	}
 }
 
@@ -329,23 +398,24 @@ func (o *Orchestrator) Status() Status {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	st := Status{
-		BufferTarget: o.cfg.BufferTracks,
-		FailStreak:   o.failStreak,
-		LastFailure:  o.lastFailure,
-		Queued:       len(o.queue),
-		Generating:   o.genBusy,
-		Session:      o.sess.Name,
-		SessionDesc:  o.sess.Describe(),
-		Epoch:        o.epoch,
-		BasePrompt:   o.sess.BasePrompt,
-		Tweaks:       append([]session.Entry(nil), o.sess.Tweaks...),
-		Vocal:        o.sess.Vocal,
-		Volume:       int(o.volume.Load()),
-		Paused:       o.paused,
-		Underruns:    o.ring.Underruns(),
-		GenCount:     o.genCount,
-		LastGenTime:  o.lastGen,
-		Exporting:    o.exporting,
+		BufferTarget:    o.cfg.BufferTracks,
+		FailStreak:      o.failStreak,
+		LastFailure:     o.lastFailure,
+		Queued:          len(o.queue),
+		Generating:      o.genBusy,
+		Session:         o.sess.Name,
+		SessionDesc:     o.sess.Describe(),
+		Epoch:           o.epoch,
+		BasePrompt:      o.sess.BasePrompt,
+		Tweaks:          append([]session.Entry(nil), o.sess.Tweaks...),
+		Vocal:           o.sess.Vocal,
+		LyricsGenerator: o.builder.GeneratorName(o.sess),
+		Volume:          int(o.volume.Load()),
+		Paused:          o.paused,
+		Underruns:       o.ring.Underruns(),
+		GenCount:        o.genCount,
+		LastGenTime:     o.lastGen,
+		Exporting:       o.exporting,
 	}
 	if o.eng != nil {
 		st.EngineName = o.eng.Name()
@@ -366,6 +436,9 @@ func (o *Orchestrator) Status() Status {
 			st.TrackSubtitle = ts.track.Subtitle
 			st.TrackNum = o.curTrackNum
 			st.TrackSaved = o.saved[ts.track.ID]
+			st.Looping = ts.loop
+			st.TrackLanguage = trackLanguage(ts.track)
+			st.TrackLyrics = trackLyrics(ts.track)
 		}
 	}
 	if o.prevTrack != nil {
@@ -375,6 +448,8 @@ func (o *Orchestrator) Status() Status {
 		st.PrevTrackSaved = o.saved[o.prevTrack.ID]
 	}
 	st.SavedTrackIDs = append([]string(nil), o.savedOrder...)
+	st.Languages = o.languageStatesLocked()
+	st.Switching = o.steerPending
 	st.State = o.stateLocked()
 	o.mu.Unlock()
 	st.Phase, st.PhaseElapsed, st.PhaseExpected, st.PhaseSlow = o.PhaseInfo()
@@ -430,4 +505,254 @@ func (o *Orchestrator) Snapshot() (paused bool, volume int, title string) {
 func (o *Orchestrator) Announce(text string) {
 	o.log.Info("remote action", "event", "remote_action", "text", text)
 	o.emit(text)
+}
+
+// SetLanguageStore installs the sink that persists the vocal-language
+// catalogue and which of its languages are switched off. Without one
+// both still work, they just do not survive a restart.
+func (o *Orchestrator) SetLanguageStore(save func(names, off []string) error) {
+	o.mu.Lock()
+	o.saveLanguages = save
+	o.mu.Unlock()
+}
+
+// languageStatesLocked pairs the configured catalogue with the
+// session's choices; callers hold o.mu.
+func (o *Orchestrator) languageStatesLocked() []LanguageState {
+	cat := o.builder.Languages()
+	out := make([]LanguageState, 0, len(cat))
+	for _, l := range cat {
+		on, ok := o.sess.Languages[l.Name]
+		out = append(out, LanguageState{Name: l.Name, Engine: l.Engine(), On: !ok || on})
+	}
+	return out
+}
+
+// Languages lists the configured vocal languages and which of them the
+// session sings in.
+func (o *Orchestrator) Languages() []LanguageState {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.languageStatesLocked()
+}
+
+// SetLanguage switches one configured language on or off for the
+// playing session. Turning them all off hands the choice back to the
+// music engine.
+func (o *Orchestrator) SetLanguage(name string, on bool) string {
+	name = strings.Join(strings.Fields(name), " ")
+	if name == "" {
+		return "name a language to switch"
+	}
+	o.mu.Lock()
+	var match string
+	for _, l := range o.builder.Languages() {
+		if strings.EqualFold(l.Name, name) {
+			match = l.Name
+			break
+		}
+	}
+	if match == "" {
+		o.mu.Unlock()
+		return name + " is not one of the configured languages"
+	}
+	if o.sess.Languages == nil {
+		o.sess.Languages = map[string]bool{}
+	}
+	o.sess.Languages[match] = on
+	states := o.languageStatesLocked()
+	vocal := o.sess.Vocal
+	pinned := o.releasePinLocked()
+	refresh := vocal && o.sess.Mode == session.ModeMusic
+	if refresh {
+		o.epoch++
+		o.queue = nil
+		o.steerPending = true
+	}
+	save := o.saveLanguages
+	o.mu.Unlock()
+	o.saveSession()
+	o.kickGen()
+	ack := describeLanguages(states) + o.languageAckNote(vocal, pinned, refresh)
+	if save != nil {
+		if err := save(languageNames(states), switchedOff(states)); err != nil {
+			o.log.Error("saving the vocal languages failed", "event", "vocal_languages_failed", "error", err.Error())
+			ack += " (this run only: " + err.Error() + ")"
+		}
+	}
+	o.log.Info("vocal language switched", "event", "vocal_language", "name", match, "on", on)
+	return ack
+}
+
+// languageNames lists the configured languages in order.
+func languageNames(states []LanguageState) []string {
+	out := make([]string, 0, len(states))
+	for _, l := range states {
+		out = append(out, l.Name)
+	}
+	return out
+}
+
+// switchedOff lists the configured languages not currently being sung.
+func switchedOff(states []LanguageState) []string {
+	var out []string
+	for _, l := range states {
+		if !l.On {
+			out = append(out, l.Name)
+		}
+	}
+	return out
+}
+
+// releasePinLocked drops a language pinned earlier by hand ("sing in
+// french") and reports whether there was one. Touching the language
+// controls is the newest and most explicit instruction about language a
+// listener can give, and on the phone it is the only one they can give,
+// so it wins over the older steer. Callers hold o.mu.
+func (o *Orchestrator) releasePinLocked() bool {
+	if o.sess.Spec == nil || !o.sess.Spec.LanguagePinned {
+		return false
+	}
+	o.sess.Spec.LanguagePinned = false
+	o.sess.Spec.VocalLanguage = ""
+	return true
+}
+
+// languageAckNote says what a language edit will actually do, so a
+// listener who changed the list is not left guessing whether it landed.
+func (o *Orchestrator) languageAckNote(vocal, pinned, refresh bool) string {
+	note := ""
+	if pinned {
+		note = " (this replaces the language you steered in earlier)"
+	}
+	switch {
+	case !vocal:
+		return note + " (applies when vocals are on - this session is instrumental)"
+	case refresh:
+		return note + " (the tracks queued ahead were dropped)" + o.switchEstimateNote("language")
+	default:
+		return note + " (takes effect on the next track)"
+	}
+}
+
+// SetLanguages replaces the configured catalogue and persists it. An
+// empty list hands every track's language back to the music engine.
+func (o *Orchestrator) SetLanguages(names []string) string {
+	langs := prompting.ParseLanguages(names)
+	clean := make([]string, 0, len(langs))
+	for _, l := range langs {
+		clean = append(clean, l.Name)
+	}
+	// The swap and the epoch bump happen together: a generation that
+	// starts between them is built from the new catalogue and then
+	// thrown away by the epoch guard, which is a wasted minute of the
+	// graphics card exactly when the listener is waiting.
+	o.mu.Lock()
+	before := enabledSignature(o.languageStatesLocked())
+	o.builder.SetLanguages(clean)
+	// Choices about languages that are gone would silently reappear if
+	// the same name were configured again later.
+	for name := range o.sess.Languages {
+		keep := false
+		for _, l := range langs {
+			if l.Name == name {
+				keep = true
+				break
+			}
+		}
+		if !keep {
+			delete(o.sess.Languages, name)
+		}
+	}
+	states := o.languageStatesLocked()
+	save := o.saveLanguages
+	vocal := o.sess.Vocal
+	pinned := false
+	// Saving the same list again must not cost the listener the audio
+	// already generated ahead; only a real change to what is sung is
+	// worth dropping the queue for.
+	changed := enabledSignature(states) != before
+	if changed {
+		pinned = o.releasePinLocked()
+	}
+	refresh := vocal && changed && o.sess.Mode == session.ModeMusic
+	if refresh {
+		o.epoch++
+		o.queue = nil
+		o.steerPending = true
+	}
+	o.mu.Unlock()
+	o.saveSession()
+	o.kickGen()
+	ack := describeLanguages(states)
+	if changed {
+		ack += o.languageAckNote(vocal, pinned, refresh)
+	} else {
+		ack += " (unchanged)"
+	}
+	if save != nil {
+		if err := save(clean, switchedOff(states)); err != nil {
+			o.log.Error("saving the vocal languages failed", "event", "vocal_languages_failed", "error", err.Error())
+			return ack + " (this run only: " + err.Error() + ")"
+		}
+	}
+	o.log.Info("vocal languages configured", "event", "vocal_languages", "languages", strings.Join(clean, ", "))
+	return ack
+}
+
+// enabledSignature identifies the set of languages actually sung, so a
+// language edit that changes nothing audible can be left alone.
+func enabledSignature(states []LanguageState) string {
+	var sb strings.Builder
+	for _, l := range states {
+		if l.On {
+			sb.WriteString(l.Name)
+			sb.WriteByte('|')
+		}
+	}
+	return sb.String()
+}
+
+// describeLanguages says what the songs will be sung in.
+func describeLanguages(states []LanguageState) string {
+	var on []string
+	for _, l := range states {
+		if l.On {
+			on = append(on, l.Name)
+		}
+	}
+	switch len(on) {
+	case 0:
+		return "singing in whatever language the music engine picks"
+	case 1:
+		return "singing in " + on[0]
+	default:
+		return "each song picks one of " + strings.Join(on[:len(on)-1], ", ") + " or " + on[len(on)-1] + " at random"
+	}
+}
+
+// trackLyrics returns the words a track is singing, or "" when there
+// are none to show. The engine echoes back what it actually used, which
+// for an engine-planned track is the only record of the words.
+func trackLyrics(t *engine.Track) string {
+	l := strings.TrimSpace(t.Lyrics)
+	if l == engine.InstrumentalLyrics {
+		return ""
+	}
+	return l
+}
+
+// trackLanguage names the language a generated track was sung in, in
+// the listener's own wording. Tracks generated before the name was
+// carried, and hand-pinned ones, still resolve through the engine tag.
+func trackLanguage(t *engine.Track) string {
+	if t.Spec.VocalLanguageName != "" {
+		return t.Spec.VocalLanguageName
+	}
+	if !t.Spec.Vocal() {
+		// The spec carries a language even for an instrumental, where
+		// nothing is sung in it.
+		return ""
+	}
+	return prompting.LanguageName(t.Spec.VocalLanguage)
 }

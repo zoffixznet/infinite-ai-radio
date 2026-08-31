@@ -159,6 +159,75 @@ Steering accumulates: "calmer" then "no drums" gives you calm, drumless
 music. `clear` wipes the accumulated steering and returns to the session's
 base sound.
 
+### Lyric writers
+
+Vocal tracks get their words from a pluggable lyric writer; two are
+built in:
+
+- `scribe` (the default) plans each song before writing it: it pins
+  the theme down to concrete images, gives every section its own job
+  and its own rhyme sound, writes one section at a time, and checks
+  every draft against a pronouncing dictionary - syllable counts,
+  rhyme schemes, clichés, repetition budgets and theme coverage -
+  sending specific corrections back for anything that fails. The
+  chorus repeats because the song is assembled that way; nothing else
+  gets to. The dictionary machinery is English-only: for any other
+  sung language scribe writes in one pass, in that language.
+- `smoothbrain` is the original writer: one quick prompt, no plan, no
+  revision. Kept selectable for comparison.
+
+`lyrics` shows the active writer and the options; `lyrics smoothbrain`
+switches (the phone remote has the same switch under Settings). The
+choice is saved with the session, and `lyrics_generator` in the
+[configuration](docs/configuration.md) sets the default for new
+sessions. Lyric writing runs through Ollama; without a daemon the
+engine's own planner invents lyrics from the theme instead.
+
+### Sung languages
+
+Left alone, the music engine sings in whatever language it feels like,
+which is fun until it is not. Name the languages you want and every
+song picks one of them at random, so the same language can come up
+twice in a row:
+
+```
+languages English, Russian, French, Bisaya (Cebuano)
+languages              # what is configured, and what is switched on
+languages -Russian     # not in the mood for Russian right now
+languages +Russian
+languages none         # back to the engine's own choice
+```
+
+The list is saved as `vocal_languages` in the
+[configuration](docs/configuration.md), so it survives restarts and
+preset switches. The phone remote shows one switch per language on its
+Live screen, so narrowing the mix down to English is a single tap, and
+edits the list itself under Settings.
+
+The engine publishes a list of about fifty language tags, but it never
+checks a request against it, and the model behind it knows more
+languages than the list names. Cebuano is one of them: it is asked for
+by its own tag and the words come back in Cebuano, even though the
+published list has no Philippine language but Tagalog. Asking for
+Tagalog instead would get Tagalog words - a different language, not a
+Cebuano accent.
+
+A language the engine has no tag for at all still works: the words are
+written in it and sung with no language hint. That is best-effort
+rather than a guarantee, and both the `languages` listing and the phone
+remote say which languages are in that situation.
+
+The tag matters more than it looks. On tracks where the engine writes
+the words itself, it is the tag that decides which language they are
+written in, so a wrong tag does not produce an accent - it produces a
+different language.
+
+Steering a language by hand ("sing in French") pins the session to it
+and overrides the list; a preset that names a language of its own does
+not. Editing the list or flipping a switch releases that pin, drops the
+tracks queued ahead and starts generating in the new languages straight
+away.
+
 ## Commands
 
 Commands work with or without a leading slash, always with plain words and
@@ -178,6 +247,8 @@ Enter:
 | `skip` | jump to the next track |
 | `pause` / `resume` | pause or continue output |
 | `volume <0-100>` | set output volume |
+| `lyrics [name]` | show or switch the lyric writer for vocal tracks |
+| `languages [list]` | show, set or switch the languages vocals are sung in |
 | `status` | engine, buffer and session status |
 | `help` | list commands |
 | `quit` | exit |
@@ -325,8 +396,8 @@ The base folder is configurable via `snippets_dir`.
 Infinite AI Radio has a built-in web remote: a phone-first page with the
 live stream, the now-playing state and the shared steering context (the
 base sound plus every accumulated tweak, identical for every listener
-and after every reload), a steering box, a start-fresh action, a Next
-button, a session picker (save the current session under a name, load
+and after every reload), a steering box with a lyric-writer switch, a
+start-fresh action, a Next button, a session picker (save the current session under a name, load
 any session or preset), save buttons with a tag field at the top of the
 page, and a player for the tracks you have saved. Everything on it
 needs a login, and the first account is created in the terminal:
@@ -353,11 +424,11 @@ again. On phones the page defaults to **buffered playback**: it
 downloads whole upcoming tracks ahead of time and plays them
 back-to-back, so the music keeps going through minutes of dead signal
 and steering still switches to the new sound as soon as its first
-track is downloaded. A checkbox under the play button switches between
+track is downloaded. A switch under **Settings** chooses between
 buffered and the direct live stream; the direct stream is what
 non-browser players (VLC, `mpv`) get from `/stream.mp3`.
 
-How much is buffered is a per-device choice next to the checkbox,
+How much is buffered is a per-device choice next to that switch,
 with the banked minutes shown beside it:
 
 - **Economical** downloads one track ahead and keeps only a few,
@@ -374,9 +445,10 @@ the direct stream's Next to skip the shared stream for everyone.
 
 Saving from the phone always captures what YOU are hearing: in
 buffered mode that is this device's playing track, which may trail the
-machine's speakers. "Save this track" and "Save previous" sit at the
-top of the page; a button turns into a ticked "saved" style once that
-track is in your snippets, and saving it again does nothing. Every
+machine's speakers. Save is the left button in the bottom bar; its
+heart fills once that track is in your snippets, and saving it again
+does nothing. Saves are filed under the tag set in Settings, where
+"Save the previous track" also lives. Every
 track carries a generated short title (an evocative two-to-four word
 name) and a genre/mood line, which is what lock screens, saved-chunk
 lists and car displays show instead of the raw prompt, along with a
@@ -390,7 +462,34 @@ browser menu ("Add to Home screen"); how much of its identity a car
 display shows depends on the browser and is outside the page's
 control.
 
-Two conveniences are built for the car, both switchable on the page
+### The layout
+
+One screen, no page scrolling. The top bar holds a signal light, the
+Live/Saved switch and Settings. The bottom bar holds Save, Play and
+Skip, and never moves. Between them: what is playing - including the
+language it is being sung in - the language switches when you have
+configured any, and the station list - presets and your saved sessions
+- where one tap on a row starts it. Steering and the current prompt sit
+in a section you open when you want them; the words of the playing
+track sit in a section below it that is open to begin with, since they
+change with every track. Everything set once per device - buffered
+playback, the car conveniences, the save tag, the lyric writer, the
+language list - lives under Settings.
+
+### Starting the audio
+
+Browsers refuse to make sound on a page that has not been touched yet,
+so a reload while listening cannot resume by itself the first time.
+The page says "tap anywhere to start the audio" and the next tap
+starts it - no need to find the play button. To skip that tap for
+good, add the page to your home screen: an installed web app is
+allowed to start audio on its own. That exemption needs the remote to
+be served over HTTPS, so on a plain `http://` tailnet address the
+one-tap start is the way it works. Firefox for Android also has a
+per-site setting (Settings > Site settings > Autoplay > "Allow audio
+and video"); Chrome and Opera for Android have no such setting.
+
+Two conveniences are built for the car, both switchable under Settings
 and remembered per device:
 
 - **The previous-track button saves the track.** Car displays only
@@ -654,6 +753,8 @@ usually `~/.config/iar/config.json`) with these defaults:
   "mp3_quality": 0,
   "snippets_dir": "",
   "library_max_mb": 600,
+  "lyrics_generator": "scribe",
+  "vocal_languages": [],
   "remote": {
     "enabled": false, "port": 8246, "bind": [], "allowed_hosts": [],
     "smtp": { "host": "", "port": 0, "username": "", "password": "", "from": "", "tls": "starttls" }

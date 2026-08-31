@@ -51,6 +51,26 @@ type Config struct {
 	// LibraryMaxMB caps the on-disk track library that powers instant
 	// startup. Zero disables the library.
 	LibraryMaxMB int `json:"library_max_mb"`
+	// LyricsGenerator names the default lyric writer for vocal tracks
+	// ("scribe" or "smoothbrain"); the lyrics command and the phone
+	// remote switch it per session at runtime.
+	LyricsGenerator string `json:"lyrics_generator"`
+	// DefaultPreset names the preset the radio starts on when no
+	// --preset, --session or prompt is given. Empty starts from the
+	// built-in fallback sound instead.
+	DefaultPreset string `json:"default_preset"`
+	// VocalLanguages lists the languages sung vocals may use, in your
+	// own wording ("English", "Russian", "Bisaya (Cebuano)"); each song
+	// picks one of them at random. Empty - the default - leaves the
+	// choice to the music engine, which sings in whatever language it
+	// feels like.
+	VocalLanguages []string `json:"vocal_languages"`
+	// VocalLanguagesOff names the vocal languages currently switched
+	// off, out of the ones listed above. The list is what may be sung;
+	// this is what is not being sung at the moment, and it is here
+	// rather than in the session so that starting a new session does
+	// not quietly bring back a language you turned off.
+	VocalLanguagesOff []string `json:"vocal_languages_off,omitempty"`
 
 	ACEStep  ACEStep  `json:"acestep"`
 	Ollama   Ollama   `json:"ollama"`
@@ -134,6 +154,13 @@ type ACEStep struct {
 	InferenceSteps int `json:"inference_steps"`
 	// Thinking enables the engine's planner LM for higher quality output.
 	Thinking bool `json:"thinking"`
+	// OffloadDIT keeps the music model in system memory between tracks
+	// instead of resident on the graphics card. Turn it on when
+	// something else needs the card (a speech model, a game): it gives
+	// back several gigabytes for the roughly four fifths of the time no
+	// track is being generated, costs a few seconds per track and about
+	// 4.5 GB of system memory, and does not change how the music sounds.
+	OffloadDIT bool `json:"offload_dit"`
 	// RepoURL and Tag pin the engine source checkout installed by setup.
 	RepoURL string `json:"repo_url"`
 	Tag     string `json:"tag"`
@@ -163,6 +190,8 @@ func Default() Config {
 		NormalizeLoudness: true,
 		MP3Quality:        0,
 		LibraryMaxMB:      600,
+		LyricsGenerator:   "scribe",
+		DefaultPreset:     "nu-metal",
 		ACEStep: ACEStep{
 			Port:           0,
 			IdleMinutes:    15,
@@ -325,4 +354,52 @@ func writeOwnerOnly(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// SetVocalLanguages rewrites the vocal_languages setting in the config
+// file, preserving every other value, key and nesting exactly as
+// written. The phone remote edits this one setting, so the config file
+// stays the single place the choice lives.
+func SetVocalLanguages(p Paths, names []string) error {
+	return setLanguageKey(p, "vocal_languages", names)
+}
+
+// SetVocalLanguagesOff rewrites the vocal_languages_off setting the same
+// way, so a language switched off on the remote stays off across a
+// restart.
+func SetVocalLanguagesOff(p Paths, names []string) error {
+	return setLanguageKey(p, "vocal_languages_off", names)
+}
+
+func setLanguageKey(p Paths, key string, names []string) error {
+	doc := map[string]json.RawMessage{}
+	data, err := os.ReadFile(p.ConfigFile())
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("parsing %s: %w", p.ConfigFile(), err)
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		// A first write creates the file.
+	default:
+		return fmt.Errorf("reading config: %w", err)
+	}
+	if names == nil {
+		names = []string{}
+	}
+	raw, err := json.Marshal(names)
+	if err != nil {
+		return err
+	}
+	doc[key] = raw
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p.ConfigFile()), 0o755); err != nil {
+		return err
+	}
+	return writeOwnerOnly(p.ConfigFile(), out.Bytes())
 }

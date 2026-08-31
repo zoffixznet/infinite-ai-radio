@@ -199,3 +199,71 @@ func TestParseSave(t *testing.T) {
 		}
 	}
 }
+
+func TestControllerLyricsCommand(t *testing.T) {
+	c := newController(t)
+	out, quit := c.Handle("lyrics")
+	if quit || !strings.Contains(out, "scribe") || !strings.Contains(out, "smoothbrain") {
+		t.Fatalf("lyrics listing = %q", out)
+	}
+	out, _ = c.Handle("/lyrics smoothbrain")
+	if !strings.Contains(out, "smoothbrain") {
+		t.Fatalf("lyrics switch = %q", out)
+	}
+	out, _ = c.Handle("lyrics nonsense")
+	if !strings.Contains(out, "unknown") {
+		t.Fatalf("lyrics unknown = %q", out)
+	}
+}
+
+// The languages command covers the whole surface: listing, configuring,
+// switching one on or off, and handing the choice back to the engine.
+func TestControllerLanguagesCommand(t *testing.T) {
+	c := newController(t)
+
+	if out, _ := c.Handle("languages"); !strings.Contains(out, "no vocal languages configured") {
+		t.Fatalf("empty listing = %q", out)
+	}
+	if out, _ := c.Handle("languages English, Russian, Bisaya (Cebuano), Klingon"); !strings.Contains(out, "English") {
+		t.Fatalf("configure = %q", out)
+	}
+	out, _ := c.Handle("languages")
+	for _, want := range []string{"* English", "* Russian", "* Bisaya (Cebuano)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("listing missing %q:\n%s", want, out)
+		}
+	}
+	// A language the engine has no voice tag for is still usable, and
+	// the listing says so rather than hiding it.
+	if !strings.Contains(out, "sung untagged") {
+		t.Fatalf("listing does not flag the untagged language:\n%s", out)
+	}
+	if out, _ := c.Handle("lang -Russian"); strings.Contains(out, "Russian") {
+		t.Fatalf("switching Russian off should drop it from the answer: %q", out)
+	}
+	out, _ = c.Handle("languages")
+	if !strings.Contains(out, "  Russian") || strings.Contains(out, "* Russian") {
+		t.Fatalf("Russian should be listed but unmarked:\n%s", out)
+	}
+	if out, _ := c.Handle("lang +Russian"); !strings.Contains(out, "Russian") {
+		t.Fatalf("switching Russian back on = %q", out)
+	}
+	if out, _ := c.Handle("languages none"); !strings.Contains(out, "whatever language the music engine picks") {
+		t.Fatalf("clearing = %q", out)
+	}
+	if out, _ := c.Handle("languages +English"); !strings.Contains(out, "not one of the configured") {
+		t.Fatalf("switching an unconfigured language = %q", out)
+	}
+	if out, _ := c.Handle("help"); !strings.Contains(out, "languages") {
+		t.Fatalf("help does not list the command:\n%s", out)
+	}
+	// status reports what is being sung when anything is configured,
+	// and says nothing when the engine is choosing.
+	if out, _ := c.Handle("status"); strings.Contains(out, "sung in:") {
+		t.Fatalf("status names languages with none configured:\n%s", out)
+	}
+	c.Handle("languages English, Russian")
+	if out, _ := c.Handle("status"); !strings.Contains(out, "sung in:  English, Russian") {
+		t.Fatalf("status does not report the languages:\n%s", out)
+	}
+}

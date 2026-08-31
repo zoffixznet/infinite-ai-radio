@@ -77,9 +77,12 @@ func testLogger() *slog.Logger {
 }
 
 func newTestOrchestrator(t *testing.T, eng *enginetest.Mock, sess *session.Session) (*Orchestrator, *capturePlayer) {
+	return newTestOrchestratorWithStore(t, eng, sess, session.NewStore(t.TempDir()))
+}
+
+func newTestOrchestratorWithStore(t *testing.T, eng *enginetest.Mock, sess *session.Session, store *session.Store) (*Orchestrator, *capturePlayer) {
 	t.Helper()
 	pl := &capturePlayer{}
-	store := session.NewStore(t.TempDir())
 	builder := prompting.NewBuilder(nil, testLogger())
 	o := New(testConfig(), eng, builder, store, sess, pl, testLogger())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -599,16 +602,50 @@ func TestTapCarriesEveryAudiblePath(t *testing.T) {
 		})
 	})
 
-	t.Run("paused plays silence on both", func(t *testing.T) {
+	// Pause and volume are the room's controls, not the station's: a
+	// listener on the phone keeps hearing the radio when the speakers
+	// at the machine go quiet. This deliberately reverses the earlier
+	// rule that the tap matched the speakers.
+	t.Run("pausing the speakers keeps the stream live", func(t *testing.T) {
 		o, tap := newTappedOrchestrator(t, enginetest.NewMock(), session.New())
 		waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
 		o.Pause()
 		time.Sleep(400 * time.Millisecond) // flush in-flight chunks
 		before := tap.size()
 		waitFor(t, 5*time.Second, "tap still flowing while paused", func() bool { return tap.size() > before+20000 })
-		if nonSilent(tap.tail(4000)) {
-			t.Fatal("paused output must be silent on the tap, matching the speakers")
+		if !nonSilent(tap.tail(4000)) {
+			t.Fatal("a pause at the machine silenced the shared stream")
 		}
+	})
+
+	t.Run("the machine's volume does not attenuate the stream", func(t *testing.T) {
+		o, tap := newTappedOrchestrator(t, enginetest.NewMock(), session.New())
+		waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
+		o.SetVolume(0)
+		time.Sleep(400 * time.Millisecond)
+		before := tap.size()
+		waitFor(t, 5*time.Second, "tap still flowing at zero volume", func() bool { return tap.size() > before+20000 })
+		if !nonSilent(tap.tail(4000)) {
+			t.Fatal("turning the machine down silenced the shared stream")
+		}
+	})
+}
+
+// A pause silences the speakers in the room. It must not stall the
+// stream behind them: the ring holds two seconds, so a pump that stops
+// reading blocks the mixer almost at once, which stops the queue
+// draining and stops generation - and anyone listening from the phone
+// is left circling the same few tracks.
+func TestPauseKeepsTheStreamMoving(t *testing.T) {
+	o, _ := newTestOrchestrator(t, enginetest.NewMock(), session.New())
+	waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
+	o.Pause()
+	before := o.Status()
+	waitFor(t, 20*time.Second, "tracks still being generated while paused", func() bool {
+		return o.Status().GenCount > before.GenCount
+	})
+	waitFor(t, 20*time.Second, "the mixer still advancing while paused", func() bool {
+		return o.Status().TrackID != before.TrackID
 	})
 }
 
@@ -800,6 +837,59 @@ func TestSteerInterruptsCurrentTrackMidPlay(t *testing.T) {
 	})
 }
 
+func TestLanguageEditReleasesAHandSteeredPin(t *testing.T) {
+	o, _ := newTestOrchestrator(t, enginetest.NewMock(), session.New())
+	o.SetLanguages([]string{"English", "Russian"})
+	o.Steer("vocals in french")
+	o.mu.Lock()
+	pinned := o.sess.Spec != nil && o.sess.Spec.LanguagePinned
+	o.mu.Unlock()
+	if !pinned {
+		t.Fatal("steering a language should pin it")
+	}
+	// The chips are the newest and most explicit thing said about
+	// language, and on the phone they are the only thing that can be
+	// said, so they release the older steer instead of being ignored.
+	ack := o.SetLanguage("Russian", false)
+	o.mu.Lock()
+	spec := o.sess.Spec
+	o.mu.Unlock()
+	if spec.LanguagePinned || spec.VocalLanguage != "" {
+		t.Fatalf("the pin survived a language edit: %+v", spec)
+	}
+	if !strings.Contains(ack, "steered in earlier") {
+		t.Fatalf("the ack said nothing about replacing the steer: %q", ack)
+	}
+}
+
+func TestSavingTheSameLanguagesKeepsTheQueue(t *testing.T) {
+	o, _ := newTestOrchestrator(t, enginetest.NewMock(), session.New())
+	o.mu.Lock()
+	o.sess.Vocal = true
+	o.mu.Unlock()
+	o.SetLanguages([]string{"English", "Russian"})
+	waitFor(t, 20*time.Second, "a track queued", func() bool {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		return len(o.queue) > 0
+	})
+	o.mu.Lock()
+	epoch, queued := o.epoch, len(o.queue)
+	o.mu.Unlock()
+	// Saving an unchanged list must not throw away minutes of audio
+	// that is already generated and still correct.
+	ack := o.SetLanguages([]string{"English", "Russian"})
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.epoch != epoch || len(o.queue) != queued {
+		t.Fatalf("an unchanged list dropped the queue: epoch %d->%d, queued %d->%d",
+			epoch, o.epoch, queued, len(o.queue))
+	}
+	if !strings.Contains(ack, "unchanged") {
+		t.Fatalf("ack = %q", ack)
+	}
+}
+
 func TestSkipAckHonesty(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	o := New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), store, session.New(), &capturePlayer{}, testLogger())
@@ -809,9 +899,22 @@ func TestSkipAckHonesty(t *testing.T) {
 	}
 	o.mu.Lock()
 	o.lastGood = mkTrack("x", 1)
+	o.lastGoodEpoch = o.epoch
+	armed := o.switchReq
 	o.mu.Unlock()
+	if armed {
+		t.Fatal("a skip with an empty queue armed a switch into the track already playing")
+	}
 	if got := o.Skip(); !strings.Contains(got, "looping") {
 		t.Fatalf("loop-fallback skip ack = %q", got)
+	}
+	// After a context change the last good track is the sound the
+	// listener just left, and the ack must not pretend otherwise.
+	o.mu.Lock()
+	o.epoch++
+	o.mu.Unlock()
+	if got := o.Skip(); !strings.Contains(got, "previous sound") {
+		t.Fatalf("stale loop-fallback skip ack = %q", got)
 	}
 	o.mu.Lock()
 	o.queue = append(o.queue, mkTrack("y", 1))
@@ -856,15 +959,188 @@ func TestSnippetAckShowsOnlyTagAndFile(t *testing.T) {
 	})
 }
 
+// The generator reads the session's language map on its own goroutine
+// while the controls write it. A hand-rolled session copy used to leave
+// that map aliased, which is a concurrent map read and write: Go kills
+// the process outright, and it would happen exactly while someone was
+// fiddling with the language chips.
+func TestLanguageSwitchingRacesGeneration(t *testing.T) {
+	sess := session.New()
+	sess.Vocal = true // BuildSpec only reads the language map for vocals
+	o, _ := newTestOrchestrator(t, enginetest.NewMock(), sess)
+	o.SetLanguages([]string{"English", "Russian", "French"})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_, snap := o.snapshotSession()
+			o.builder.BuildSpec(context.Background(), snap, 30)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			o.SetLanguage("Russian", i%2 == 0)
+		}
+	}()
+	time.Sleep(500 * time.Millisecond)
+	close(done)
+	wg.Wait()
+}
+
+func TestTrackLanguageOnlyReportsWhatIsSung(t *testing.T) {
+	vocal := &engine.Track{Spec: engine.Spec{SampleQuery: "pop, with sung vocals", VocalLanguage: "ru"}}
+	if got := trackLanguage(vocal); got != "Russian" {
+		t.Errorf("vocal track language = %q", got)
+	}
+	named := &engine.Track{Spec: engine.Spec{
+		SampleQuery: "island pop", VocalLanguage: "ceb", VocalLanguageName: "Bisaya (Cebuano)",
+	}}
+	// The listener's own wording wins over the tag: "ceb" is not a name
+	// anyone would recognise on a now-playing line.
+	if got := trackLanguage(named); got != "Bisaya (Cebuano)" {
+		t.Errorf("named-language track = %q", got)
+	}
+	inst := &engine.Track{Spec: engine.Spec{Prompt: "lofi", Lyrics: engine.InstrumentalLyrics, VocalLanguage: "fr"}}
+	if got := trackLanguage(inst); got != "" {
+		t.Errorf("an instrumental reported a language: %q", got)
+	}
+}
+
+func TestTrackLyricsShowsOnlyRealWords(t *testing.T) {
+	// The engine echoes back what it actually sang, which for a track it
+	// planned itself is the only record of the words.
+	sung := &engine.Track{Lyrics: "  [Verse]\nnaay usa ka gabii\n"}
+	if got := trackLyrics(sung); got != "[Verse]\nnaay usa ka gabii" {
+		t.Errorf("lyrics = %q", got)
+	}
+	if got := trackLyrics(&engine.Track{Lyrics: engine.InstrumentalLyrics}); got != "" {
+		t.Errorf("the instrumental marker is not lyrics: %q", got)
+	}
+	if got := trackLyrics(&engine.Track{}); got != "" {
+		t.Errorf("empty lyrics = %q", got)
+	}
+}
+
+func TestLanguageSwitchesSurviveAReload(t *testing.T) {
+	dir := t.TempDir()
+	store := session.NewStore(dir)
+	sess := session.New()
+	sess.Name = "keeper"
+	sess.Vocal = true
+	o, _ := newTestOrchestratorWithStore(t, enginetest.NewMock(), sess, store)
+	o.SetLanguages([]string{"English", "Russian", "French"})
+	o.SetLanguage("Russian", false)
+
+	// Within the run, every reader sees the same thing (a browser
+	// reload just re-reads this).
+	for _, l := range o.Status().Languages {
+		if l.Name == "Russian" && l.On {
+			t.Fatal("Russian still reads as on straight after switching it off")
+		}
+	}
+	// And it reached the saved session, so it is not lost with the
+	// process.
+	waitFor(t, 5*time.Second, "session saved", func() bool {
+		got, err := store.Load("keeper")
+		return err == nil && got.Languages != nil
+	})
+	got, err := store.Load("keeper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on, ok := got.Languages["Russian"]; !ok || on {
+		t.Fatalf("saved session languages = %+v", got.Languages)
+	}
+}
+
+func TestQueueListingDuringASwitchover(t *testing.T) {
+	lib := library.New(t.TempDir(), 100, testLogger())
+	sess := session.New()
+	sess.Vocal = true
+	o, _ := newTestOrchestrator(t, enginetest.NewMock(), sess)
+	o.Library = lib
+	o.SetLanguages([]string{"English", "Russian"})
+
+	// Two banked tracks for this vibe, one in each language.
+	for _, lang := range []string{"English", "Russian"} {
+		tr := mkTrack("banked "+lang, 1)
+		tr.Spec.VocalLanguageName = lang
+		if err := lib.Put(library.Key(sess), tr); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(1100 * time.Millisecond) // ids start with a whole-second timestamp
+	}
+
+	fillerLangs := func() []string {
+		var out []string
+		_, tracks := o.QueueTracks()
+		for _, qt := range tracks {
+			if qt.Kind == "library" {
+				out = append(out, qt.Prompt)
+			}
+		}
+		return out
+	}
+
+	// A language the session no longer sings in must not be offered:
+	// a remote client would download it and present it as the new
+	// setting taking effect.
+	o.SetLanguage("English", false)
+	o.mu.Lock()
+	o.steerPending = false // the switchover suppression is tested below
+	o.mu.Unlock()
+	for _, p := range fillerLangs() {
+		if strings.Contains(p, "English") {
+			t.Fatalf("filler still offers a language that is switched off: %q", p)
+		}
+	}
+	if len(fillerLangs()) == 0 {
+		t.Fatal("filler dropped the language that is still switched on")
+	}
+
+	// While the first track of a new context generates, nothing banked
+	// is offered at all: it is all older than what is already playing.
+	o.mu.Lock()
+	o.steerPending = true
+	o.mu.Unlock()
+	if got := fillerLangs(); len(got) != 0 {
+		t.Fatalf("filler offered during a switchover: %v", got)
+	}
+}
+
 func TestQueueTracksAndTrackData(t *testing.T) {
 	eng := enginetest.NewMock()
 	sess := session.New()
 	o, pl := newTestOrchestrator(t, eng, sess)
 	dir := t.TempDir()
 	o.Library = library.New(dir, 100, testLogger())
-	waitFor(t, 10*time.Second, "queue filled", func() bool { return o.Status().Queued >= 1 })
-
-	epoch, tracks := o.QueueTracks()
+	// Read the listing inside the wait: checking Status first and
+	// listing after leaves a window for the mixer to take the only
+	// queued track, which makes this test flake under load.
+	var epoch int
+	var tracks []QueueTrack
+	waitFor(t, 10*time.Second, "a freshly generated track listed", func() bool {
+		epoch, tracks = o.QueueTracks()
+		for _, qt := range tracks {
+			if qt.Kind == "queue" {
+				return true
+			}
+		}
+		return false
+	})
 	queued := 0
 	for _, qt := range tracks {
 		if qt.ID == "" || qt.Seconds <= 0 || (qt.Kind != "queue" && qt.Kind != "library") {
@@ -1044,5 +1320,152 @@ func TestTracksGetTitlesAndNumbers(t *testing.T) {
 	}
 	if st.PrevTrackID != first || st.PrevTrackTitle == "" {
 		t.Fatalf("previous track fields wrong: %+v", st)
+	}
+}
+
+func TestLyricsGenSwitching(t *testing.T) {
+	eng := enginetest.NewMock()
+	o, _ := newTestOrchestrator(t, eng, session.New())
+
+	if st := o.Status(); st.LyricsGenerator != prompting.DefaultGeneratorName {
+		t.Fatalf("default lyric writer = %q", st.LyricsGenerator)
+	}
+	listing := o.LyricsGen("")
+	if !strings.Contains(listing, "scribe") || !strings.Contains(listing, "smoothbrain") {
+		t.Fatalf("listing must name the writers: %q", listing)
+	}
+	if ack := o.LyricsGen("bogus"); !strings.Contains(ack, "unknown") {
+		t.Fatalf("bogus writer ack = %q", ack)
+	}
+	ack := o.LyricsGen("smoothbrain")
+	if !strings.Contains(ack, "smoothbrain") {
+		t.Fatalf("switch ack = %q", ack)
+	}
+	if st := o.Status(); st.LyricsGenerator != "smoothbrain" {
+		t.Fatalf("status after switch = %q", st.LyricsGenerator)
+	}
+	if ack := o.LyricsGen("smoothbrain"); !strings.Contains(ack, "already") {
+		t.Fatalf("repeat switch ack = %q", ack)
+	}
+	// The choice survives in the persisted session.
+	name := o.CurrentName()
+	o.NameSession("keep-lyrics")
+	loaded := o.LoadByName("keep-lyrics")
+	if !strings.Contains(loaded, "keep-lyrics") {
+		t.Fatalf("reload failed: %q (session %q)", loaded, name)
+	}
+	if st := o.Status(); st.LyricsGenerator != "smoothbrain" {
+		t.Fatalf("lyric writer lost on reload: %q", st.LyricsGenerator)
+	}
+}
+
+// The vocal-language catalogue is configured once, switched per session
+// and persisted; every capability the phone remote drives is here.
+func TestVocalLanguagesConfigureSwitchAndPersist(t *testing.T) {
+	eng := enginetest.NewMock()
+	sess := session.New()
+	sess.Vocal = true
+	o, _ := newTestOrchestrator(t, eng, sess)
+
+	var saved, savedOff [][]string
+	o.SetLanguageStore(func(names, off []string) error {
+		saved = append(saved, append([]string(nil), names...))
+		savedOff = append(savedOff, append([]string(nil), off...))
+		return nil
+	})
+
+	// Nothing configured: the music engine keeps choosing.
+	if states := o.Languages(); len(states) != 0 {
+		t.Fatalf("a fresh run has no configured languages: %+v", states)
+	}
+
+	ack := o.SetLanguages([]string{"English", "Russian", "Bisaya (Cebuano)"})
+	if !strings.Contains(ack, "English") || !strings.Contains(ack, "Bisaya (Cebuano)") {
+		t.Fatalf("acknowledgment does not name the languages: %q", ack)
+	}
+	if len(saved) != 1 || strings.Join(saved[0], "|") != "English|Russian|Bisaya (Cebuano)" {
+		t.Fatalf("catalogue was not persisted: %v", saved)
+	}
+
+	states := o.Languages()
+	if len(states) != 3 {
+		t.Fatalf("configured languages: %+v", states)
+	}
+	for _, l := range states {
+		if !l.On {
+			t.Errorf("%s should start switched on", l.Name)
+		}
+	}
+	// Cebuano is not on the engine's published list, but it accepts the
+	// tag and writes Cebuano for it, so it counts as a language the
+	// engine can sing.
+	if !states[2].Engine {
+		t.Errorf("Cebuano should carry an engine tag: %+v", states[2])
+	}
+
+	// A switch is a standing preference, so it is written down beside
+	// the list rather than left in the session: a fresh session must
+	// not start singing a language that was turned off.
+	o.SetLanguage("Russian", false)
+	if len(savedOff) == 0 || strings.Join(savedOff[len(savedOff)-1], "|") != "Russian" {
+		t.Fatalf("switched-off languages were not persisted: %v", savedOff)
+	}
+	o.SetLanguage("Russian", true)
+	if got := savedOff[len(savedOff)-1]; len(got) != 0 {
+		t.Fatalf("switching back on left it recorded as off: %v", got)
+	}
+
+	// Switching one off leaves the rest alone.
+	o.SetLanguage("Russian", false)
+	states = o.Languages()
+	if states[0].On != true || states[1].On != false || states[2].On != true {
+		t.Fatalf("switching Russian off changed the wrong ones: %+v", states)
+	}
+	if got := o.Status().Languages; len(got) != 3 || got[1].On {
+		t.Fatalf("status does not carry the language choices: %+v", got)
+	}
+
+	// A language nobody configured cannot be switched.
+	if ack := o.SetLanguage("Klingon", true); !strings.Contains(ack, "not one of the configured") {
+		t.Errorf("unknown language ack: %q", ack)
+	}
+
+	// An edit that keeps a language keeps its switch too.
+	o.SetLanguages([]string{"English", "Russian", "Bisaya (Cebuano)", "French"})
+	if got := o.Languages(); len(got) != 4 || got[1].On {
+		t.Fatalf("an edit that keeps Russian must keep it switched off: %+v", got)
+	}
+	// Dropping a language forgets its switch, so configuring the same
+	// name again does not resurrect an old off.
+	o.SetLanguages([]string{"English", "Bisaya (Cebuano)"})
+	if got := o.Languages(); len(got) != 2 {
+		t.Fatalf("catalogue after the edit: %+v", got)
+	}
+	o.SetLanguages([]string{"English", "Russian", "Bisaya (Cebuano)"})
+	if got := o.Languages(); !got[1].On {
+		t.Errorf("Russian's old off switch survived being dropped: %+v", got)
+	}
+
+	// Switching them all off hands the choice back to the engine.
+	for _, name := range []string{"English", "Russian", "Bisaya (Cebuano)"} {
+		o.SetLanguage(name, false)
+	}
+	if ack := o.SetLanguage("English", false); !strings.Contains(ack, "whatever language the music engine picks") {
+		t.Errorf("all-off ack: %q", ack)
+	}
+}
+
+// A configured catalogue that cannot be written down still works for
+// the rest of the run, and says so.
+func TestVocalLanguagesSurviveAFailedWrite(t *testing.T) {
+	eng := enginetest.NewMock()
+	o, _ := newTestOrchestrator(t, eng, session.New())
+	o.SetLanguageStore(func(names, off []string) error { return errors.New("read-only file system") })
+	ack := o.SetLanguages([]string{"English"})
+	if !strings.Contains(ack, "this run only") || !strings.Contains(ack, "read-only file system") {
+		t.Fatalf("a failed write must be reported honestly: %q", ack)
+	}
+	if got := o.Languages(); len(got) != 1 || !got[0].On {
+		t.Fatalf("the catalogue should still be live: %+v", got)
 	}
 }

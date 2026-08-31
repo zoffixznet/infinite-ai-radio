@@ -3,122 +3,211 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0d1117">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F7F4EF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141210" media="(prefers-color-scheme: dark)">
 <title>{{.Nav.Product}}</title>
 <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <style>{{template "style.css"}}</style>
 </head>
-<body>
-<header>
-  <h1>{{.Nav.Product}}</h1>
-  <span class="sub" id="conn">remote</span>
-</header>
-{{template "nav" .Nav}}
+<body class="app">
 
-<div class="segmented" role="tablist" aria-label="Mode">
-  <button id="mode-live" class="on" role="tab" aria-selected="true">Live stream</button>
-  <button id="mode-saved" role="tab" aria-selected="false">Saved chunks</button>
+<header class="appbar">
+  <div class="inner">
+    <span class="signal" id="signal" aria-hidden="true"></span>
+    <div class="seg" role="tablist" aria-label="View">
+      <button id="mode-live" class="tap on" role="tab" aria-selected="true" type="button">Live</button>
+      <button id="mode-saved" class="tap" role="tab" aria-selected="false" type="button">Saved</button>
+    </div>
+    <button id="more" class="iconbtn tap" type="button" aria-label="Settings and more" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.34.37.63.67.83.3.2.65.31 1.01.31H21a2 2 0 0 1 0 4h-.09c-.36 0-.71.11-1.01.31-.3.2-.53.49-.67.83z"/></svg></button>
+    <span id="conn" class="sr-only" role="status"></span>
+    <span id="say" class="sr-only" role="status" aria-live="polite"></span>
+  </div>
+</header>
+
+<main class="scroll" id="scroll">
+
+  <section id="live" aria-label="Live stream">
+    <div class="nowblock">
+      <div id="now">&hellip;</div>
+      <div id="meta"></div>
+      <div id="phase"></div>
+    </div>
+
+    <section class="group" id="langgroup" hidden aria-label="Sung languages">
+      <div class="grouphead"><span class="grouplabel">Sung in</span></div>
+      <div class="chips" id="langs"></div>
+      <p class="hint" id="langnote" hidden></p>
+    </section>
+
+    <section class="group" aria-label="Stations">
+      <div class="grouphead"><span class="grouplabel">Stations</span></div>
+      <div class="list" id="sessions"><span class="empty">loading&hellip;</span></div>
+    </section>
+
+    <details class="group" id="steercard">
+      <summary class="grouphead tap"><span class="grouplabel" id="soundlabel">Steer the sound</span><span class="chev" aria-hidden="true"></span></summary>
+      <div class="list pad">
+        <div id="baseprompt">&hellip;</div>
+        <div id="tweaks" class="chips"></div>
+        <div id="steerbox"{{if not (or .Perms.Steer .Perms.NewPrompt)}} hidden{{end}}>
+          <textarea id="text" placeholder="calmer &middot; more energetic &middot; add vocals about winning"></textarea>
+          <div class="row">
+            <button class="action primary tap" id="steer" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}}>Steer</button>
+            <button class="action tap" id="fresh" type="button" data-perm="new_prompt"{{if not .Perms.NewPrompt}} hidden{{end}}>Start fresh</button>
+          </div>
+          <div id="steerstatus" class="cardstatus"></div>
+        </div>
+        <div id="nowprompt"></div>
+      </div>
+    </details>
+
+    <details class="group" id="lyricscard" open>
+      <summary class="grouphead tap"><span class="grouplabel">Lyrics</span><span class="chev" aria-hidden="true"></span></summary>
+      <div class="pad">
+        <div class="lyrhead">
+          <button class="action tap" id="lyrcopy" type="button">Copy</button>
+          <span id="lyrcopystatus" class="cardstatus"></span>
+        </div>
+        <p id="lyrics" class="lyrics"><span class="empty">nothing sung yet</span></p>
+      </div>
+    </details>
+  </section>
+
+  <section id="saved" aria-label="Saved chunks" hidden>
+    <section class="group" aria-label="Tags">
+      <div class="grouphead"><span class="grouplabel">Tags to loop</span></div>
+      <div id="tags" class="chips"><span class="empty">no saved chunks yet</span></div>
+      <div id="loopstate">Looping every chunk in the selected tags</div>
+      <button class="action tap" id="backloop" type="button" hidden>Back to looping the tags</button>
+    </section>
+
+    <section class="group" aria-label="Playing on this device">
+      <div class="grouphead"><span class="grouplabel">On this device</span></div>
+      <div id="savednow" class="empty">Pick a chunk, or press play.</div>
+      <audio id="savedaudio" preload="none"></audio>
+      <p class="hint">Plays here only. The stream and the speakers keep going.</p>
+    </section>
+
+    <section class="group" aria-label="Chunks">
+      <div class="grouphead"><span class="grouplabel">Chunks</span></div>
+      <div class="list" id="chunks"><span class="empty">nothing saved yet - save a track from the live stream</span></div>
+    </section>
+  </section>
+
+</main>
+
+<div class="transportbar">
+  <div class="inner">
+    <div id="streamstate"></div>
+    <div class="transport" id="livetransport">
+      <div class="tslot">
+        <button class="tbtn tap" id="save" type="button" data-perm="save"{{if not .Perms.Save}} hidden{{end}} aria-label="Save this track">
+          <span class="glyph" id="saveglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></span><span class="sr-only" id="savelabel">Save</span>
+        </button>
+      </div>
+      <button class="tbtn main tap" id="play" type="button" aria-label="Play the live stream">
+        <span class="glyph" id="playglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="playlabel">Play</span>
+      </button>
+      <div class="tslot">
+        <button class="tbtn tap" id="next" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Skip to the next track">
+          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Skip</span>
+        </button>
+      </div>
+    </div>
+    <div class="transport" id="savedtransport" hidden>
+      <button class="tbtn tap" id="sprev" type="button" aria-label="Previous chunk">
+        <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><rect x="5.6" y="6" width="2.4" height="12" rx="1.2"/><path d="M18 6l-8.5 6 8.5 6V6z"/></svg></span><span class="sr-only">Prev</span>
+      </button>
+      <button class="tbtn main tap" id="splay" type="button" aria-label="Play the selected chunk">
+        <span class="glyph" id="splayglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="splaylabel">Play</span>
+      </button>
+      <button class="tbtn tap" id="snext" type="button" aria-label="Next chunk">
+        <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Next</span>
+      </button>
+    </div>
+  </div>
 </div>
 
-<section id="live" aria-label="Live stream">
-  <button id="play" aria-label="Play the live stream">&#9654;&#xFE0E; Play the stream</button>
-  <div id="streamstate" role="status"></div>
-  <button class="action" id="next" data-perm="steer" hidden>Next track &#9654;&#xFE0E;</button>
-  <label class="check" id="transportrow" title="Downloads upcoming tracks ahead of time so playback survives signal drops">
-    <input type="checkbox" id="buffered"> Buffered playback (rides out signal drops)
-  </label>
-  <div class="row" id="bufopts" hidden>
-    <select id="buflevel" aria-label="How much to buffer">
-      <option value="eco">Economical (least data)</option>
-      <option value="auto">Automatic</option>
-      <option value="max">Maximum (~45 min banked)</option>
-    </select>
-    <span id="bufmins" class="hint"></span>
+<dialog class="sheet" id="sheet" aria-label="Settings and more">
+  <div class="sheethead">
+    <h2>Settings</h2>
+    <button class="iconbtn tap" id="sheetclose" type="button" aria-label="Close settings"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </div>
-  <label class="check" id="carresumerow" title="Never resumes on a timer, so a phone in a pocket stays silent">
-    <input type="checkbox" id="carresume"> Resume when the car reconnects
-  </label>
-  <p class="hint">Resumes when your car asks to play, or with one tap otherwise. For hands-free resume, enable &ldquo;Automatically resume media&rdquo; in Android Auto&rsquo;s settings.</p>
+  <div class="sheetbody" tabindex="-1" autofocus>
 
-  <section class="card" id="savecard" aria-label="Save" data-perm="save" hidden>
-    <h2>Keep this track</h2>
-    <input id="tag" type="text" placeholder="tag (optional): gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
-    <div class="row">
-      <button class="action primary" id="save">&#9825;&#xFE0E; Save this track</button>
-      <button class="action" id="saveprev">Save previous</button>
-    </div>
-    <div id="savestatus" class="cardstatus" role="status"></div>
-    <label class="check" id="carsaverow" title="The car's previous-track button has no other job on an endless stream, so it doubles as Save">
-      <input type="checkbox" id="carsave"> Car &#9198;&#xFE0E; button saves the track
-    </label>
-    <p class="hint">In the car, the previous-track button (steering wheel, headset or screen) saves what you are hearing; the icon itself cannot be relabelled.</p>
-  </section>
+    <section class="card" aria-label="Playback on this device">
+      <h2>Playback on this device</h2>
+      <label class="check tap" id="transportrow">
+        <input type="checkbox" id="buffered"> Buffered playback
+      </label>
+      <p class="settingnote">Downloads whole tracks ahead of time, so a dead zone does not interrupt the music.</p>
+      <div class="row" id="bufopts" hidden>
+        <select id="buflevel" aria-label="How much to buffer">
+          <option value="eco">Economical (least data)</option>
+          <option value="auto">Automatic</option>
+          <option value="max">Maximum (~45 min banked)</option>
+        </select>
+      </div>
+      <p class="settingnote" id="bufmins"></p>
+      <label class="check tap" id="carresumerow">
+        <input type="checkbox" id="carresume"> Resume when the car reconnects
+      </label>
+      <p class="settingnote">Only when the car asks to play or you tap - never on a timer, so a phone in a pocket stays silent. For hands-free resume, turn on &ldquo;Automatically resume media&rdquo; in Android Auto.</p>
+      <label class="check tap" id="hapticsrow">
+        <input type="checkbox" id="haptics"> Buzz on save and skip
+      </label>
+    </section>
 
-  <section class="card" aria-label="Now playing">
-    <h2>Playing</h2>
-    <div id="now">&hellip;</div>
-    <div id="nowprompt" class="cmeta"></div>
-    <div id="meta"></div>
-    <div id="phase"></div>
-  </section>
+    <section class="card" id="savecard" aria-label="Saving" data-perm="save"{{if not .Perms.Save}} hidden{{end}}>
+      <h2>Saving</h2>
+      <label class="hint" for="tag">Tag new saves with</label>
+      <input id="tag" type="text" placeholder="gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
+      <button class="action tap" id="saveprev" type="button">Save the previous track</button>
+      <div id="savestatus" class="cardstatus"></div>
+      <label class="check tap" id="carsaverow">
+        <input type="checkbox" id="carsave"> Car &#9198;&#xFE0E; button saves the track
+      </label>
+      <p class="settingnote">An endless stream has no previous track, so the car's previous-track button saves what you are hearing instead. The icon itself cannot be relabelled.</p>
+      <div id="sessionsave" data-perm="save"{{if not .Perms.Save}} hidden{{end}}>
+        <label class="hint" for="sessname">Save this session as</label>
+        <div class="linkbox">
+          <input id="sessname" type="text" placeholder="gym, focus&hellip;" maxlength="60" autocomplete="off">
+          <button class="action primary tap" id="sesssave" type="button">Save</button>
+        </div>
+        <div id="sessstatus" class="cardstatus"></div>
+      </div>
+    </section>
 
-  <section class="card" id="soundcard" aria-label="Current sound">
-    <h2>Steering now</h2>
-    <div id="baseprompt">&hellip;</div>
-    <div id="tweaks" class="chips"></div>
-  </section>
+    <section class="card" id="vocalscard" aria-label="Vocals"{{if not (or .Perms.Steer .Perms.Admin)}} hidden{{end}}>
+      <h2>Vocals</h2>
+      <div id="lyricsrow" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}}>
+        <label class="hint" for="lyricsgen">Lyric writer</label>
+        <select id="lyricsgen"></select>
+      </div>
+      <div id="langedit" data-perm="admin"{{if not .Perms.Admin}} hidden{{end}}>
+        <label class="hint" for="langnames">Sing in these languages</label>
+        <input id="langnames" type="text" placeholder="English, Russian, French, Bisaya (Cebuano)" maxlength="1200" autocomplete="off">
+        <p class="settingnote">Each song picks a language at random from the ones you list here, and the switches on the Live screen narrow that down. Saving drops the tracks queued ahead and starts generating in the new languages. Leave it empty to let the music engine sing in whatever language it likes.</p>
+        <button class="action tap" id="langsave" type="button">Save languages</button>
+        <div id="langstatus" class="cardstatus"></div>
+      </div>
+    </section>
 
-  <section class="card" id="steercard" aria-label="Steering" hidden>
-    <h2>Steer the music</h2>
-    <textarea id="text" placeholder="e.g. calmer &middot; more energetic &middot; add vocals about winning"></textarea>
-    <div class="row">
-      <button class="action primary" id="steer" data-perm="steer" hidden>Steer</button>
-      <button class="action" id="fresh" data-perm="new_prompt" hidden>Start fresh</button>
-    </div>
-    <div id="steerstatus" class="cardstatus" role="status"></div>
-  </section>
+    <section class="card" aria-label="Pages">
+      <h2>This account</h2>
+      {{template "nav" .Nav}}
+    </section>
 
-  <section class="card" id="sessioncard" aria-label="Sessions">
-    <h2>Sessions</h2>
-    <div class="linkbox" id="sessionsave" data-perm="save" hidden>
-      <input id="sessname" type="text" placeholder="name this session: gym, focus&hellip;" maxlength="60" autocomplete="off">
-      <button class="action primary" id="sesssave" type="button">Save as</button>
-    </div>
-    <div id="sessstatus" class="cardstatus" role="status"></div>
-    <div id="sessions"><span class="empty">loading&hellip;</span></div>
-  </section>
+    <section class="card" aria-label="About">
+      <h2>About</h2>
+      <p class="settingnote">The live stream runs a few seconds behind the speakers at the machine. Add this page to your home screen and it starts playing without a tap.</p>
+    </section>
 
-</section>
-
-<section id="saved" aria-label="Saved chunks" hidden>
-  <section class="card">
-    <h2>Tags to loop</h2>
-    <div id="tags" class="chips"><span class="empty">no saved chunks yet</span></div>
-    <div id="loopstate">Looping every chunk in the selected tags</div>
-    <button class="action" id="backloop" hidden>Back to looping the tags</button>
-  </section>
-
-  <section class="card" aria-label="Saved player">
-    <h2>Now</h2>
-    <div id="savednow" class="empty">pick a chunk below, or press play</div>
-    <audio id="savedaudio" controls preload="none"></audio>
-    <div class="row">
-      <button class="action" id="sprev">&#9664;&#xFE0E; Previous</button>
-      <button class="action primary" id="splay">&#9654;&#xFE0E; Play</button>
-      <button class="action" id="snext">Next &#9654;&#xFE0E;</button>
-    </div>
-    <p class="hint">Plays only on this device; the live stream and the speakers are untouched.</p>
-  </section>
-
-  <section class="card" aria-label="Chunks">
-    <h2>Chunks</h2>
-    <div id="chunks"><span class="empty">nothing saved yet - save a track from the live stream</span></div>
-  </section>
-</section>
-
-<footer>live stream runs a few seconds behind the speakers</footer>
+  </div>
+</dialog>
 
 <script src="/app.js"></script>
 </body>

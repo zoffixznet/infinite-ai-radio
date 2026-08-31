@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"iar/internal/config"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,6 +52,16 @@ func runPlay(pf playFlags) error {
 	if err != nil {
 		return err
 	}
+	// A language switched off on the remote is a standing preference,
+	// not a property of one session: a fresh session must not quietly
+	// start singing in a language that was turned off. A saved session
+	// that says otherwise keeps its own answer.
+	if sess.Languages == nil && len(a.cfg.VocalLanguagesOff) > 0 {
+		sess.Languages = map[string]bool{}
+		for _, name := range a.cfg.VocalLanguagesOff {
+			sess.Languages[name] = false
+		}
+	}
 	if a.cfg.Engine == "noise" && sess.Mode != session.ModeNoise {
 		sess.Mode = session.ModeNoise
 		sess.NoiseColor = sess.NoiseBed
@@ -76,6 +87,12 @@ func runPlay(pf playFlags) error {
 	orch.SnippetsDir = a.snippetsDir()
 	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
 	orch.StateDir = &a.stateD
+	orch.SetLanguageStore(func(names, off []string) error {
+		if err := config.SetVocalLanguages(a.paths, names); err != nil {
+			return err
+		}
+		return config.SetVocalLanguagesOff(a.paths, off)
+	})
 	// Saved tracks from before tags existed move into the untagged
 	// folder once.
 	if moved, err := snippets.Migrate(orch.SnippetsDir); err != nil {

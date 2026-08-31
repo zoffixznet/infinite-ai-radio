@@ -33,6 +33,10 @@ type Spec struct {
 	KeyScale      string // "C major", "F# minor", ...
 	TimeSignature string // "2", "3", "4" or "6"
 	VocalLanguage string // ISO code for sung vocals
+	// VocalLanguageName is the listener's own wording for that
+	// language, kept for display: languages the engine has no tag for
+	// are still sung, and only this field remembers which one it was.
+	VocalLanguageName string
 	// NegativePrompt lists what the music must avoid; it drives the
 	// engine's planner-side negative conditioning.
 	NegativePrompt string

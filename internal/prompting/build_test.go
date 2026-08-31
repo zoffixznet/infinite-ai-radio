@@ -24,6 +24,10 @@ type fakeOllama struct {
 	chats     atomic.Int32
 	fills     atomic.Int32
 	jsonCalls atomic.Int32
+	// replies, when set, serves fill n the n-th entry (the last one
+	// repeats). maxFills, when set, fails every fill beyond it.
+	replies  []string
+	maxFills int32
 }
 
 func (f *fakeOllama) server(t *testing.T) *httptest.Server {
@@ -64,11 +68,17 @@ func (f *fakeOllama) server(t *testing.T) *httptest.Server {
 		if f.slow > 0 {
 			time.Sleep(f.slow)
 		}
-		if f.failFills {
+		if f.failFills || (f.maxFills > 0 && f.fills.Load() > f.maxFills) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
 		}
 		reply := f.reply
+		if n := int(f.fills.Load()) - 1; len(f.replies) > 0 {
+			if n >= len(f.replies) {
+				n = len(f.replies) - 1
+			}
+			reply = f.replies[n]
+		}
 		if len(req.Format) > 0 && f.jsonReply != "" {
 			reply = f.jsonReply
 		}
@@ -156,6 +166,23 @@ func TestBuildSpecDeterministicAndRefineMerges(t *testing.T) {
 	}
 }
 
+func TestHelperUpdatesNeverInstallALanguage(t *testing.T) {
+	// The language has a control of its own. A background guess that
+	// writes one is invisible, sticky, and outranks every list the
+	// listener edits afterwards, so the schema must not even offer it.
+	if _, ok := specUpdateSchema["properties"].(map[string]any)["vocal_language"]; ok {
+		t.Fatal("the helper is still offered a vocal_language field")
+	}
+	s := session.New()
+	s.BasePrompt = "chanson"
+	if MergeUpdate(s, SpecUpdate{Genre: []string{"chanson"}}); s.Spec.VocalLanguage != "" {
+		t.Fatalf("a helper update set the language to %q", s.Spec.VocalLanguage)
+	}
+	if s.Spec.LanguagePinned {
+		t.Fatal("a helper update pinned the language")
+	}
+}
+
 func TestSanitizeUpdateClampsHostileValues(t *testing.T) {
 	u := SpecUpdate{
 		Genre:         []string{" TECHNO ", "", strings.Repeat("x", 300)},
@@ -163,7 +190,6 @@ func TestSanitizeUpdateClampsHostileValues(t *testing.T) {
 		BPM:           9999,
 		KeyScale:      "Q weird",
 		TimeSignature: "17",
-		VocalLanguage: "klingon",
 	}
 	sanitizeUpdate(&u)
 	if u.Instruments["kick"] != 3 {
@@ -181,7 +207,7 @@ func TestSanitizeUpdateClampsHostileValues(t *testing.T) {
 	if !found || len(u.Negatives) != 0 {
 		t.Fatalf("non-positive weight must dial down, not negate: reduce=%+v negatives=%+v", u.Reduce, u.Negatives)
 	}
-	if u.BPM != 300 || u.KeyScale != "" || u.TimeSignature != "" || u.VocalLanguage != "" {
+	if u.BPM != 300 || u.KeyScale != "" || u.TimeSignature != "" {
 		t.Fatalf("invalid fields kept: %+v", u)
 	}
 	if len(u.Genre) != 2 || u.Genre[0] != "techno" || len(u.Genre[1]) > 40 {
@@ -215,6 +241,7 @@ func TestBuildSpecVocalLyricsArriveInBackground(t *testing.T) {
 	s := session.New()
 	s.Vocal = true
 	s.LyricsTheme = "winning"
+	s.LyricsGenerator = "smoothbrain"
 
 	// First vocal build falls back to the engine's planner.
 	spec := b.BuildSpec(context.Background(), s, 90)
@@ -242,7 +269,7 @@ func TestBuildSpecVocalWithoutHelperUsesSampleQuery(t *testing.T) {
 	}
 }
 
-func TestBuilderDisablesHelperAfterRepeatedFailures(t *testing.T) {
+func TestBuilderRestsHelperAfterRepeatedFailures(t *testing.T) {
 	f := &fakeOllama{failFills: true}
 	srv := f.server(t)
 	defer srv.Close()
@@ -254,9 +281,18 @@ func TestBuilderDisablesHelperAfterRepeatedFailures(t *testing.T) {
 		b.RefineAsync(s.Snapshot(), raw, func(SpecUpdate) {})
 		time.Sleep(50 * time.Millisecond)
 	}
-	waitCond(t, "helper disabled", func() bool { return !b.helperUsable() })
+	waitCond(t, "helper resting", func() bool { return !b.helperUsable() })
 	if f.fills.Load() > maxOllamaFailures {
 		t.Fatalf("helper called %d times; should stop after %d failures", f.fills.Load(), maxOllamaFailures)
+	}
+	// The rest must expire. Standing the helper down for the rest of the
+	// run turns one busy minute on a shared graphics card into an
+	// evening of engine-invented lyrics, in whatever language it likes.
+	b.mu.Lock()
+	b.restAfter = time.Now().Add(-time.Second)
+	b.mu.Unlock()
+	if !b.helperUsable() {
+		t.Fatal("the helper never came back after its rest")
 	}
 }
 

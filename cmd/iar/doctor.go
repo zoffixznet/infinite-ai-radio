@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"iar/internal/config"
 	"iar/internal/engine/acestep"
 	"iar/internal/prompting"
 	"iar/internal/remote"
@@ -91,6 +93,20 @@ func runDoctor() error {
 
 	// The shared engine daemon.
 	st, ok := a.stateD.ReadEngineState()
+	serving := 0
+	if ok && state.PIDAlive(st.PID) {
+		serving = st.PID
+	}
+	// A daemon nobody is talking to still holds the graphics card. The
+	// state file alone cannot see one, so look for the processes.
+	if stray := acestep.StrayDaemons(serving, os.Getenv(config.EnvDataDir)); len(stray) > 0 {
+		pids := make([]string, 0, len(stray))
+		for _, pid := range stray {
+			pids = append(pids, strconv.Itoa(pid))
+		}
+		check("stray engine daemons", false,
+			"pid "+strings.Join(pids, ", ")+" - not serving anyone but still holding graphics memory; end with: kill "+strings.Join(pids, " "))
+	}
 	switch {
 	case !ok || !state.PIDAlive(st.PID):
 		check("engine daemon", true, "not running (starts automatically with 'iar'; stop with 'iar engine stop')")
