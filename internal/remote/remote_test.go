@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -28,6 +29,8 @@ import (
 	"iar/internal/accounts"
 	"iar/internal/audio"
 	"iar/internal/engine"
+	"iar/internal/export"
+	"iar/internal/snippets"
 	"iar/internal/player"
 	"iar/internal/session"
 )
@@ -1751,5 +1754,104 @@ func TestStaticAssetsRevalidate(t *testing.T) {
 		if again.Header.Get("ETag") != etag {
 			t.Fatalf("%s changed its tag between identical requests", path)
 		}
+	}
+}
+
+func TestChunkCuration(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	dir := h.s.catalog.Dir()
+	os.MkdirAll(filepath.Join(dir, "untagged"), 0o755)
+	file := "20260831-120000-tumutunaw-ang-selyo.tl.mp3"
+	path := filepath.Join(dir, "untagged", file)
+	os.WriteFile(path, syntheticMP3("Tumutunaw ang Selyo", "untagged", 16000), 0o644)
+	os.WriteFile(snippets.LyricsSidecar(path), []byte("[Verse 1]\nline one"), 0o644)
+
+	// The listing carries language (from the file name), its name in
+	// words, and the sidecar lyrics.
+	_, body := admin.get("/api/chunks")
+	var listing chunksJSON
+	if err := json.Unmarshal([]byte(body), &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Chunks) != 1 {
+		t.Fatalf("listing = %+v", listing)
+	}
+	c := listing.Chunks[0]
+	if c.Language != "tl" || c.LanguageName != "Tagalog" {
+		t.Fatalf("language = %q name = %q", c.Language, c.LanguageName)
+	}
+	if !strings.Contains(c.Lyrics, "line one") {
+		t.Fatalf("lyrics = %q", c.Lyrics)
+	}
+
+	// Download variant announces an attachment with the on-disk name.
+	resp, _ := admin.get(c.URL + "?dl=1")
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
+		t.Fatalf("disposition = %q", cd)
+	}
+
+	// Moving into a free-text tag creates the group.
+	resp, body = admin.postAPI("/chunks/move", url.Values{"to": {"Late Night!"}, "item": {"untagged/" + file}})
+	if resp.StatusCode != 200 || !strings.Contains(body, `"moved":1`) {
+		t.Fatalf("move = %d %s", resp.StatusCode, body)
+	}
+	moved := filepath.Join(dir, "late_night", file)
+	if _, err := os.Stat(moved); err != nil {
+		t.Fatal("file did not move")
+	}
+	if _, err := os.Stat(snippets.LyricsSidecar(moved)); err != nil {
+		t.Fatal("sidecar did not move")
+	}
+
+	// Delete removes both files.
+	resp, body = admin.postAPI("/chunks/delete", url.Values{"tag": {"late_night"}, "file": {file}})
+	if resp.StatusCode != 200 {
+		t.Fatalf("delete = %d %s", resp.StatusCode, body)
+	}
+	if _, err := os.Stat(moved); err == nil {
+		t.Fatal("file survived delete")
+	}
+}
+
+func TestChunkRenameRewritesTitleAndName(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	h := newHarness(t, nil)
+	admin := h.admin()
+	dir := h.s.catalog.Dir()
+	os.MkdirAll(filepath.Join(dir, "untagged"), 0o755)
+	file := "20260831-120000-old-name.ru.mp3"
+	path := filepath.Join(dir, "untagged", file)
+	samples := make([]int16, 4800*2)
+	if err := export.EncodeMP3(context.Background(), samples, path, export.MP3Options{Title: "Old Name"}); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(snippets.LyricsSidecar(path), []byte("words"), 0o644)
+
+	resp, body := admin.postAPI("/chunks/rename", url.Values{
+		"tag": {"untagged"}, "file": {file}, "title": {"Дождь на закате"},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("rename = %d %s", resp.StatusCode, body)
+	}
+	newFile := "20260831-120000-дождь-на-закате.ru.mp3"
+	if !strings.Contains(body, newFile) {
+		t.Fatalf("rename reply = %s", body)
+	}
+	newPath := filepath.Join(dir, "untagged", newFile)
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatal("renamed file missing")
+	}
+	if _, err := os.Stat(snippets.LyricsSidecar(newPath)); err != nil {
+		t.Fatal("sidecar did not follow")
+	}
+	info, err := snippets.ReadInfo(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Title != "Дождь на закате" {
+		t.Fatalf("ID3 title = %q", info.Title)
 	}
 }

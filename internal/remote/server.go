@@ -248,6 +248,11 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("GET /api/queue", s.api(s.handleQueueList))
 	mux.HandleFunc("GET /queue/{file}", s.api(s.handleQueueTrack))
 	mux.HandleFunc("GET /chunks/{tag}/{file}", s.api(s.handleChunkFile))
+	// Curating the saved library: renaming and regrouping are saves;
+	// deleting follows the sessions precedent and stays admin-only.
+	mux.HandleFunc("POST /chunks/rename", s.apiPerm("rename saved tracks", permSave, s.handleChunkRename))
+	mux.HandleFunc("POST /chunks/move", s.apiPerm("move saved tracks", permSave, s.handleChunkMove))
+	mux.HandleFunc("POST /chunks/delete", s.apiPerm("delete saved tracks", permAdmin, s.handleChunkDelete))
 	mux.HandleFunc("GET /account", s.page(s.handleAccountPage))
 	mux.HandleFunc("POST /account/password", s.page(s.handleAccountPassword))
 	// Per-permission actions.
