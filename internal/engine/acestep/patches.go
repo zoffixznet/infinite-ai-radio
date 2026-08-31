@@ -68,6 +68,33 @@ var enginePatches = []enginePatch{
 		}},
 	},
 	{
+		// When a request carries lyrics but no duration, the planner's
+		// CoT reads the lyrics and its planned duration becomes the
+		// codes phase's target - the "length follows the song" path.
+		// This bounds that plan with the same ceiling the supervisor
+		// sets for sample mode, so one confused plan cannot run to the
+		// model's own ~600s limit.
+		name:   "auto-duration-cap",
+		file:   "acestep/llm_inference.py",
+		marker: "iar-patch: auto-duration-cap",
+		hunks: []patchHunk{{
+			find: `                cot_duration = float(metadata["duration"])
+`,
+			replace: `                cot_duration = float(metadata["duration"])
+                # iar-patch: auto-duration-cap (see the supervisor's
+                # patch list for rationale).
+                _iar_cap_raw = os.getenv("ACESTEP_SAMPLE_DURATION_CAP", "")
+                if _iar_cap_raw:
+                    try:
+                        _iar_cap = float(_iar_cap_raw)
+                    except ValueError:
+                        _iar_cap = 0.0
+                    if _iar_cap > 0 and cot_duration > _iar_cap:
+                        cot_duration = _iar_cap
+`,
+		}},
+	},
+	{
 		// In sample mode the planner LM chooses the track length and
 		// the request's audio_duration is discarded, so nothing bounds
 		// how long (and how memory- and time-expensive) a track can

@@ -687,31 +687,31 @@ func polishLine(line string) string {
 // English phonetic machinery does not apply; structure and density
 // guidance still follow the engine's conventions.
 func (s *Scribe) simple(ctx context.Context, llm LLM, req LyricsRequest) (string, error) {
-	lines := 16
-	if req.Seconds > 0 {
-		lines = req.Seconds * 17 / 150
-		if lines < 8 {
-			lines = 8
-		}
-		if lines > 22 {
-			lines = 22
-		}
-	}
+	// No length prescription: the words should be a complete song on
+	// their own terms, and the track's duration is derived from them
+	// afterwards (the engine plans a fitting length when the request
+	// carries lyrics and no duration). Telling the model how many
+	// lines to write is how every song ends up the same shape.
 	system := fmt.Sprintf(`You write song lyrics for a music model. Output ONLY the lyrics.
-Format: section tags in Title Case on their own lines - [Intro], [Verse 1],
-[Chorus], [Verse 2], [Bridge], [Outro] - with a blank line between
-sections and no other markup. About %d sung lines total; 5-10 syllables
-per line; the chorus appears twice with identical words; every other
-line is fresh (never repeat one sentence over and over).
+Format: section tags in Title Case on their own lines - like [Intro],
+[Verse 1], [Chorus], [Verse 2], [Bridge], [Outro] - with a blank line
+between sections and no other markup. Write a complete song, with as
+many sections and lines as this song needs; 5-10 syllables per sung
+line; the chorus appears at least twice with identical words; every
+other line is fresh (never repeat one sentence over and over).
 Write the lyrics entirely in %s - every sung line, in that language's
-own script. Simple concrete words; stay strictly on the given topic.`, lines, req.WriteIn())
+own script. Simple concrete words; stay strictly on the given topic.`, req.WriteIn())
 	theme := req.Theme
 	if theme == "" {
 		theme = "matching the mood of the music"
 	}
 	user := "MUSIC STYLE: " + req.Style + "\nLYRICS TOPIC: " + theme
 	return llm.ChatWith(ctx, system, user, ChatOpts{
-		Temperature: 0.85, NumCtx: 8192, NumPredict: 700,
+		// The reply cap is a safety net, not a length rule: generous
+		// enough for a full song in scripts that tokenize heavily
+		// (Cyrillic runs 2-3 tokens a word), because a sheet cut off
+		// mid-line reads as a broken song, not a shorter one.
+		Temperature: 0.85, NumCtx: 8192, NumPredict: 1100,
 		KeepAliveSeconds: scribeKeepAlive,
 	})
 }

@@ -8,20 +8,28 @@ import (
 )
 
 // fixtureEngine writes a fake engine tree whose files contain each
-// patch's anchor text, returning its root.
+// patch's anchor text, returning its root. Several patches may target
+// the same file, so anchors are accumulated per file.
 func fixtureEngine(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	files := map[string]*strings.Builder{}
 	for _, p := range enginePatches {
-		path := filepath.Join(dir, p.file)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
+		b := files[p.file]
+		if b == nil {
+			b = &strings.Builder{}
+			files[p.file] = b
 		}
-		var b strings.Builder
-		b.WriteString("# synthetic fixture for " + p.name + "\n")
+		b.WriteString("# synthetic fixture section for " + p.name + "\n")
 		for _, h := range p.hunks {
 			b.WriteString("# unrelated line\n")
 			b.WriteString(h.find)
+		}
+	}
+	for file, b := range files {
+		path := filepath.Join(dir, file)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
 		}
 		if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 			t.Fatal(err)

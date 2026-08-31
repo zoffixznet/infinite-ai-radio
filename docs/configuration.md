@@ -68,8 +68,13 @@ everything else keeps its default.
   pw-play/pacat pipe). `"pipe"`, `"null"` (silent, realtime-paced) and
   `"file"` (raw PCM to a file, used with `--player-file`) are mostly for
   scripting and tests. The `--player` flag overrides per run.
-- `track_seconds` (30-300): length of each generated track. Longer tracks
-  mean fewer transitions but steering tweaks take longer to arrive.
+- `track_seconds` (30-300): length of each generated instrumental track.
+  Longer tracks mean fewer transitions but steering tweaks take longer
+  to arrive. Vocal tracks do not follow this: a song's length comes
+  from its words - the lyric writer writes a complete song and the
+  engine derives a fitting duration from it (or, when the engine
+  writes the words itself, its planner picks a natural song length) -
+  bounded only by `max_track_seconds`.
 - `crossfade_seconds` (0.5-10): equal-power crossfade between tracks.
 - `buffer_tracks` (1-8): how many finished tracks to keep generated ahead
   of playback. The queue also feeds phone listeners who prefetch
@@ -202,10 +207,10 @@ settings (playback rides out the restart from its buffered tracks).
   system memory to hold them; the music itself is identical. It does
   not lower the peak during generation, so it fixes the collisions that
   happen between tracks, not the ones during them.
-- `max_track_seconds`: a ceiling on how long a track the engine may plan
-  when it writes the words itself - which happens whenever no lyric
-  sheet from the lyric writer is ready in time. The planner picks a
-  natural song length, typically three to four minutes. Longer plans cost proportionally more video memory and
+- `max_track_seconds`: a ceiling on vocal track length, however the
+  length was decided - derived from a written lyric sheet, or picked by
+  the engine's planner when no sheet was ready in time. Both paths
+  produce natural song lengths, typically three to four minutes. Longer plans cost proportionally more video memory and
   generation time, so the ceiling trims the occasional runaway pick
   without shortening normal songs; picks under the ceiling pass through
   untouched. 0 removes the ceiling. Instrumental tracks follow

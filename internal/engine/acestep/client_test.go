@@ -181,6 +181,21 @@ func TestEngineMapsSpecs(t *testing.T) {
 		t.Fatalf("duration = %v", f.lastReq.AudioDuration)
 	}
 
+	// Vocal with written lyrics: the words are the song, so no
+	// duration is sent and the engine derives the length from them.
+	_, err = eng.Generate(context.Background(), engine.Spec{
+		Prompt: "rock", Lyrics: "[Verse 1]\nreal words here", Seconds: 60, Seed: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.lastReq.AudioDuration != 0 {
+		t.Fatalf("vocal lyric track sent duration %v; want none", f.lastReq.AudioDuration)
+	}
+	if f.lastReq.SampleMode {
+		t.Fatalf("vocal lyric track went to sample mode: %+v", f.lastReq)
+	}
+
 	// Vocal via sample query (no local lyrics).
 	_, err = eng.Generate(context.Background(), engine.Spec{
 		SampleQuery: "rock with vocals about winning", Seconds: 60, Seed: -1,
