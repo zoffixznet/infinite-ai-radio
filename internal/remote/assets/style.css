@@ -403,12 +403,12 @@ details[open] > summary .chev { transform: rotate(180deg); }
 .ctitle {
   display: block;
   font-size: 16px; line-height: 24px; font-weight: 600;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .cmeta {
   display: block;
   color: var(--text-2); font-size: 13px; line-height: 20px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 /* A list row that carries a trailing control: the row itself is the
    button, the icon beside it is its own target. */
@@ -598,3 +598,32 @@ button.action.saved {
   border-color: var(--accent); color: var(--accent); background: transparent;
 }
 button.action.saved::before { content: "\2713\FE0E \00a0"; }
+
+/* ---- saved songs ---------------------------------------------------- */
+/* The saved page's language pills carry the same dot as the live ones. */
+#slangs .chip::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor; opacity: 0.4;
+}
+#slangs .chip.on::before { background: var(--accent); opacity: 1; }
+.songactions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-bottom: var(--s3); }
+/* The checkbox is its own touch target on the row's left edge; an
+   unchecked song stays visible (so it can be re-checked) but fades. */
+.rowcheck {
+  display: flex; align-items: center; align-self: stretch;
+  padding: 0 var(--s2) 0 var(--s4); cursor: pointer;
+}
+.rowcheck input { width: 20px; height: 20px; accent-color: var(--accent); margin: 0; }
+.chunk.unchecked .ctitle, .chunk.unchecked .cmeta { opacity: 0.45; }
+/* The accordion panel under an open song row. */
+.chunkpanel { padding: var(--s2) var(--s4) var(--s4); box-shadow: inset 0 1px 0 var(--edge); }
+.chunkpanel + .rowwrap { box-shadow: inset 0 1px 0 var(--edge); }
+.chunkpanel .paneldata { color: var(--text-2); font-size: 13px; line-height: 20px; }
+.chunkpanel pre.lyricsheet {
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font: inherit; font-size: 14px; line-height: 22px;
+  margin: var(--s3) 0 0; max-height: 45vh; overflow-y: auto;
+}
+.panelactions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); }
+.panelactions a.chip { text-decoration: none; }
+.chip.danger { color: var(--danger); border-color: var(--danger); }

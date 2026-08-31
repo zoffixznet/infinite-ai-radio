@@ -76,23 +76,30 @@
     </details>
   </section>
 
-  <section id="saved" aria-label="Saved chunks" hidden>
-    <section class="group" aria-label="Tags">
+  <section id="saved" aria-label="Saved songs" hidden>
+    <section class="group" aria-label="Tags and languages">
       <div class="grouphead"><span class="grouplabel">Tags to loop</span></div>
-      <div id="tags" class="chips"><span class="empty">no saved chunks yet</span></div>
-      <div id="loopstate">Looping every chunk in the selected tags</div>
-      <button class="action tap" id="backloop" type="button" hidden>Back to looping the tags</button>
+      <div id="tags" class="chips"><span class="empty">no saved songs yet</span></div>
+      <div class="grouphead"><span class="grouplabel">Languages to loop</span></div>
+      <div id="slangs" class="chips"></div>
+      <div id="loopstate">Looping every checked song in the selected tags and languages</div>
+      <button class="action tap" id="backloop" type="button" hidden>Back to looping the checked songs</button>
     </section>
 
     <section class="group" aria-label="Playing on this device">
       <div class="grouphead"><span class="grouplabel">On this device</span></div>
-      <div id="savednow" class="empty">Pick a chunk, or press play.</div>
+      <div id="savednow" class="empty">Pick a song, or press play.</div>
       <audio id="savedaudio" preload="none"></audio>
       <p class="hint">Plays here only. The stream and the speakers keep going.</p>
     </section>
 
-    <section class="group" aria-label="Chunks">
-      <div class="grouphead"><span class="grouplabel">Chunks</span></div>
+    <section class="group" aria-label="Songs">
+      <div class="grouphead"><span class="grouplabel">Songs</span></div>
+      <div class="songactions">
+        <button class="chip tap" id="scheckall" type="button">Check all</button>
+        <button class="chip tap" id="schecknone" type="button">Uncheck all</button>
+        <button class="chip tap" id="smovechecked" type="button">Move checked…</button>
+      </div>
       <div class="list" id="chunks"><span class="empty">nothing saved yet - save a track from the live stream</span></div>
     </section>
   </section>

@@ -26,7 +26,7 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
 - [Listening from your phone](#listening-from-your-phone)
 - [Accounts and permissions](#accounts-and-permissions)
 - [Email setup](#email-setup)
-- [Saved chunks and tags](#saved-chunks-and-tags)
+- [Saved songs and tags](#saved-songs-and-tags)
 - [Desktop integration](#desktop-integration)
 - [What the music sounds like](#what-the-music-sounds-like)
 - [Configuration](#configuration)
@@ -387,8 +387,8 @@ Tags become folder names (`snippets/gym/`, `snippets/late_night/`;
 anything that is not a letter, digit or underscore turns into an
 underscore) and are also written to the MP3's album tag. Saves without
 a tag go to `snippets/untagged/`, and tracks saved before tags existed
-are moved there the next time the player starts. The phone remote's saved-chunk player
-loops these folders by tag (see [Saved chunks and tags](#saved-chunks-and-tags)).
+are moved there the next time the player starts. The phone remote's saved-songs player
+loops these folders by tag (see [Saved songs and tags](#saved-songs-and-tags)).
 The base folder is configurable via `snippets_dir`.
 
 ## Listening from your phone
@@ -455,7 +455,7 @@ heart fills once that track is in your snippets, and saving it again
 does nothing. Saves are filed under the tag set in Settings, where
 "Save the previous track" also lives. Every
 track carries a generated short title (an evocative two-to-four word
-name) and a genre/mood line, which is what lock screens, saved-chunk
+name) and a genre/mood line, which is what lock screens, saved-song
 lists and car displays show instead of the raw prompt, along with a
 "Track N" counter.
 
@@ -508,7 +508,7 @@ and remembered per device:
   every previous-track input, including a voice assistant's "previous
   song", and the button keeps its standard icon. Turning the toggle
   off removes the button from the car instead of leaving a dead one.
-  In the saved-chunks player, previous keeps its normal meaning.
+  In the saved-songs player, previous keeps its normal meaning.
 - **Resume when the car reconnects.** When the car turns off (or the
   Bluetooth route drops), playback pauses and the page keeps the
   paused stream and its media notification alive. It resumes by itself
@@ -521,7 +521,7 @@ and remembered per device:
 <p>
 <img src="assets/remote-login.png" alt="the login page" width="190">
 <img src="assets/remote-player.png" alt="the live stream page" width="190">
-<img src="assets/remote-saved.png" alt="the saved chunks player" width="190">
+<img src="assets/remote-saved.png" alt="the saved songs player" width="190">
 <img src="assets/remote-users.png" alt="the users page with a fresh invite link" width="190">
 </p>
 
@@ -655,25 +655,39 @@ spam-foldered by the big mailbox providers, so it would fail quietly
 for exactly the people it is meant for. The links are the reliable path;
 email is a convenience on top.
 
-## Saved chunks and tags
+## Saved songs and tags
 
-The remote's **Saved chunks** mode plays the tracks you have saved,
-entirely on the phone: it never touches the live stream, other
-listeners, or the laptop's speakers.
+The remote's **Saved** mode plays the songs you have saved, entirely on
+the phone: it never touches the live stream, other listeners, or the
+laptop's speakers.
 
-- Tick the tags you want (every tag with at least one saved track is
-  listed; all are selected to begin with) and the player loops through
-  their chunks forever.
-- Each chunk shows its short title, genre line, tag, length and when
-  it was saved, with *Play* and *Loop this one*. Looping one chunk
-  repeats it until you press *Back to looping the tags*. (Tracks saved
-  by older versions keep the raw prompt as their title.)
+- Tick the tags and the languages you want (every tag and every sung
+  language with at least one saved song is listed - songs from before
+  languages were recorded show as *unknown*; all are selected to begin
+  with) and the player loops through the checked songs forever.
+- Every song row carries a checkbox: uncheck a song to skip it in the
+  loop without deleting anything. *Check all* and *Uncheck all* work on
+  the songs currently in view, and *Move checked…* regroups them under
+  any tag - typing a new name creates a new group on the spot.
+- A song row shows its title (full, wrapped - never cut off), genre
+  line, language, tag, length and when it was saved, with a *Play* and
+  a *Loop this one* button. Tapping the row itself opens the song's
+  panel: the full lyrics, its details and file name, and buttons to
+  *Download* the MP3 to this device, *Rename* it, *Move* it to another
+  tag, or *Delete* it (with a confirmation; the file and its lyrics are
+  removed from the server). Looping one song repeats it until you press
+  *Back to looping the checked songs*.
 - The built-in controls seek, pause and set volume as usual.
-- The mode and tag selection are remembered per browser.
+- The mode, tag, language and checkbox selections are remembered per
+  browser.
 
 Saving from the phone works like the terminal `save`: an optional tag
-in the box next to the button, the file appears in the chunk list a
-moment later.
+in the box next to the button, the song appears in the list a moment
+later. On disk, a saved song's file is named after its title - in the
+title's own script - with the sung language's tag before the extension
+(`20260831-120000-tumutunaw-ang-selyo.tl.mp3`), and the full lyrics sit
+next to the MP3 in a `.txt` with the same base name, so what you see in
+the interface is what you can find in the folder.
 
 ## Desktop integration
 

@@ -1689,11 +1689,23 @@
   var savedAudio = $("savedaudio");
   var chunks = [];          // everything the server has
   var tagsOn = store.get("iar.tags", {}); // tag -> selected; unknown tags default to on
-  var playlist = [];        // chunks in the selected tags
-  var current = null;       // chunk playing in saved mode
-  var repeatOne = null;     // chunk looped on its own
+  var langsOn = store.get("iar.slangs", {}); // language name -> selected; default on
+  var unchecked = store.get("iar.unchecked", {}); // song key -> true when skipped
+  var openKey = null;       // song whose accordion panel is open
+  var playlist = [];        // checked songs in the selected tags and languages
+  var current = null;       // song playing in saved mode
+  var repeatOne = null;     // song looped on its own
 
   function tagOn(tag) { return tagsOn[tag] !== false; }
+  function keyOf(c) { return c.tag + "/" + c.file; }
+  function langOf(c) { return c.language_name || "unknown"; }
+  function langOn(name) { return langsOn[name] !== false; }
+  function isChecked(c) { return unchecked[keyOf(c)] !== true; }
+  function setChecked(c, on) {
+    if (on) delete unchecked[keyOf(c)]; else unchecked[keyOf(c)] = true;
+    store.set("iar.unchecked", unchecked);
+  }
+  function visible(c) { return tagOn(c.tag) && langOn(langOf(c)); }
 
   function fmtSecs(s) {
     s = Math.round(s || 0);
@@ -1707,14 +1719,14 @@
   }
 
   function rebuildPlaylist() {
-    playlist = chunks.filter(function (c) { return tagOn(c.tag); });
+    playlist = chunks.filter(function (c) { return visible(c) && isChecked(c); });
   }
 
   function renderTags(tags) {
     var box = $("tags");
     box.innerHTML = "";
     if (!tags.length) {
-      box.innerHTML = '<span class="empty">no saved chunks yet</span>';
+      box.innerHTML = '<span class="empty">no saved songs yet</span>';
       return;
     }
     tags.forEach(function (tag) {
@@ -1736,6 +1748,135 @@
     });
   }
 
+  function renderLangs() {
+    var box = $("slangs");
+    box.innerHTML = "";
+    var names = [];
+    chunks.forEach(function (c) {
+      var n = langOf(c);
+      if (names.indexOf(n) < 0) names.push(n);
+    });
+    names.sort();
+    if (!names.length) {
+      box.innerHTML = '<span class="empty">no saved songs yet</span>';
+      return;
+    }
+    names.forEach(function (name) {
+      var label = document.createElement("label");
+      label.className = "chip tap" + (langOn(name) ? " on" : "");
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = langOn(name);
+      cb.addEventListener("change", function () {
+        langsOn[name] = cb.checked;
+        store.set("iar.slangs", langsOn);
+        label.classList.toggle("on", cb.checked);
+        rebuildPlaylist();
+        renderChunks();
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(name));
+      box.appendChild(label);
+    });
+  }
+
+  // chunkPost drives one curation action and reloads the listing;
+  // failures land in the on-this-device line, where the eyes already are.
+  function chunkPost(path, params) {
+    var body = new URLSearchParams(params).toString();
+    return fetch(path, { method: "POST", headers: headers, body: body })
+      .then(function (r) {
+        if (r.status === 401) { loggedOut(); throw new Error("logged out"); }
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (!r.ok) throw new Error(d.error || ("error " + r.status));
+          return d;
+        });
+      })
+      .then(function (d) { loadChunks(); return d; })
+      .catch(function (e) {
+        $("savednow").className = "";
+        $("savednow").textContent = "failed: " + e.message;
+        return null;
+      });
+  }
+
+  function tagListHint() {
+    var tags = [];
+    chunks.forEach(function (c) { if (tags.indexOf(c.tag) < 0) tags.push(c.tag); });
+    tags.sort();
+    return tags.length ? " Existing: " + tags.join(", ") : "";
+  }
+
+  function renameChunk(c) {
+    var title = window.prompt("New name for this song:", c.title);
+    if (title === null) return;
+    title = title.trim();
+    if (!title || title === c.title) return;
+    chunkPost("/chunks/rename", { tag: c.tag, file: c.file, title: title });
+  }
+
+  function moveChunks(list) {
+    if (!list.length) return;
+    var what = list.length === 1 ? '"' + list[0].title + '"' : list.length + " songs";
+    var to = window.prompt("Move " + what + " to tag (a new name makes a new group)." + tagListHint(), "");
+    if (to === null) return;
+    to = to.trim();
+    if (!to) return;
+    var params = new URLSearchParams({ to: to });
+    list.forEach(function (c) { params.append("item", c.tag + "/" + c.file); });
+    chunkPost("/chunks/move", params);
+  }
+
+  function deleteChunk(c) {
+    if (!window.confirm('Delete "' + c.title + '" for good? The file and its lyrics are removed from the server.')) return;
+    if (current && current.url === c.url) { savedAudio.pause(); current = null; }
+    if (repeatOne && repeatOne.url === c.url) { repeatOne = null; updateLoopState(); }
+    chunkPost("/chunks/delete", { tag: c.tag, file: c.file });
+  }
+
+  // panelFor builds the accordion panel under an open song row.
+  function panelFor(c) {
+    var panel = document.createElement("div");
+    panel.className = "chunkpanel";
+    var data = document.createElement("div");
+    data.className = "paneldata";
+    var bits = [langOf(c) === "unknown" ? "language unknown" : "sung in " + langOf(c),
+      "tag: " + c.tag, fmtSecs(c.seconds), fmtDate(c.saved), Math.round((c.bytes || 0) / 1024 / 1024 * 10) / 10 + " MB"];
+    data.textContent = bits.join(" · ");
+    panel.appendChild(data);
+    var fileLine = document.createElement("div");
+    fileLine.className = "paneldata";
+    fileLine.textContent = c.tag + "/" + c.file;
+    panel.appendChild(fileLine);
+    if (c.lyrics) {
+      var sheet = document.createElement("pre");
+      sheet.className = "lyricsheet";
+      sheet.textContent = c.lyrics;
+      panel.appendChild(sheet);
+    }
+    var actions = document.createElement("div");
+    actions.className = "panelactions";
+    var dl = document.createElement("a");
+    dl.className = "chip tap";
+    dl.href = c.url + "?dl=1";
+    dl.setAttribute("download", "");
+    dl.textContent = "Download";
+    actions.appendChild(dl);
+    var mk = function (text, fn, extra) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip tap" + (extra || "");
+      b.textContent = text;
+      b.addEventListener("click", fn);
+      actions.appendChild(b);
+    };
+    mk("Rename", function () { renameChunk(c); });
+    mk("Move…", function () { moveChunks([c]); });
+    mk("Delete", function () { deleteChunk(c); }, " danger");
+    panel.appendChild(actions);
+    return panel;
+  }
+
   function renderChunks() {
     var box = $("chunks");
     box.innerHTML = "";
@@ -1745,25 +1886,61 @@
     }
     var shown = 0;
     chunks.forEach(function (c) {
-      if (!tagOn(c.tag)) return;
+      if (!visible(c)) return;
       shown++;
+      var checked = isChecked(c);
       var looping = repeatOne && repeatOne.url === c.url;
+      var open = openKey === keyOf(c);
       var wrap = document.createElement("div");
       wrap.className = "rowwrap chunk" + (current && current.url === c.url ? " playing" : "") +
-        (looping ? " looping" : "");
+        (looping ? " looping" : "") + (checked ? "" : " unchecked");
+
+      // The checkbox decides whether the loop plays this song.
+      var check = document.createElement("label");
+      check.className = "rowcheck tap";
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = checked;
+      cb.setAttribute("aria-label", "Include " + c.title + " in the loop");
+      cb.addEventListener("change", function () {
+        setChecked(c, cb.checked);
+        rebuildPlaylist();
+        renderChunks();
+      });
+      check.appendChild(cb);
+      wrap.appendChild(check);
+
+      // The row itself opens the song's panel; playing moved to its
+      // own button so details are reachable without changing the music.
       var main = document.createElement("button");
       main.type = "button";
       main.className = "rowbtn tap" + (current && current.url === c.url ? " playing" : "");
-      main.setAttribute("data-action", "Play");
+      main.setAttribute("data-action", open ? "Close" : "Details");
+      main.setAttribute("aria-expanded", open ? "true" : "false");
       var title = document.createElement("span");
       title.className = "ctitle";
       title.textContent = c.title;
       var meta = document.createElement("span");
       meta.className = "cmeta";
-      meta.textContent = (c.subtitle ? c.subtitle + " · " : "") + c.tag + " · " + fmtSecs(c.seconds) + " · " + fmtDate(c.saved);
+      var langBit = langOf(c) === "unknown" ? "" : langOf(c) + " · ";
+      meta.textContent = (c.subtitle ? c.subtitle + " · " : "") + langBit + c.tag + " · " + fmtSecs(c.seconds) + " · " + fmtDate(c.saved);
       main.appendChild(title);
       main.appendChild(meta);
-      main.addEventListener("click", function () { playChunk(c); });
+      main.addEventListener("click", function () {
+        openKey = open ? null : keyOf(c);
+        renderChunks();
+      });
+      wrap.appendChild(main);
+
+      var play = document.createElement("button");
+      play.type = "button";
+      play.className = "rowicon tap";
+      play.setAttribute("data-action", "Play");
+      play.setAttribute("aria-label", "Play " + c.title);
+      play.innerHTML = icon.play;
+      play.addEventListener("click", function () { playChunk(c); });
+      wrap.appendChild(play);
+
       var loop = document.createElement("button");
       loop.type = "button";
       loop.className = "rowicon tap" + (looping ? " on" : "");
@@ -1774,23 +1951,35 @@
         '<path d="M4 12a8 8 0 0 1 8-8 8 8 0 0 1 6.9 4M20 12a8 8 0 0 1-8 8 8 8 0 0 1-6.9-4"/>' +
         '<path d="M19 3v5h-5M5 21v-5h5"/></svg>';
       loop.addEventListener("click", function () { looping ? unloopOne() : loopOne(c); });
-      wrap.appendChild(main);
       wrap.appendChild(loop);
+
       box.appendChild(wrap);
+      if (open) box.appendChild(panelFor(c));
     });
     if (!shown) {
-      box.innerHTML = '<span class="empty">no chunks in the selected tags</span>';
+      box.innerHTML = '<span class="empty">no songs match the checked tags and languages</span>';
     }
   }
+
+  function setAllChecked(on) {
+    chunks.forEach(function (c) { if (visible(c)) setChecked(c, on); });
+    rebuildPlaylist();
+    renderChunks();
+  }
+  $("scheckall").addEventListener("click", function () { setAllChecked(true); });
+  $("schecknone").addEventListener("click", function () { setAllChecked(false); });
+  $("smovechecked").addEventListener("click", function () {
+    moveChunks(chunks.filter(function (c) { return visible(c) && isChecked(c); }));
+  });
 
   function updateLoopState() {
     var el = $("loopstate");
     if (repeatOne) {
-      el.textContent = "Looping one chunk: " + repeatOne.title;
+      el.textContent = "Looping one song: " + repeatOne.title;
       el.className = "one";
       $("backloop").hidden = false;
     } else {
-      el.textContent = "Looping every chunk in the selected tags";
+      el.textContent = "Looping every checked song in the selected tags and languages";
       el.className = "";
       $("backloop").hidden = true;
     }
@@ -1855,6 +2044,7 @@
       if (!d) return;
       chunks = d.chunks || [];
       renderTags(d.tags || []);
+      renderLangs();
       rebuildPlaylist();
       renderChunks();
       updateLoopState();

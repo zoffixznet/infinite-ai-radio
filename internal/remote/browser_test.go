@@ -569,13 +569,13 @@ func TestRealBrowser(t *testing.T) {
 	w.click(`#chunks .chunk button[data-action="Loop"]`)
 	var loopText string
 	w.exec(`return document.getElementById('loopstate').textContent;`, &loopText)
-	if !strings.Contains(loopText, "Looping one chunk") {
+	if !strings.Contains(loopText, "Looping one song") {
 		t.Fatalf("loop indicator = %q", loopText)
 	}
 	w.screenshot(shot("remote-saved.png"))
 	w.click("#backloop")
 	w.exec(`return document.getElementById('loopstate').textContent;`, &loopText)
-	if strings.Contains(loopText, "one chunk") {
+	if strings.Contains(loopText, "one song") {
 		t.Fatalf("loop indicator after back = %q", loopText)
 	}
 	w.click("#mode-live")
