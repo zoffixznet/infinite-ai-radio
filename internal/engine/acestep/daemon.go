@@ -77,6 +77,34 @@ func processDataDir(pid int) string {
 	return ""
 }
 
+// waitForPredecessors blocks until list reports no other engine daemons,
+// ctx ends, or timeout elapses. It logs once when a wait begins and once
+// when it resolves, so the log tells restart-overlap stories honestly.
+func waitForPredecessors(ctx context.Context, timeout, poll time.Duration, log *slog.Logger, list func() []int) {
+	pids := list()
+	if len(pids) == 0 {
+		return
+	}
+	log.Info("waiting for previous engine daemon to exit",
+		"event", "daemon_predecessor_wait", "pids", fmt.Sprint(pids))
+	start := time.Now()
+	for time.Since(start) < timeout {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(poll):
+		}
+		if pids = list(); len(pids) == 0 {
+			log.Info("previous engine daemon gone",
+				"event", "daemon_predecessor_gone", "waited_seconds", time.Since(start).Seconds())
+			return
+		}
+	}
+	log.Warn("previous engine daemon still alive, proceeding anyway",
+		"event", "daemon_predecessor_stuck", "pids", fmt.Sprint(pids),
+		"waited_seconds", time.Since(start).Seconds())
+}
+
 // RunDaemon runs the engine as a long-lived daemon: it supervises the API
 // server, records its address in the state file so player processes can
 // adopt it across launches, and exits after IdleTimeout without clients.
@@ -127,6 +155,18 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig, log *slog.Logger) error {
 	defer cfg.StateDir.RemoveEngineStateIf(st.PID)
 
 	log.Info("engine daemon starting", "event", "daemon_start", "pid", st.PID, "port", port, "idle_timeout", cfg.IdleTimeout.String())
+
+	// A predecessor daemon may still be alive - superseded but not yet
+	// exited, or terminated but slow tearing down its models. Loading
+	// our models while it still holds several gigabytes of the card
+	// turns a restart into a crash-loop of out-of-memory failures, so
+	// wait for it to actually go away first. The wait is bounded: a
+	// truly stuck predecessor should not keep the radio silent forever,
+	// and the sidecar's own restart backoff copes if memory is still
+	// short when we proceed.
+	waitForPredecessors(ctx, 2*time.Minute, time.Second, log, func() []int {
+		return StrayDaemons(os.Getpid(), os.Getenv("IAR_DATA_DIR"))
+	})
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
