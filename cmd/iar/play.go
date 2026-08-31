@@ -95,6 +95,9 @@ func runPlay(pf playFlags) error {
 	orch.Timings = a.timings
 	orch.Library = a.library()
 	orch.SnippetsDir = a.snippetsDir()
+	// Saves land here; say so up front instead of making the listener
+	// dig the path out of a save acknowledgment or the docs.
+	fmt.Fprintf(os.Stderr, "iar: saved tracks go to %s\n", orch.SnippetsDir)
 	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
 	orch.StateDir = &a.stateD
 	orch.SetLanguageStore(func(names, off []string) error {
