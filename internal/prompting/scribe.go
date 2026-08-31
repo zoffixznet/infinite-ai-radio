@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -347,10 +348,18 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 			NumCtx: 8192, NumPredict: 700, KeepAliveSeconds: scribeKeepAlive,
 		})
 		if err != nil {
+			// Logged per attempt so a night of failing plans is
+			// countable from the log (the planning call is the one
+			// place thinking stays enabled, and a thinking model that
+			// burns its budget surfaces here as an empty reply).
+			slog.Default().Info("lyric plan call failed",
+				"event", "scribe_brief_failed", "attempt", attempt+1, "error", err.Error())
 			continue
 		}
 		var b scribeBrief
-		if json.Unmarshal([]byte(raw), &b) != nil {
+		if err := json.Unmarshal([]byte(raw), &b); err != nil {
+			slog.Default().Info("lyric plan unparseable",
+				"event", "scribe_brief_failed", "attempt", attempt+1, "error", err.Error())
 			continue
 		}
 		sanitizeBrief(&b)
@@ -358,6 +367,8 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 			return b
 		}
 	}
+	slog.Default().Info("lyric plan fell back to the standard shape",
+		"event", "scribe_brief_fallback", "theme", req.Theme)
 	return fallbackBrief(req)
 }
 
