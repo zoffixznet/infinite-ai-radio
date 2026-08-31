@@ -71,17 +71,17 @@ func TestValidRef(t *testing.T) {
 
 func TestFileNameAndPath(t *testing.T) {
 	now := time.Date(2026, 8, 21, 12, 34, 56, 0, time.UTC)
-	if got := FileName("Dark techno, driving bass!", now); got != "20260821-123456-dark-techno-driving-bass.mp3" {
+	if got := FileName("Dark techno, driving bass!", "", now); got != "20260821-123456-dark-techno-driving-bass.mp3" {
 		t.Fatalf("FileName = %q", got)
 	}
-	if got := FileName("", now); got != "20260821-123456-track.mp3" {
+	if got := FileName("", "", now); got != "20260821-123456-track.mp3" {
 		t.Fatalf("FileName(empty) = %q", got)
 	}
-	long := FileName(strings.Repeat("abc ", 40), now)
+	long := FileName(strings.Repeat("abc ", 40), "", now)
 	if len(long) > len("20260821-123456-")+60+len(".mp3") {
 		t.Fatalf("FileName not bounded: %q", long)
 	}
-	p := Path("/snips", "Gym Grind", "calm piano", now)
+	p := Path("/snips", "Gym Grind", "calm piano", "", now)
 	if p != filepath.Join("/snips", "gym_grind", "20260821-123456-calm-piano.mp3") {
 		t.Fatalf("Path = %q", p)
 	}
@@ -199,8 +199,8 @@ func TestCatalogListsRealEncodedChunks(t *testing.T) {
 	}
 	ctx := context.Background()
 	now := time.Date(2026, 8, 21, 10, 0, 0, 0, time.Local)
-	older := Path(dir, "Gym Grind", "energetic rock about winning", now)
-	newer := Path(dir, "", "calm piano, quiet", now.Add(time.Minute))
+	older := Path(dir, "Gym Grind", "energetic rock about winning", "", now)
+	newer := Path(dir, "", "calm piano, quiet", "", now.Add(time.Minute))
 	for _, p := range []string{older, newer} {
 		os.MkdirAll(filepath.Dir(p), 0o755)
 	}
@@ -255,5 +255,76 @@ func TestCatalogListsRealEncodedChunks(t *testing.T) {
 		if _, ok := cat.Resolve(bad[0], bad[1]); ok {
 			t.Errorf("Resolve(%q, %q) accepted", bad[0], bad[1])
 		}
+	}
+}
+
+func TestFileNameCarriesScriptAndLanguage(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.Local)
+	got := FileName("Tumutunaw ang Selyo", "tl", now)
+	if got != "20260831-120000-tumutunaw-ang-selyo.tl.mp3" {
+		t.Fatalf("FileName = %q", got)
+	}
+	if Language(got) != "tl" {
+		t.Fatalf("Language(%q) = %q", got, Language(got))
+	}
+	cyr := FileName("Дождь на закате", "ru", now)
+	if cyr != "20260831-120000-дождь-на-закате.ru.mp3" {
+		t.Fatalf("cyrillic FileName = %q", cyr)
+	}
+	if !ValidRef("untagged", cyr) {
+		t.Fatalf("unicode file name %q rejected", cyr)
+	}
+	if Language("20260831-120000-plain.mp3") != "" {
+		t.Fatal("language invented for a plain name")
+	}
+	if got := FileName("Bad Lang", "Tagalog", now); Language(got) != "" {
+		t.Fatalf("non-tag language survived: %q", got)
+	}
+}
+
+func TestCatalogDeleteMoveRetitle(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.Local)
+	path := Path(dir, "gym", "Old Name", "ru", now)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte("mp3"), 0o644)
+	os.WriteFile(LyricsSidecar(path), []byte("words"), 0o644)
+	c := NewCatalog(dir)
+	file := filepath.Base(path)
+
+	newFile, err := c.Retitle("gym", file, "New Name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newFile != "20260831-120000-new-name.ru.mp3" {
+		t.Fatalf("retitled to %q", newFile)
+	}
+	if _, err := os.Stat(LyricsSidecar(filepath.Join(dir, "gym", newFile))); err != nil {
+		t.Fatal("sidecar did not follow the rename")
+	}
+
+	slug, err := c.Move("gym", newFile, "Late Night!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "late_night" {
+		t.Fatalf("moved into %q", slug)
+	}
+	moved := filepath.Join(dir, slug, newFile)
+	if _, err := os.Stat(moved); err != nil {
+		t.Fatal("file did not move")
+	}
+	if _, err := os.Stat(LyricsSidecar(moved)); err != nil {
+		t.Fatal("sidecar did not move")
+	}
+
+	if err := c.Delete(slug, newFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(moved); err == nil {
+		t.Fatal("file survived delete")
+	}
+	if _, err := os.Stat(LyricsSidecar(moved)); err == nil {
+		t.Fatal("sidecar survived delete")
 	}
 }

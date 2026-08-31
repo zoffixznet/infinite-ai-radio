@@ -74,7 +74,10 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 	if track.Title == "" {
 		track.Title, track.Subtitle = prompting.TrackTitle(track.Prompt)
 	}
-	path := snippets.Path(o.SnippetsDir, tag, track.Prompt, time.Now())
+	// The file is named after what the interface shows - the title, in
+	// its own language's script - plus the sung language's tag, so a
+	// track heard on the remote is findable on disk by the same name.
+	path := snippets.Path(o.SnippetsDir, tag, track.Title, track.Spec.VocalLanguage, time.Now())
 	// User-facing acknowledgments show only the tag directory and file
 	// name; the absolute path stays in the log.
 	shown := filepath.Join(slug, filepath.Base(path))
@@ -106,6 +109,13 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
 			o.emit("saving the track failed: " + err.Error())
 			return
+		}
+		// The full lyric sheet rides along as a text file with the same
+		// base name (the ID3 comment only holds a truncated copy).
+		if track.Lyrics != "" && track.Lyrics != engine.InstrumentalLyrics {
+			if err := os.WriteFile(snippets.LyricsSidecar(path), []byte(track.Lyrics), 0o644); err != nil {
+				o.log.Warn("lyrics sidecar not written", "event", "snippet_lyrics_failed", "error", err.Error())
+			}
 		}
 		o.markSaved(track.ID)
 		o.log.Info("snippet saved", "event", "snippet_saved", "path", path, "prompt", prompt, "tag", slug)

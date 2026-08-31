@@ -229,3 +229,26 @@ func DefaultPath(dir, sessionName string, minutes int) string {
 	stamp := time.Now().Format("20060102-150405")
 	return filepath.Join(dir, fmt.Sprintf("%s-%dmin-%s.mp3", sessionName, minutes, stamp))
 }
+
+// RetitleMP3 rewrites an existing MP3's title tag without re-encoding
+// (stream copy), writing to a temporary name and renaming into place so
+// nothing ever sees a half-written file.
+func RetitleMP3(ctx context.Context, path, title string) error {
+	tmpPath := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".part")
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-i", path, "-map", "0:a", "-codec", "copy",
+		"-metadata", "title="+title,
+		"-id3v2_version", "3", "-f", "mp3", tmpPath)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("ffmpeg retitle: %w: %s", err, bytes.TrimSpace(errBuf.Bytes()))
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}

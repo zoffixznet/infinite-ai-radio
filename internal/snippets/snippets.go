@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Untagged is the tag a save without a tag lands in.
@@ -47,10 +48,18 @@ func Slug(tag string) string {
 	return s
 }
 
-// slugRe and fileRe validate path components coming from clients.
+// slugRe and fileRe validate path components coming from clients. File
+// names may carry any script's letters (a Tagalog or Russian title
+// keeps its own words), but only letters, digits and [._-], never a
+// path separator.
 var (
 	slugRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
-	fileRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.mp3$`)
+	fileRe = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._-]*\.mp3$`)
+	// langRe is the optional language segment before the extension
+	// ("...-title.tl.mp3"): a short lowercase engine language tag.
+	langRe  = regexp.MustCompile(`\.([a-z]{2,3})\.mp3$`)
+	langTag = regexp.MustCompile(`^[a-z]{2,3}$`)
+	dashRun = regexp.MustCompile(`-+`)
 )
 
 // ValidRef reports whether a tag/file pair names a plausible chunk
@@ -59,30 +68,62 @@ func ValidRef(tag, file string) bool {
 	return slugRe.MatchString(tag) && fileRe.MatchString(file) && !strings.Contains(file, "..")
 }
 
-// FileName builds a chunk file name: timestamp plus a slug of the prompt.
-func FileName(prompt string, now time.Time) string {
+// TitleSlug turns a track title into the file-name part of a chunk:
+// letters and digits of any script survive (lowercased), everything
+// else joins as single dashes.
+func TitleSlug(title string) string {
 	var b strings.Builder
-	for _, r := range strings.ToLower(prompt) {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+	runes := 0
+	for _, r := range strings.ToLower(title) {
+		if runes >= 48 {
+			break
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
-		case r == ' ' || r == '-' || r == '_' || r == ',' || r == '.':
+		} else {
 			b.WriteByte('-')
 		}
+		runes++
 	}
-	slug := strings.Trim(regexp.MustCompile(`-+`).ReplaceAllString(b.String(), "-"), "-")
-	if len(slug) > 60 {
-		slug = strings.TrimRight(slug[:60], "-")
-	}
+	slug := strings.Trim(dashRun.ReplaceAllString(b.String(), "-"), "-")
 	if slug == "" {
-		slug = "track"
+		return "track"
 	}
-	return fmt.Sprintf("%s-%s.mp3", now.Format("20060102-150405"), slug)
+	return slug
 }
 
-// Path returns where a chunk for tag and prompt goes under dir.
-func Path(dir, tag, prompt string, now time.Time) string {
-	return filepath.Join(dir, Slug(tag), FileName(prompt, now))
+// FileName builds a chunk file name: timestamp, a slug of the track's
+// title, and the sung language's tag when one is known - so what the
+// interface shows is what the disk says, findable by name and by
+// language.
+func FileName(title, lang string, now time.Time) string {
+	if !langTag.MatchString(lang) {
+		lang = ""
+	}
+	if lang != "" {
+		return fmt.Sprintf("%s-%s.%s.mp3", now.Format("20060102-150405"), TitleSlug(title), lang)
+	}
+	return fmt.Sprintf("%s-%s.mp3", now.Format("20060102-150405"), TitleSlug(title))
+}
+
+// Path returns where a chunk for tag, title and language goes under dir.
+func Path(dir, tag, title, lang string, now time.Time) string {
+	return filepath.Join(dir, Slug(tag), FileName(title, lang, now))
+}
+
+// Language reports the language tag encoded in a chunk file name, empty
+// when none is.
+func Language(file string) string {
+	if m := langRe.FindStringSubmatch(file); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// LyricsSidecar is the text file that carries a chunk's full lyrics,
+// next to the MP3 with the same base name.
+func LyricsSidecar(path string) string {
+	return strings.TrimSuffix(path, ".mp3") + ".txt"
 }
 
 // Migrate moves MP3 files lying directly in dir (the layout before tags
@@ -131,6 +172,13 @@ type Chunk struct {
 	Saved time.Time `json:"saved"`
 	// Bytes is the file size.
 	Bytes int64 `json:"bytes"`
+	// Language is the sung language's engine tag, read from the file
+	// name; empty for instrumental tracks and saves from before the
+	// language was recorded.
+	Language string `json:"language,omitempty"`
+	// Lyrics is the full lyric sheet from the sidecar text file; empty
+	// when none was saved.
+	Lyrics string `json:"lyrics,omitempty"`
 }
 
 // cacheKey identifies a file version.
@@ -202,6 +250,10 @@ func (c *Catalog) List() ([]Chunk, error) {
 				if ch.Title == "" {
 					ch.Title = strings.TrimSuffix(f.Name(), ".mp3")
 				}
+				ch.Language = Language(f.Name())
+				if raw, err := os.ReadFile(LyricsSidecar(path)); err == nil {
+					ch.Lyrics = string(raw)
+				}
 			}
 			fresh[key] = ch
 			out = append(out, ch)
@@ -227,4 +279,80 @@ func (c *Catalog) Resolve(tag, file string) (string, bool) {
 		return "", false
 	}
 	return path, true
+}
+
+// tsPrefixRe matches the timestamp prefix every saved file starts with.
+var tsPrefixRe = regexp.MustCompile(`^\d{8}-\d{6}-`)
+
+// Delete removes a chunk and its lyrics sidecar.
+func (c *Catalog) Delete(tag, file string) error {
+	path, ok := c.Resolve(tag, file)
+	if !ok {
+		return errors.New("no such saved track")
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	// The sidecar is best-effort on the way out too.
+	os.Remove(LyricsSidecar(path))
+	return nil
+}
+
+// Move relocates a chunk (and its sidecar) into the directory for
+// newTag - free text; the directory is created on first use, which is
+// how new tag groups come to exist. Returns the slug it landed in.
+func (c *Catalog) Move(tag, file, newTag string) (string, error) {
+	path, ok := c.Resolve(tag, file)
+	if !ok {
+		return "", errors.New("no such saved track")
+	}
+	slug := Slug(newTag)
+	if slug == tag {
+		return slug, nil
+	}
+	destDir := filepath.Join(c.dir, slug)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(destDir, file)
+	if _, err := os.Stat(dest); err == nil {
+		return "", errors.New("a track with this file name already exists under that tag")
+	}
+	if err := os.Rename(path, dest); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(LyricsSidecar(path)); err == nil {
+		os.Rename(LyricsSidecar(path), LyricsSidecar(dest))
+	}
+	return slug, nil
+}
+
+// Retitle renames a chunk's files to match a new title, keeping the
+// timestamp prefix and the language segment. It moves only the file
+// names; rewriting the MP3's own title tag is the caller's job (it
+// needs an encoder). Returns the new file name.
+func (c *Catalog) Retitle(tag, file, title string) (string, error) {
+	path, ok := c.Resolve(tag, file)
+	if !ok {
+		return "", errors.New("no such saved track")
+	}
+	suffix := ".mp3"
+	if lang := Language(file); lang != "" {
+		suffix = "." + lang + ".mp3"
+	}
+	newFile := tsPrefixRe.FindString(file) + TitleSlug(title) + suffix
+	if newFile == file {
+		return file, nil
+	}
+	dest := filepath.Join(filepath.Dir(path), newFile)
+	if _, err := os.Stat(dest); err == nil {
+		return "", errors.New("a track with this name already exists under that tag")
+	}
+	if err := os.Rename(path, dest); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(LyricsSidecar(path)); err == nil {
+		os.Rename(LyricsSidecar(path), LyricsSidecar(dest))
+	}
+	return newFile, nil
 }
