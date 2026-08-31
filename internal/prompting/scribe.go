@@ -101,25 +101,19 @@ Follow every RULE in the request exactly.`
 // in a background write.
 var think = true
 
-// scribeKeepAlive keeps the model loaded between the pipeline's calls;
-// the final Unload frees the memory for the music engine. The gaps
-// inside the pipeline are about a second, so this only has to outlast
-// those - it is the exposure after an abandoned pipeline (a kill, a
-// cancelled context) that a long value pays for, in gigabytes of video
-// memory somebody else needs.
+// scribeKeepAlive keeps the model loaded briefly after each helper
+// call, so the calls that cluster around one track - the lyric write
+// and the title that follows seconds later - share a single model load
+// instead of paying a full load each (5+ GB moved twice per track,
+// and minutes instead of seconds when the model runs on the CPU). It
+// is also the total exposure after the cluster, or after an abandoned
+// pipeline: the daemon evicts the model by itself this many seconds
+// after the last call, giving the memory back to the music engine
+// without an explicit unload racing the next caller.
 const scribeKeepAlive = 30
 
 // Generate implements LyricsGenerator.
 func (s *Scribe) Generate(ctx context.Context, llm LLM, req LyricsRequest) (string, error) {
-	defer func() {
-		if u, ok := llm.(interface{ Unload(context.Context) }); ok {
-			// A fresh context: the pipeline's may already be spent,
-			// and the whole point is freeing the music engine's VRAM.
-			uctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			u.Unload(uctx)
-		}
-	}()
 	if !req.English() {
 		return s.simple(ctx, llm, req)
 	}
@@ -716,5 +710,8 @@ own script. Simple concrete words; stay strictly on the given topic.`, lines, re
 		theme = "matching the mood of the music"
 	}
 	user := "MUSIC STYLE: " + req.Style + "\nLYRICS TOPIC: " + theme
-	return llm.ChatWith(ctx, system, user, ChatOpts{Temperature: 0.85, NumCtx: 8192, NumPredict: 700})
+	return llm.ChatWith(ctx, system, user, ChatOpts{
+		Temperature: 0.85, NumCtx: 8192, NumPredict: 700,
+		KeepAliveSeconds: scribeKeepAlive,
+	})
 }

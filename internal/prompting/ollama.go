@@ -32,7 +32,13 @@ func NewOllama(url, model string) *Ollama {
 	return &Ollama{
 		url:   strings.TrimRight(url, "/"),
 		model: model,
-		http:  &http.Client{Timeout: 90 * time.Second},
+		// A backstop only: every call site passes a context with its
+		// own deadline, and those deadlines are the real budgets. This
+		// used to be 90 seconds, which silently overrode the lyric
+		// pipeline's advertised 5-minute budget the moment the model
+		// ran on the CPU - each call died at 90s no matter how patient
+		// the caller was trying to be.
+		http: &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
@@ -235,25 +241,4 @@ func (o *Ollama) ChatWith(ctx context.Context, system, user string, opts ChatOpt
 		return "", fmt.Errorf("ollama: empty reply")
 	}
 	return reply, nil
-}
-
-// Unload asks the daemon to free the model's memory immediately
-// (best-effort): an empty generate request with keep_alive 0. Used
-// after a multi-call pipeline that kept the model warm between calls.
-func (o *Ollama) Unload(ctx context.Context) {
-	if o.model == "" {
-		return
-	}
-	body, err := json.Marshal(map[string]any{"model": o.model, "keep_alive": 0})
-	if err != nil {
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.url+"/api/generate", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if resp, err := o.http.Do(req); err == nil {
-		resp.Body.Close()
-	}
 }

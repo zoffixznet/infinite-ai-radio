@@ -80,7 +80,11 @@ func (b *Builder) TitleAsync(prompt string) {
 		return
 	}
 	b.fillAsync(key, func(ctx context.Context) (string, error) {
-		return b.ollama.ChatJSON(ctx, titleSystem, "Music prompt: "+prompt, titleSchema)
+		// Keep-alive so this call and the lyric write clustered around
+		// the same track share one model load.
+		return b.ollama.ChatWith(ctx, titleSystem, "Music prompt: "+prompt, ChatOpts{
+			Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
+		})
 	})
 }
 

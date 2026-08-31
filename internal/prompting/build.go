@@ -65,17 +65,20 @@ const maxOllamaFailures = 2
 // language quietly stops being sung.
 const helperRest = 4 * time.Minute
 
-// chatTimeout bounds each background helper call. It is longer than the
-// work needs because the graphics card is shared: a call queued behind
-// something else is slow, not broken, and treating it as broken is what
-// used to stand the lyric writer down for the rest of the evening.
-const chatTimeout = 60 * time.Second
+// chatTimeout bounds each background helper call. It is far longer than
+// the work needs because the helper degrades instead of failing: with
+// the graphics card full, the daemon runs the model on the CPU, where a
+// cold load plus a short reply is minutes, not seconds. A slow call is
+// slow, not broken, and treating it as broken is what used to stand the
+// lyric writer down for the rest of the evening.
+const chatTimeout = 3 * time.Minute
 
 // probeTimeout bounds one usability probe: a real chat round-trip with
 // the target model, not just a daemon ping. It is generous because the
-// first call also loads the model, and it may be queued behind whatever
-// else is holding the graphics card.
-const probeTimeout = 90 * time.Second
+// first call also loads the model - minutes on the CPU when the
+// graphics card has no room - and may be queued behind whatever else
+// is using the model.
+const probeTimeout = 3 * time.Minute
 
 // probeRetry is the first wait before probing again, doubling up to
 // probeRetryMax. A daemon that was cold or busy at startup is worth
@@ -570,7 +573,9 @@ func (b *Builder) updateAsync(key, system, user string, apply func(SpecUpdate)) 
 	go func() {
 		ctx, cancel := context.WithTimeout(runCtx, chatTimeout)
 		defer cancel()
-		out, err := b.ollama.ChatJSON(ctx, system, user, specUpdateSchema)
+		out, err := b.ollama.ChatWith(ctx, system, user, ChatOpts{
+			Format: specUpdateSchema, KeepAliveSeconds: scribeKeepAlive,
+		})
 		b.mu.Lock()
 		delete(b.pending, key)
 		b.mu.Unlock()
