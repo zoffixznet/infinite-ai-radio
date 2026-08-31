@@ -76,7 +76,13 @@ everything else keeps its default.
   upcoming tracks to ride out signal dead zones, so the default is a
   deeper 6. Higher survives longer engine stalls and deeper dead zones,
   uses more memory (about 28 MB per 150-second track).
-- `volume` (0-100): initial output volume.
+- `volume` (0-100): initial output volume. Starting the player with the
+  `--remote` flag overrides this to 0 - a machine started as the
+  station should not blast music into its own room. Turn the local
+  speakers up any time with the `volume` command; remote listeners
+  always get the full-level stream regardless (it is tapped before the
+  volume control). Enabling the remote through the config file alone
+  does not silence anything.
 - `bed_while_waiting`: when true, a quiet noise bed plays while the
   first track is prepared instead of the default silence-with-progress.
 - `pipe_latency_ms` (20-2000): how much buffering the system audio

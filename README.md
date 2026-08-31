@@ -404,8 +404,13 @@ needs a login, and the first account is created in the terminal:
 
 ```sh
 ./iar remote setup          # create the first admin (email + password, typed twice)
-./iar --remote              # start playing with the remote on
+./iar --remote              # start as the station: remote on, local speakers at 0
 ```
+
+With `--remote` the local speakers start at volume 0 (the machine is
+the station, not the listening room); type `volume 80` in its terminal
+to also hear it locally. Remote listeners always receive the
+full-level stream either way.
 
 (`remote.enabled` in the config keeps it on permanently.) The player
 prints the URL to open; `iar doctor` shows it too under the remote

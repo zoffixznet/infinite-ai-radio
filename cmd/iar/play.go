@@ -33,6 +33,16 @@ func runPlay(pf playFlags) error {
 	if pf.player != "" {
 		a.cfg.Player = pf.player
 	}
+	// An explicit --remote means this machine is the station, not the
+	// listening room: start the local speakers at zero instead of
+	// blasting the first track into whatever room the server sits in.
+	// Turn them up any time with the `volume` command; remote listeners
+	// are unaffected (the stream taps the audio before the volume
+	// control). Remote enabled via the config file does not silence
+	// anything - plain `iar` stays a normal local player.
+	if pf.remote {
+		a.cfg.Volume = 0
+	}
 
 	// Only one player instance at a time; a second one would fight over
 	// the session and the stream.
