@@ -136,11 +136,12 @@ func runEngineDaemon() error {
 	return acestep.RunDaemon(ctx, acestep.DaemonConfig{
 		StateDir: stateD,
 		Sidecar: acestep.SidecarConfig{
-			EngineDir:   paths.EngineDir(),
-			Port:        cfg.ACEStep.Port,
-			LMModelPath: cfg.ACEStep.LMModelPath,
-			LMBackend:   cfg.ACEStep.LMBackend,
-			OffloadDIT:  cfg.ACEStep.OffloadDIT,
+			EngineDir:       paths.EngineDir(),
+			Port:            cfg.ACEStep.Port,
+			LMModelPath:     cfg.ACEStep.LMModelPath,
+			LMBackend:       cfg.ACEStep.LMBackend,
+			OffloadDIT:      cfg.ACEStep.OffloadDIT,
+			MaxTrackSeconds: cfg.ACEStep.MaxTrackSeconds,
 		},
 		IdleTimeout: time.Duration(cfg.ACEStep.IdleMinutes) * time.Minute,
 	}, logger)

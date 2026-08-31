@@ -44,6 +44,7 @@ everything else keeps its default.
     "inference_steps": 12,
     "thinking": true,
     "offload_dit": false,
+    "max_track_seconds": 300,
     "repo_url": "https://github.com/ace-step/ACE-Step-1.5",
     "tag": "v0.1.8"
   },
@@ -188,6 +189,14 @@ admin; the Users page does the rest).
   system memory to hold them; the music itself is identical. It does
   not lower the peak during generation, so it fixes the collisions that
   happen between tracks, not the ones during them.
+- `max_track_seconds`: a ceiling on how long a track the engine may plan
+  when it writes the words itself - the usual case for vocal tracks,
+  where the planner picks a natural song length, typically three to four
+  minutes. Longer plans cost proportionally more video memory and
+  generation time, so the ceiling trims the occasional runaway pick
+  without shortening normal songs; picks under the ceiling pass through
+  untouched. 0 removes the ceiling. Instrumental tracks follow
+  `track_seconds` exactly and never consult this.
 - `repo_url`, `tag`: which engine version `iar setup` installs. Change
   only if you know you want a different release.
 

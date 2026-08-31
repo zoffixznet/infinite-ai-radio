@@ -39,6 +39,9 @@ type SidecarConfig struct {
 	// OffloadDIT keeps the music model in system memory between
 	// tracks instead of resident on the graphics card.
 	OffloadDIT bool
+	// MaxTrackSeconds caps the track length the engine's planner may
+	// choose when it writes the words itself. Zero means no ceiling.
+	MaxTrackSeconds int
 }
 
 // Sidecar supervises the ACE-Step API server as a child process: it starts
@@ -110,6 +113,12 @@ func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
 		// GPU-tier default that would switch it on, so it stays
 		// resident unless we say otherwise.
 		cmd.Env = append(cmd.Env, "ACESTEP_OFFLOAD_DIT_TO_CPU=true")
+	}
+	if s.cfg.MaxTrackSeconds > 0 {
+		// Read by the sample-duration-cap engine patch: a ceiling on
+		// the track length the planner picks for tracks it writes the
+		// words for. Shorter picks pass through untouched.
+		cmd.Env = append(cmd.Env, fmt.Sprintf("ACESTEP_SAMPLE_DURATION_CAP=%d", s.cfg.MaxTrackSeconds))
 	}
 	cmd.Env = append(cmd.Env, s.lmBackendEnv()...)
 	return cmd, nil

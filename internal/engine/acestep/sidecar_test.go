@@ -3,9 +3,12 @@ package acestep
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,4 +94,53 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// envOf returns the child environment serverCommand would launch with,
+// skipping the test when uv is not installed on this machine.
+func envOf(t *testing.T, cfg SidecarConfig) []string {
+	t.Helper()
+	if _, err := findUV(); err != nil {
+		t.Skip("uv not installed")
+	}
+	s := NewSidecar(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cmd, err := s.serverCommand(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cmd.Env
+}
+
+func hasEnv(env []string, kv string) bool {
+	for _, e := range env {
+		if e == kv {
+			return true
+		}
+	}
+	return false
+}
+
+func TestServerCommandMemoryEnv(t *testing.T) {
+	base := SidecarConfig{EngineDir: t.TempDir(), Port: 1234}
+
+	env := envOf(t, base)
+	if hasEnv(env, "ACESTEP_OFFLOAD_DIT_TO_CPU=true") {
+		t.Error("offload env set without OffloadDIT")
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "ACESTEP_SAMPLE_DURATION_CAP=") {
+			t.Errorf("duration cap set without MaxTrackSeconds: %s", e)
+		}
+	}
+
+	withKnobs := base
+	withKnobs.OffloadDIT = true
+	withKnobs.MaxTrackSeconds = 300
+	env = envOf(t, withKnobs)
+	if !hasEnv(env, "ACESTEP_OFFLOAD_DIT_TO_CPU=true") {
+		t.Error("OffloadDIT did not reach the child env")
+	}
+	if !hasEnv(env, "ACESTEP_SAMPLE_DURATION_CAP=300") {
+		t.Error("MaxTrackSeconds did not reach the child env")
+	}
 }

@@ -161,6 +161,14 @@ type ACEStep struct {
 	// track is being generated, costs a few seconds per track and about
 	// 4.5 GB of system memory, and does not change how the music sounds.
 	OffloadDIT bool `json:"offload_dit"`
+	// MaxTrackSeconds caps how long a track the engine may plan when it
+	// writes the words itself - the usual case for vocal tracks, where
+	// the planner picks a natural song length (typically three to four
+	// minutes). Longer plans cost proportionally more graphics memory
+	// and generation time, so the cap trims runaway picks without
+	// shortening normal songs. Zero removes the ceiling. Instrumental
+	// tracks follow track_seconds exactly and never consult this.
+	MaxTrackSeconds int `json:"max_track_seconds"`
 	// RepoURL and Tag pin the engine source checkout installed by setup.
 	RepoURL string `json:"repo_url"`
 	Tag     string `json:"tag"`
@@ -193,14 +201,15 @@ func Default() Config {
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
 		ACEStep: ACEStep{
-			Port:           0,
-			IdleMinutes:    15,
-			LMModelPath:    "",
-			LMBackend:      "auto",
-			InferenceSteps: 12,
-			Thinking:       true,
-			RepoURL:        "https://github.com/ace-step/ACE-Step-1.5",
-			Tag:            "v0.1.8",
+			Port:            0,
+			IdleMinutes:     15,
+			LMModelPath:     "",
+			LMBackend:       "auto",
+			InferenceSteps:  12,
+			MaxTrackSeconds: 300,
+			Thinking:        true,
+			RepoURL:         "https://github.com/ace-step/ACE-Step-1.5",
+			Tag:             "v0.1.8",
 		},
 		Ollama: Ollama{
 			Enabled: true,
