@@ -86,19 +86,23 @@ var enginePatches = []enginePatch{
 				find: "        audio_duration = sample_result.duration\n",
 				replace: `        audio_duration = sample_result.duration
         # iar-patch: sample-duration-cap (see the supervisor's patch
-        # list for rationale).
+        # list for rationale). A missing or unparseable LM duration
+        # becomes the cap rather than passing through: downstream it
+        # would turn into the auto sentinel and the codes phase would
+        # run bounded only by the model ceiling (~600s), which is the
+        # runaway this cap exists to prevent.
         _iar_cap_raw = os.getenv("ACESTEP_SAMPLE_DURATION_CAP", "")
         if _iar_cap_raw:
             try:
                 _iar_cap = float(_iar_cap_raw)
             except ValueError:
                 _iar_cap = 0.0
-            if _iar_cap > 0 and audio_duration is not None:
+            if _iar_cap > 0:
                 try:
-                    if float(audio_duration) > _iar_cap:
+                    if audio_duration is None or float(audio_duration) > _iar_cap:
                         audio_duration = _iar_cap
                 except (TypeError, ValueError):
-                    pass
+                    audio_duration = _iar_cap
 `,
 			},
 		},
@@ -140,7 +144,15 @@ func ApplyEnginePatches(dir string) ([]string, error) {
 		if err != nil {
 			return applied, fmt.Errorf("patch %s: %w", p.name, err)
 		}
-		if err := os.WriteFile(path, []byte(src), info.Mode().Perm()); err != nil {
+		// Write-then-rename: a crash mid-write must not leave a
+		// truncated source file whose surviving marker makes every
+		// later run skip the repair.
+		tmp := path + ".iar-patch-tmp"
+		if err := os.WriteFile(tmp, []byte(src), info.Mode().Perm()); err != nil {
+			return applied, fmt.Errorf("patch %s: %w", p.name, err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			os.Remove(tmp)
 			return applied, fmt.Errorf("patch %s: %w", p.name, err)
 		}
 		applied = append(applied, p.name)

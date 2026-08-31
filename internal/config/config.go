@@ -162,9 +162,10 @@ type ACEStep struct {
 	// 4.5 GB of system memory, and does not change how the music sounds.
 	OffloadDIT bool `json:"offload_dit"`
 	// MaxTrackSeconds caps how long a track the engine may plan when it
-	// writes the words itself - the usual case for vocal tracks, where
-	// the planner picks a natural song length (typically three to four
-	// minutes). Longer plans cost proportionally more graphics memory
+	// writes the words itself - which happens whenever no lyric sheet
+	// is ready in time. The planner picks a natural song length
+	// (typically three to four minutes). Longer plans cost
+	// proportionally more graphics memory
 	// and generation time, so the cap trims runaway picks without
 	// shortening normal songs. Zero removes the ceiling. Instrumental
 	// tracks follow track_seconds exactly and never consult this.

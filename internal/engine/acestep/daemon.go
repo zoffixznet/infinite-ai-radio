@@ -181,6 +181,18 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig, log *slog.Logger) error {
 
 	log.Info("engine daemon starting", "event", "daemon_start", "pid", st.PID, "port", port, "idle_timeout", cfg.IdleTimeout.String())
 
+	// Bring the engine source up to date with the carried patches
+	// before anything loads it. Setup applies them too, but setup only
+	// runs when invoked; this is what upgrades an existing install the
+	// first time a new binary starts the engine. Idempotent and cheap
+	// (two file reads when nothing needs doing). A failure is logged,
+	// not fatal: an unpatched engine still plays music.
+	if applied, err := ApplyEnginePatches(cfg.Sidecar.EngineDir); err != nil {
+		log.Warn("engine patches not applied", "event", "engine_patch_failed", "error", err.Error())
+	} else if len(applied) > 0 {
+		log.Info("applied engine patches", "event", "engine_patched", "patches", strings.Join(applied, ","))
+	}
+
 	// A predecessor daemon may still be alive - superseded but not yet
 	// exited, or terminated but slow tearing down its models. Loading
 	// our models while it still holds several gigabytes of the card

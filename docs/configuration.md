@@ -157,6 +157,12 @@ admin; the Users page does the rest).
 
 ## acestep
 
+Settings in this section are read when the engine daemon starts, and the
+daemon outlives radio sessions - a playing radio keeps it alive
+indefinitely. After changing anything here, run `iar engine stop`: the
+next thing to need the engine brings up a fresh daemon with the new
+settings (playback rides out the restart from its buffered tracks).
+
 - `port`: pins the engine API to a fixed localhost port. The default 0
   allocates a free port for each engine daemon (the port is recorded in
   the state directory and shown by `iar engine status`).
@@ -190,9 +196,9 @@ admin; the Users page does the rest).
   not lower the peak during generation, so it fixes the collisions that
   happen between tracks, not the ones during them.
 - `max_track_seconds`: a ceiling on how long a track the engine may plan
-  when it writes the words itself - the usual case for vocal tracks,
-  where the planner picks a natural song length, typically three to four
-  minutes. Longer plans cost proportionally more video memory and
+  when it writes the words itself - which happens whenever no lyric
+  sheet from the lyric writer is ready in time. The planner picks a
+  natural song length, typically three to four minutes. Longer plans cost proportionally more video memory and
   generation time, so the ceiling trims the occasional runaway pick
   without shortening normal songs; picks under the ceiling pass through
   untouched. 0 removes the ceiling. Instrumental tracks follow

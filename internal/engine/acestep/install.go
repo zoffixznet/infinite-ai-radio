@@ -125,16 +125,18 @@ func (ins *Installer) ensureCheckout(ctx context.Context) error {
 		return nil
 	}
 	ins.progress("updating engine source to " + ins.cfg.Tag)
-	// Drop the applied engine patches first: they are the only local
-	// modifications ever made to the checkout, and a dirty tree would
-	// make the tag switch fail. The patch step re-applies them against
-	// the new tag right after (or fails loudly if they no longer fit).
-	reset := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "--", ".")
-	if err := ins.runStreaming(reset); err != nil {
-		return err
-	}
 	fetch := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "--depth", "1", "origin", "tag", ins.cfg.Tag)
 	if err := ins.runStreaming(fetch); err != nil {
+		return err
+	}
+	// Drop the applied engine patches only once the fetch has
+	// succeeded: they are the only local modifications ever made to
+	// the checkout, and a dirty tree would make the tag switch fail -
+	// but resetting before a fetch that then fails would leave the
+	// old tag unpatched. The patch step re-applies them against the
+	// new tag right after (or fails loudly if they no longer fit).
+	reset := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "--", ".")
+	if err := ins.runStreaming(reset); err != nil {
 		return err
 	}
 	checkout := exec.CommandContext(ctx, "git", "-C", dir, "checkout", ins.cfg.Tag)
