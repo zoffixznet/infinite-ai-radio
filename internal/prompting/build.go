@@ -193,7 +193,7 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 	}
 	spec.VocalLanguage = lang.Code
 	spec.VocalLanguageName = lang.Name
-	if lyrics := b.buildLyrics(s, r, lang, seconds); lyrics != "" {
+	if lyrics := b.buildLyrics(s, r, lang); lyrics != "" {
 		spec.Lyrics = lyrics
 		return spec
 	}
@@ -289,7 +289,7 @@ func (b *Builder) GeneratorName(s *session.Session) string {
 // falls back to the engine's own planner while the first write runs,
 // and when a later write has not finished in time the previous lyrics
 // are reused once more.
-func (b *Builder) buildLyrics(s *session.Session, r Rendered, lang Language, seconds int) string {
+func (b *Builder) buildLyrics(s *session.Session, r Rendered, lang Language) string {
 	if !b.helperUsable() {
 		return ""
 	}
@@ -315,7 +315,6 @@ func (b *Builder) buildLyrics(s *session.Session, r Rendered, lang Language, sec
 	req := LyricsRequest{
 		Style:        r.Caption,
 		Theme:        s.LyricsTheme,
-		Seconds:      seconds,
 		Language:     lang.Code,
 		LanguageName: lang.Name,
 		AvoidHooks:   append([]string(nil), b.lyrHooks[key]...),

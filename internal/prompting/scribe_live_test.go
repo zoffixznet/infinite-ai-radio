@@ -21,8 +21,8 @@ func TestScribeLive(t *testing.T) {
 	}
 	t.Logf("model: %s", oll.Model())
 	reqs := []LyricsRequest{
-		{Style: "upbeat pop, bright, energetic, catchy", Theme: "having a good day", Seconds: 150},
-		{Style: "energetic rock, driving drums", Theme: "going to the mall to do some shopping", Seconds: 150},
+		{Style: "upbeat pop, bright, energetic, catchy", Theme: "having a good day"},
+		{Style: "energetic rock, driving drums", Theme: "going to the mall to do some shopping"},
 	}
 	for _, req := range reqs {
 		for _, gen := range Generators() {
@@ -42,7 +42,7 @@ func TestScribeLive(t *testing.T) {
 					sung = append(sung, l)
 				}
 			}
-			probs := checkSong(sung, req.Seconds)
+			probs := checkSong(sung)
 			fmt.Printf("\n======== %s | %q | %s | %d sung lines | song-notes: %v\n%s\n",
 				gen.Name(), req.Theme, took, len(sung), probs, out)
 		}

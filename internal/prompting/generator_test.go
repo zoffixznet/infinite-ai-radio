@@ -141,7 +141,7 @@ func TestSmoothbrainKeepsLegacyPrompt(t *testing.T) {
 	}}
 	sb := &Smoothbrain{}
 	out, err := sb.Generate(context.Background(), llm, LyricsRequest{
-		Style: "lofi beats, calm", Theme: "winning", Seconds: 90,
+		Style: "lofi beats, calm", Theme: "winning",
 	})
 	if err != nil || out == "" {
 		t.Fatalf("generate: %v %q", err, out)

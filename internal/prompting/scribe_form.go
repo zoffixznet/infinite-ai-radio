@@ -1,13 +1,17 @@
 package prompting
 
 // This file is Scribe's deterministic song architecture: the section
-// skeleton for a given duration, and each section's rhyme scheme. Go
-// owns structure and chorus repetition outright, so the language model
-// can never loop a phrase across the song: it only ever writes one
-// short section at a time and every chorus repeat is stamped verbatim
-// by code. Line and word budgets follow the densities measured over
-// ACE-Step 1.5's own example corpus (~17 sung lines and ~93 words per
-// 150 seconds, 6-10 syllables per line).
+// skeleton for a planned song, and each section's rhyme scheme. Go owns
+// structure and chorus repetition outright, so the language model can
+// never loop a phrase across the song: it only ever writes one short
+// section at a time and every chorus repeat is stamped verbatim by
+// code. The skeleton follows the song's own plan - how many scenes
+// (verses) its story needs, and whether it wants a turn (a bridge)
+// before the close - never a target duration: the words are written
+// first, complete on their own terms, and the track is sized to them
+// afterwards by the engine. Section-level budgets keep the densities
+// measured over ACE-Step 1.5's example corpus (4-line sections, 6-10
+// syllables per line).
 
 // scribeSection is one entry of the song skeleton.
 type scribeSection struct {
@@ -23,38 +27,52 @@ type scribeSection struct {
 	CopyOf int
 }
 
-// scribeForm picks the song skeleton for a track duration. Sung-line
-// counts target the engine's measured density (17 lines per 150 s)
-// while keeping the chorus recurring and the bridge reserved for
-// longer tracks.
-func scribeForm(seconds int) []scribeSection {
+// scribeFormFromPlan builds the skeleton the song's plan asked for:
+// verse/chorus alternation, an optional bridge before the close, and
+// the chorus landing at least twice (stamped verbatim). A verse count
+// outside 1-3 falls back to the standard two.
+func scribeFormFromPlan(verses int, bridge bool) []scribeSection {
+	verses = clampVerses(verses)
 	verse := func(n int) scribeSection {
 		return scribeSection{Tag: "[Verse " + string(rune('0'+n)) + "]", Kind: "verse", Lines: 4, CopyOf: -1}
 	}
-	chorus := scribeSection{Tag: "[Chorus]", Kind: "chorus", Lines: 4, CopyOf: -1}
-	switch {
-	case seconds < 110:
-		// 8 sung lines.
-		return []scribeSection{verse(1), chorus}
-	case seconds < 140:
-		// 16 sung lines, chorus twice.
-		return []scribeSection{verse(1), chorus, verse(2), {Tag: "[Chorus]", Kind: "chorus", Lines: 4, CopyOf: 1}}
-	case seconds < 170:
-		// 18 sung lines: two verses, a two-line bridge, chorus twice.
-		return []scribeSection{
-			verse(1), chorus, verse(2),
-			{Tag: "[Bridge]", Kind: "bridge", Lines: 2, CopyOf: -1},
-			{Tag: "[Chorus]", Kind: "chorus", Lines: 4, CopyOf: 1},
-		}
-	default:
-		// 22 sung lines: chorus three times, closing as a final chorus.
-		return []scribeSection{
-			verse(1), chorus, verse(2),
-			{Tag: "[Chorus]", Kind: "chorus", Lines: 4, CopyOf: 1},
-			{Tag: "[Bridge]", Kind: "bridge", Lines: 2, CopyOf: -1},
-			{Tag: "[Final Chorus]", Kind: "chorus", Lines: 4, CopyOf: 1},
+	const chorusAt = 1 // the written chorus always follows verse 1
+	copyChorus := func(tag string) scribeSection {
+		return scribeSection{Tag: tag, Kind: "chorus", Lines: 4, CopyOf: chorusAt}
+	}
+	form := []scribeSection{verse(1), {Tag: "[Chorus]", Kind: "chorus", Lines: 4, CopyOf: -1}}
+	choruses := 1
+	for n := 2; n <= verses; n++ {
+		form = append(form, verse(n))
+		// The chorus returns after every verse except the one right
+		// before the bridge: the bridge supplies that return itself.
+		if !(bridge && n == verses) {
+			form = append(form, copyChorus("[Chorus]"))
+			choruses++
 		}
 	}
+	if bridge {
+		form = append(form, scribeSection{Tag: "[Bridge]", Kind: "bridge", Lines: 2, CopyOf: -1})
+	}
+	// Close on the chorus when the bridge calls for its return or when
+	// the alternation has not yet landed it twice.
+	if bridge || choruses < 2 {
+		tag := "[Chorus]"
+		if choruses >= 2 {
+			tag = "[Final Chorus]"
+		}
+		form = append(form, copyChorus(tag))
+	}
+	return form
+}
+
+// clampVerses folds a plan's verse count into the 1-3 range the craft
+// machinery supports; anything else becomes the standard two.
+func clampVerses(v int) int {
+	if v < 1 || v > 3 {
+		return 2
+	}
+	return v
 }
 
 // rhymePair is a pair of line indexes (0-based within a section) whose

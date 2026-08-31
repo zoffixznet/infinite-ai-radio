@@ -33,8 +33,6 @@ type LyricsRequest struct {
 	// Theme is what the song should be about; empty means "match the
 	// mood of the music".
 	Theme string
-	// Seconds is the track duration the lyrics must fill.
-	Seconds int
 	// Language is the engine's language tag for sung vocals; empty
 	// means the engine was given no tag.
 	Language string

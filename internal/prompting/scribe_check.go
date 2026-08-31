@@ -331,7 +331,7 @@ func mentionsAny(lines []string, words []string) bool {
 // passed its own gate, and a radio must always ship a track. Chant is
 // structurally impossible - Go stamps the chorus and nothing else
 // repeats - so this is a tripwire for generator bugs, not a filter.
-func checkSong(sungLines []string, seconds int) []string {
+func checkSong(sungLines []string) []string {
 	var problems []string
 	if len(sungLines) == 0 {
 		return []string{"no sung lines"}
@@ -348,16 +348,10 @@ func checkSong(sungLines []string, seconds int) []string {
 			run = 1
 		}
 	}
-	// Word budget: the engine's examples average ~93 words per 150 s;
-	// straying far invites dropped or stretched lines.
-	words := 0
-	for _, l := range sungLines {
-		words += len(prosody.Words(l))
-	}
-	budget := 93 * seconds / 150
-	if budget > 0 && (words < budget*6/10 || words > budget*15/10) {
-		problems = append(problems, fmt.Sprintf("%d words for %d seconds (target ~%d)", words, seconds, budget))
-	}
+	// No word-vs-duration budget: the song is complete on its own
+	// terms and the track is sized to it afterwards, so there is no
+	// duration to grade against. Per-line singability is enforced at
+	// the section gates.
 	return problems
 }
 

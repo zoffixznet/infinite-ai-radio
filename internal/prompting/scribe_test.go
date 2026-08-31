@@ -79,6 +79,8 @@ func (f *scribeFake) ChatWith(_ context.Context, system, user string, opts ChatO
 			Hook:    "We are shopping at the mall",
 			Setting: "a busy shopping mall",
 			Story:   "verse one arrives at the mall, verse two heads home with bags",
+			Verses:  2,
+			Bridge:  true,
 			Nouns:   []string{"mall", "bags", "stores", "shoes", "coffee", "doors"},
 			Verbs:   []string{"shop", "walk", "laugh", "buy"},
 			Images:  []string{"bright lights down the hall"},
@@ -169,9 +171,8 @@ func (f *scribeFake) ChatWith(_ context.Context, system, user string, opts ChatO
 func TestScribeFullPipeline(t *testing.T) {
 	fake := newScribeFake()
 	out, err := (&Scribe{}).Generate(context.Background(), fake, LyricsRequest{
-		Style:   "upbeat pop, bright, energetic",
-		Theme:   "going to the mall to do some shopping",
-		Seconds: 150,
+		Style: "upbeat pop, bright, energetic",
+		Theme: "going to the mall to do some shopping",
 	})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -205,14 +206,15 @@ func TestScribeFullPipeline(t *testing.T) {
 			t.Errorf("trailing period kept: %q", l)
 		}
 	}
-	if probs := checkSong(sung, 150); len(probs) != 0 {
+	if probs := checkSong(sung); len(probs) != 0 {
 		t.Errorf("song check: %v\n%s", probs, out)
 	}
 	if fake.briefCalls != 1 {
 		t.Errorf("brief calls = %d", fake.briefCalls)
 	}
-	// Unique sections for the 150s form: chorus, V1, V2, bridge = 4
-	// writes when every first attempt passes.
+	// Unique sections for the planned two-verse-with-bridge form:
+	// chorus, V1, V2, bridge = 4 writes when every first attempt
+	// passes.
 	if fake.writeCalls > 8 {
 		t.Errorf("too many write calls: %d", fake.writeCalls)
 	}
@@ -222,9 +224,8 @@ func TestScribeFallsBackWithoutBrief(t *testing.T) {
 	fake := newScribeFake()
 	fake.briefErr = true
 	out, err := (&Scribe{}).Generate(context.Background(), fake, LyricsRequest{
-		Style:   "lofi chill",
-		Theme:   "walking home in the rain at night",
-		Seconds: 120,
+		Style: "lofi chill",
+		Theme: "walking home in the rain at night",
 	})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -244,7 +245,7 @@ func TestScribeNonEnglishUsesSimplePath(t *testing.T) {
 		return "[Intro]\n\n[Verse 1]\nZeile eins\n\n[Outro]", nil
 	}}
 	out, err := (&Scribe{}).Generate(context.Background(), llm, LyricsRequest{
-		Style: "schlager", Theme: "der Sommer", Seconds: 150, Language: "de",
+		Style: "schlager", Theme: "der Sommer", Language: "de",
 	})
 	if err != nil || !strings.Contains(out, "[Verse 1]") {
 		t.Fatalf("simple path: %v %q", err, out)
@@ -263,7 +264,7 @@ func TestScribeUntaggedLanguageReachesTheWriter(t *testing.T) {
 		return "[Intro]\n\n[Verse 1]\nUsa ka linya\n\n[Outro]", nil
 	}}
 	_, err := (&Scribe{}).Generate(context.Background(), llm, LyricsRequest{
-		Style: "island pop", Seconds: 150, LanguageName: "Bisaya (Cebuano)",
+		Style: "island pop", LanguageName: "Bisaya (Cebuano)",
 	})
 	if err != nil {
 		t.Fatalf("simple path: %v", err)
@@ -273,25 +274,43 @@ func TestScribeUntaggedLanguageReachesTheWriter(t *testing.T) {
 	}
 }
 
-func TestScribeForm(t *testing.T) {
+func TestScribeFormFromPlan(t *testing.T) {
 	cases := []struct {
-		seconds  int
+		verses   int
+		bridge   bool
 		sections int
 		sung     int
+		choruses int
 	}{
-		{90, 2, 8}, {120, 4, 16}, {150, 5, 18}, {210, 6, 22},
+		{1, false, 3, 12, 2}, // closing chorus stamped to land twice
+		{1, true, 4, 14, 2},
+		{2, false, 4, 16, 2},
+		{2, true, 5, 18, 2},
+		{3, false, 6, 24, 3},
+		{3, true, 7, 26, 3},
+		{0, true, 5, 18, 2},  // nonsense plans fall back to two verses
+		{9, false, 4, 16, 2},
 	}
 	for _, c := range cases {
-		form := scribeForm(c.seconds)
+		form := scribeFormFromPlan(c.verses, c.bridge)
 		if len(form) != c.sections {
-			t.Errorf("form(%d) has %d sections", c.seconds, len(form))
+			t.Errorf("form(%d,%v) has %d sections, want %d", c.verses, c.bridge, len(form), c.sections)
 		}
-		sung := 0
+		sung, choruses := 0, 0
 		for _, s := range form {
 			sung += s.Lines
+			if s.Kind == "chorus" {
+				choruses++
+			}
 		}
 		if sung != c.sung {
-			t.Errorf("form(%d) sings %d lines, want %d", c.seconds, sung, c.sung)
+			t.Errorf("form(%d,%v) sings %d lines, want %d", c.verses, c.bridge, sung, c.sung)
+		}
+		if choruses != c.choruses {
+			t.Errorf("form(%d,%v) has %d choruses, want %d", c.verses, c.bridge, choruses, c.choruses)
+		}
+		if last := form[len(form)-1]; last.Kind != "chorus" {
+			t.Errorf("form(%d,%v) does not close on a chorus", c.verses, c.bridge)
 		}
 	}
 }
@@ -451,14 +470,14 @@ func TestPolishLine(t *testing.T) {
 }
 
 func TestCheckSong(t *testing.T) {
-	if probs := checkSong([]string{"Same line", "Same line", "Same line"}, 30); len(probs) == 0 {
+	if probs := checkSong([]string{"Same line", "Same line", "Same line"}); len(probs) == 0 {
 		t.Error("triple repeat must be reported")
 	}
 	lines := make([]string, 17)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("A different line number %d here", i)
 	}
-	if probs := checkSong(lines, 150); len(probs) != 0 {
+	if probs := checkSong(lines); len(probs) != 0 {
 		t.Errorf("healthy song flagged: %v", probs)
 	}
 }
@@ -468,7 +487,7 @@ func TestScribeSectionsPassValidatorsWithMenus(t *testing.T) {
 	// on the first attempt, so write calls == unique sections.
 	fake := newScribeFake()
 	_, err := (&Scribe{}).Generate(context.Background(), fake, LyricsRequest{
-		Style: "pop", Theme: "a good day in the sun", Seconds: 150,
+		Style: "pop", Theme: "a good day in the sun",
 	})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -482,7 +501,7 @@ func TestScribeSectionsPassValidatorsWithMenus(t *testing.T) {
 func TestScribeAvoidHooksReachBrief(t *testing.T) {
 	fake := newScribeFake()
 	(&Scribe{}).Generate(context.Background(), fake, LyricsRequest{
-		Style: "pop", Theme: "shopping", Seconds: 150,
+		Style: "pop", Theme: "shopping",
 		AvoidHooks: []string{"We are shopping at the mall"},
 	})
 	if len(fake.requests) == 0 || !strings.Contains(fake.requests[0], "do not reuse") {

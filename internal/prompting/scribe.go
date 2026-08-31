@@ -44,6 +44,8 @@ type scribeBrief struct {
 	Hook    string   `json:"hook"`
 	Setting string   `json:"setting"`
 	Story   string   `json:"story"`
+	Verses  int      `json:"verses"`
+	Bridge  bool     `json:"bridge"`
 	Nouns   []string `json:"nouns"`
 	Verbs   []string `json:"verbs"`
 	Images  []string `json:"images"`
@@ -60,6 +62,8 @@ var scribeBriefSchema = json.RawMessage(`{
 	"properties": {
 		"setting": {"type": "string"},
 		"story":   {"type": "string"},
+		"verses":  {"type": "integer"},
+		"bridge":  {"type": "boolean"},
 		"nouns":   {"type": "array", "items": {"type": "string"}},
 		"verbs":   {"type": "array", "items": {"type": "string"}},
 		"images":  {"type": "array", "items": {"type": "string"}},
@@ -67,7 +71,7 @@ var scribeBriefSchema = json.RawMessage(`{
 		"hook":    {"type": "string"},
 		"title":   {"type": "string"}
 	},
-	"required": ["setting", "story", "nouns", "verbs", "images", "moods", "hook", "title"]
+	"required": ["setting", "story", "verses", "bridge", "nouns", "verbs", "images", "moods", "hook", "title"]
 }`)
 
 const scribeBriefSystem = `You are planning a song. Reply with JSON only.
@@ -76,7 +80,12 @@ words a person can picture: real things, places, actions. No fantasy
 imagery; never use neon, shadows, echoes, embers or twilight.
 Fill the fields in this order:
 "setting": where the song happens, one phrase.
-"story": one sentence saying what verse 1 shows, then what verse 2 shows.
+"story": one short sentence per verse, in order, saying what that verse
+shows.
+"verses": how many verses this story needs - usually 2; 1 for a single
+still scene; 3 only when the story truly has three stages.
+"bridge": true when the song wants a turn before the last chorus - a
+step back or a look ahead; false for a song that just rides its groove.
 "nouns": 6-10 single common nouns you would actually see in the scene.
 "verbs": 4-8 simple actions happening there.
 "images": 3-5 short concrete phrases from the scene, 3-5 words each.
@@ -117,8 +126,12 @@ func (s *Scribe) Generate(ctx context.Context, llm LLM, req LyricsRequest) (stri
 	if !req.English() {
 		return s.simple(ctx, llm, req)
 	}
-	form := scribeForm(req.Seconds)
 	brief := s.brief(ctx, llm, req)
+	// The plan decides the song's shape; the track is later sized to
+	// the words (the engine derives a duration from lyric requests
+	// that carry none), so no duration is consulted anywhere here.
+	verses := clampVerses(brief.Verses)
+	form := scribeFormFromPlan(verses, brief.Bridge)
 
 	topic := req.Theme
 	if topic == "" {
@@ -173,7 +186,7 @@ func (s *Scribe) Generate(ctx context.Context, llm LLM, req LyricsRequest) (stri
 			rhymeRules = s.pairRules(&spec, rhymePair{0, 1}, seed, rhymeRules, usedEnds)
 			rhymeRules = s.pairRules(&spec, rhymePair{2, 3}, "", rhymeRules, usedEnds)
 		case "verse":
-			spec.mentions = s.verseMentions(brief, sec.Tag)
+			spec.mentions = s.verseMentions(brief, sec.Tag, verses)
 			if len(spec.mentions) > 0 {
 				rules = append(rules, "mention at least one of: "+strings.Join(spec.mentions, ", "))
 			}
@@ -417,7 +430,8 @@ func briefUsable(b scribeBrief, req LyricsRequest) bool {
 // planning call still yields grounded, on-topic writing.
 func fallbackBrief(req LyricsRequest) scribeBrief {
 	words := prosody.ContentWords(req.Theme)
-	b := scribeBrief{Setting: req.Theme, Story: req.Theme}
+	// The standard shape when no plan exists: two verses and a bridge.
+	b := scribeBrief{Setting: req.Theme, Story: req.Theme, Verses: 2, Bridge: true}
 	for _, w := range words {
 		if prosody.Known(w) && len(b.Nouns) < 8 {
 			b.Nouns = append(b.Nouns, w)
@@ -464,21 +478,33 @@ func (s *Scribe) topicMentions(b scribeBrief, req LyricsRequest, n int) []string
 	return words
 }
 
-// verseMentions spreads the brief's nouns across the verses so verse 2
-// reaches for different furniture than verse 1.
-func (s *Scribe) verseMentions(b scribeBrief, tag string) []string {
+// verseMentions spreads the brief's nouns across the song's verses so
+// each verse reaches for different furniture than the ones before it.
+func (s *Scribe) verseMentions(b scribeBrief, tag string, total int) []string {
 	if len(b.Nouns) == 0 {
 		return nil
 	}
-	half := (len(b.Nouns) + 1) / 2
-	if strings.Contains(tag, "2") {
-		return b.Nouns[half:]
+	total = clampVerses(total)
+	n := 1
+	switch {
+	case strings.Contains(tag, "2"):
+		n = 2
+	case strings.Contains(tag, "3"):
+		n = 3
 	}
-	first := b.Nouns[:half]
-	if len(first) > 3 {
-		first = first[:3]
+	if n > total {
+		n = total
 	}
-	return first
+	lo := (n - 1) * len(b.Nouns) / total
+	hi := n * len(b.Nouns) / total
+	part := b.Nouns[lo:hi]
+	if len(part) == 0 {
+		part = b.Nouns
+	}
+	if len(part) > 3 {
+		part = part[:3]
+	}
+	return part
 }
 
 // flattenLines joins every already-written section's lines.
