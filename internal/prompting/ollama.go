@@ -21,17 +21,26 @@ type Ollama struct {
 	url   string
 	model string
 	http  *http.Client
+	// gpuLayers is sent as num_gpu on every call: 0 pins the helper
+	// model to the CPU, -1 lets the daemon place it, positive values
+	// put that many layers on the graphics card.
+	gpuLayers int
 	// thinkOK records whether the resolved model advertises the
 	// thinking capability (set by Available).
 	thinkOK bool
 }
 
 // NewOllama returns a client for the daemon at url. model may be empty, in
-// which case the first installed model is used.
-func NewOllama(url, model string) *Ollama {
+// which case the first installed model is used. gpuLayers pins the model's
+// GPU placement (see Ollama.gpuLayers); 0 keeps it entirely off the
+// graphics card, which the music engine and the speech-to-text model
+// already fill - a helper load grabbing leftover VRAM between generation
+// peaks is exactly what pushes the card into out-of-memory.
+func NewOllama(url, model string, gpuLayers int) *Ollama {
 	return &Ollama{
-		url:   strings.TrimRight(url, "/"),
-		model: model,
+		url:       strings.TrimRight(url, "/"),
+		model:     model,
+		gpuLayers: gpuLayers,
 		// A backstop only: every call site passes a context with its
 		// own deadline, and those deadlines are the real budgets. This
 		// used to be 90 seconds, which silently overrode the lyric
@@ -177,6 +186,9 @@ func (o *Ollama) ChatWith(ctx context.Context, system, user string, opts ChatOpt
 	}
 	stream := false
 	options := map[string]any{"temperature": 0.7}
+	if o.gpuLayers >= 0 {
+		options["num_gpu"] = o.gpuLayers
+	}
 	if opts.Temperature != 0 {
 		options["temperature"] = opts.Temperature
 	}

@@ -106,7 +106,7 @@ func (a *app) buildEngine(ctx context.Context) (engine.Engine, *acestep.Remote, 
 func (a *app) buildBuilder(ctx context.Context, noLLM bool) *prompting.Builder {
 	var oll *prompting.Ollama
 	if a.cfg.Ollama.Enabled && !noLLM {
-		oll = prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model)
+		oll = prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model, a.cfg.Ollama.GPULayers)
 	}
 	b := prompting.NewBuilder(oll, a.log)
 	if name := a.cfg.LyricsGenerator; name != "" {

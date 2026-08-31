@@ -185,7 +185,7 @@ func TestOllamaSkipsSpecialPurposeModels(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	o := NewOllama(srv.URL, "")
+	o := NewOllama(srv.URL, "", 0)
 	if !o.Available(context.Background()) {
 		t.Fatal("daemon should be available")
 	}
@@ -196,9 +196,41 @@ func TestOllamaSkipsSpecialPurposeModels(t *testing.T) {
 		t.Error("thinking capability not recorded")
 	}
 	// A pinned model name is always respected.
-	o2 := NewOllama(srv.URL, "qwen2.5-coder:7b")
+	o2 := NewOllama(srv.URL, "qwen2.5-coder:7b", 0)
 	o2.Available(context.Background())
 	if o2.Model() != "qwen2.5-coder:7b" {
 		t.Fatalf("pinned model overridden: %q", o2.Model())
+	}
+}
+
+func TestChatWithPinsHelperOffTheGPU(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/chat" {
+			json.NewDecoder(r.Body).Decode(&got)
+			json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": "ok"}})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{{"name": "m"}}})
+	}))
+	defer srv.Close()
+
+	o := NewOllama(srv.URL, "m", 0)
+	if _, err := o.Chat(context.Background(), "s", "u"); err != nil {
+		t.Fatal(err)
+	}
+	opts, _ := got["options"].(map[string]any)
+	if v, ok := opts["num_gpu"]; !ok || v != float64(0) {
+		t.Fatalf("num_gpu = %v (present=%v); want 0 on every call", v, ok)
+	}
+
+	got = nil
+	free := NewOllama(srv.URL, "m", -1)
+	if _, err := free.Chat(context.Background(), "s", "u"); err != nil {
+		t.Fatal(err)
+	}
+	opts, _ = got["options"].(map[string]any)
+	if _, ok := opts["num_gpu"]; ok {
+		t.Fatal("num_gpu sent despite gpu_layers=-1; want the daemon left to decide")
 	}
 }

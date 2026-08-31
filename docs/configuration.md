@@ -50,6 +50,7 @@ everything else keeps its default.
   },
   "ollama": {
     "enabled": true,
+    "gpu_layers": 0,
     "url": "http://127.0.0.1:11434",
     "model": ""
   },
@@ -218,6 +219,14 @@ settings (playback rides out the restart from its buffered tracks).
 - `model`: model name to use; empty picks the first installed model.
   Pin a small, fast instruction-following model here; it is plenty for
   this job and keeps the refinements timely.
+- `gpu_layers`: how much of the helper model may go onto the graphics
+  card. The default 0 keeps it entirely on the CPU: the music engine
+  (and anything else sharing the card) needs the video memory more than
+  the helper needs speed, and a helper load grabbing leftover memory
+  between generation peaks is exactly what pushes the card into
+  out-of-memory. Set -1 to let the Ollama daemon place the model
+  itself (sensible on a machine with video memory to spare), or a
+  positive number to put that many layers on the card.
 
 ## sessions
 

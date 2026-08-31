@@ -92,7 +92,7 @@ func (f *fakeOllama) server(t *testing.T) *httptest.Server {
 // probedBuilder returns a builder whose usability probe has completed.
 func probedBuilder(t *testing.T, srv *httptest.Server) *Builder {
 	t.Helper()
-	b := NewBuilder(NewOllama(srv.URL, ""), nil)
+	b := NewBuilder(NewOllama(srv.URL, "", 0), nil)
 	b.ProbeAsync(context.Background())
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -301,7 +301,7 @@ func TestBuilderUnusableWithoutProbe(t *testing.T) {
 	srv := f.server(t)
 	defer srv.Close()
 	// No ProbeAsync: the helper must not be consulted at all.
-	b := NewBuilder(NewOllama(srv.URL, ""), nil)
+	b := NewBuilder(NewOllama(srv.URL, "", 0), nil)
 	s := session.New()
 	Steer(s, "calmer")
 	spec := b.BuildSpec(context.Background(), s, 60)

@@ -14,7 +14,7 @@ import (
 //
 //	go test -tags live -run TestScribeLive -v -timeout 20m ./internal/prompting/
 func TestScribeLive(t *testing.T) {
-	oll := NewOllama("http://127.0.0.1:11434", "")
+	oll := NewOllama("http://127.0.0.1:11434", "", 0)
 	ctx := context.Background()
 	if !oll.Available(ctx) {
 		t.Skip("no ollama daemon")

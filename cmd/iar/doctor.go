@@ -201,7 +201,7 @@ func runDoctor() error {
 	}
 
 	// Ollama.
-	oll := prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model)
+	oll := prompting.NewOllama(a.cfg.Ollama.URL, a.cfg.Ollama.Model, a.cfg.Ollama.GPULayers)
 	octx, ocancel := context.WithTimeout(ctx, 2*time.Second)
 	if oll.Available(octx) {
 		check("ollama", true, "reachable, model "+oll.Model()+" (optional; used only when it responds quickly)")
