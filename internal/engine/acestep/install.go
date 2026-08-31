@@ -64,6 +64,7 @@ func (ins *Installer) Run(ctx context.Context) error {
 	}{
 		{"install uv", ins.ensureUV},
 		{"fetch engine source", ins.ensureCheckout},
+		{"patch engine source", ins.ensurePatches},
 		{"sync Python environment", ins.ensureEnv},
 		{"download model weights", ins.ensureWeights},
 	}
@@ -124,12 +125,36 @@ func (ins *Installer) ensureCheckout(ctx context.Context) error {
 		return nil
 	}
 	ins.progress("updating engine source to " + ins.cfg.Tag)
+	// Drop the applied engine patches first: they are the only local
+	// modifications ever made to the checkout, and a dirty tree would
+	// make the tag switch fail. The patch step re-applies them against
+	// the new tag right after (or fails loudly if they no longer fit).
+	reset := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "--", ".")
+	if err := ins.runStreaming(reset); err != nil {
+		return err
+	}
 	fetch := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "--depth", "1", "origin", "tag", ins.cfg.Tag)
 	if err := ins.runStreaming(fetch); err != nil {
 		return err
 	}
 	checkout := exec.CommandContext(ctx, "git", "-C", dir, "checkout", ins.cfg.Tag)
 	return ins.runStreaming(checkout)
+}
+
+// ensurePatches applies iar's targeted engine fixes to the checkout
+// (see patches.go). Idempotent: files already carrying a patch are left
+// alone.
+func (ins *Installer) ensurePatches(context.Context) error {
+	applied, err := ApplyEnginePatches(ins.cfg.EngineDir)
+	if err != nil {
+		return err
+	}
+	if len(applied) == 0 {
+		ins.progress("engine patches already present")
+	} else {
+		ins.progress("applied engine patches: " + strings.Join(applied, ", "))
+	}
+	return nil
 }
 
 // ensureEnv runs uv sync, which creates or repairs the .venv. uv sync is
