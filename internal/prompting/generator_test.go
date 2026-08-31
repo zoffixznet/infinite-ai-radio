@@ -234,3 +234,41 @@ func TestChatWithPinsHelperOffTheGPU(t *testing.T) {
 		t.Fatal("num_gpu sent despite gpu_layers=-1; want the daemon left to decide")
 	}
 }
+
+func TestThinkingIsOptInPerCall(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/chat" {
+			json.NewDecoder(r.Body).Decode(&got)
+			json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": "ok"}})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+			{"name": "m", "capabilities": []string{"completion", "thinking"}},
+		}})
+	}))
+	defer srv.Close()
+
+	o := NewOllama(srv.URL, "", 0)
+	if !o.Available(context.Background()) {
+		t.Fatal("Available = false")
+	}
+
+	// Caller silent: thinking must be explicitly OFF, or a thinking
+	// model burns the whole reply budget on it and returns nothing.
+	if _, err := o.Chat(context.Background(), "s", "u"); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := got["think"]; !ok || v != false {
+		t.Fatalf("think = %v (present=%v); want explicit false by default", v, ok)
+	}
+
+	// Caller opting in still gets it.
+	yes := true
+	if _, err := o.ChatWith(context.Background(), "s", "u", ChatOpts{Think: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if v := got["think"]; v != true {
+		t.Fatalf("think = %v; want true when requested", v)
+	}
+}

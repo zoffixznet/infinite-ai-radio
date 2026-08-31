@@ -217,8 +217,20 @@ func (o *Ollama) ChatWith(ctx context.Context, system, user string, opts ChatOpt
 		"keep_alive": opts.KeepAliveSeconds,
 		"options":    options,
 	}
-	if opts.Think != nil && o.thinkOK {
-		payload["think"] = *opts.Think
+	if o.thinkOK {
+		// Thinking is strictly opt-in. Left to the model's default, a
+		// thinking model spends its entire num_predict budget on the
+		// thinking channel and returns EMPTY content - measured on this
+		// machine's model: 150/150 tokens of "Thinking Process:" and
+		// zero reply, where the same call with think:false returned
+		// full lyrics. That single omission read as "ollama: empty
+		// reply" on every helper call and kept the lyric writer
+		// delivering nothing while looking merely flaky.
+		think := false
+		if opts.Think != nil {
+			think = *opts.Think
+		}
+		payload["think"] = think
 	}
 	if opts.Format != nil {
 		payload["format"] = opts.Format
