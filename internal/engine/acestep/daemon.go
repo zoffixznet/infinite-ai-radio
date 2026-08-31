@@ -77,6 +77,31 @@ func processDataDir(pid int) string {
 	return ""
 }
 
+// idleExit confirms an idle shutdown under the client lock - the same
+// lock ensureDaemon holds while adopting - so reaping cannot race a
+// player that is starting up at this very moment (waking a laptop and
+// starting the radio does exactly that: the resume-time idle check and
+// the first client heartbeat land together). The client heartbeats
+// under the lock before adopting, so by the time the lock is ours a
+// just-arrived client is visible as a fresh heartbeat and the shutdown
+// is called off. When the shutdown stands, the engine state record is
+// retracted before the lock is released, so the next client finds no
+// record and spawns a fresh daemon instead of adopting a dying one.
+func idleExit(dir state.Dir, pid int, timeout time.Duration) bool {
+	lock, err := dir.AcquireLock("engine-client.lock", true)
+	if err != nil {
+		// Cannot order against clients this tick; try again next tick
+		// rather than reaping blind.
+		return false
+	}
+	defer lock.Release()
+	if dir.HeartbeatAge() <= timeout {
+		return false
+	}
+	dir.RemoveEngineStateIf(pid)
+	return true
+}
+
 // waitForPredecessors blocks until list reports no other engine daemons,
 // ctx ends, or timeout elapses. It logs once when a wait begins and once
 // when it resolves, so the log tells restart-overlap stories honestly.
@@ -194,6 +219,9 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig, log *slog.Logger) error {
 				return nil
 			}
 			if age := cfg.StateDir.HeartbeatAge(); age > cfg.IdleTimeout {
+				if !idleExit(cfg.StateDir, st.PID, cfg.IdleTimeout) {
+					continue // a client arrived between the check and the lock
+				}
 				log.Info("engine daemon stopping (idle)", "event", "daemon_stop", "reason", "idle", "idle_seconds", age.Seconds())
 				return nil
 			}

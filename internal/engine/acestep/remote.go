@@ -123,6 +123,12 @@ func (r *Remote) ensureDaemon() {
 	}
 	defer lock.Release()
 
+	// Heartbeat under the lock, before reading the record: an idle
+	// daemon confirms its shutdown under this same lock, so the fresh
+	// heartbeat calls off a reap that would otherwise race this
+	// adoption (the daemon then keeps running and is adopted below).
+	r.dir.Heartbeat()
+
 	st, ok := r.dir.ReadEngineState()
 	if ok && state.PIDAlive(st.PID) {
 		r.setState(st, true)

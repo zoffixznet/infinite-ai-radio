@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"iar/internal/state"
 )
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -51,5 +53,43 @@ func TestWaitForPredecessorsStopsOnContextCancel(t *testing.T) {
 		func() []int { return []int{12345} })
 	if time.Since(start) > 100*time.Millisecond {
 		t.Fatal("cancelled context did not stop the wait")
+	}
+}
+
+func TestIdleExitStandsWhenHeartbeatStale(t *testing.T) {
+	dir, err := state.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.WriteEngineState(state.EngineState{PID: 4242, Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// No heartbeat was ever written, so the age is far past any timeout.
+	if !idleExit(dir, 4242, time.Minute) {
+		t.Fatal("idleExit = false with a stale heartbeat; want shutdown")
+	}
+	if _, ok := dir.ReadEngineState(); ok {
+		t.Fatal("engine state survived an idle shutdown; a client would adopt a dying daemon")
+	}
+}
+
+func TestIdleExitCalledOffByFreshHeartbeat(t *testing.T) {
+	dir, err := state.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.WriteEngineState(state.EngineState{PID: 4242, Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// A client heartbeat lands before the daemon takes the lock (the
+	// race this function exists to close).
+	if err := dir.Heartbeat(); err != nil {
+		t.Fatal(err)
+	}
+	if idleExit(dir, 4242, time.Minute) {
+		t.Fatal("idleExit = true despite a fresh heartbeat; want the shutdown called off")
+	}
+	if _, ok := dir.ReadEngineState(); !ok {
+		t.Fatal("engine state removed despite the shutdown being called off")
 	}
 }
