@@ -679,6 +679,9 @@ laptop's speakers.
   tag, or *Delete* it (with a confirmation; the file and its lyrics are
   removed from the server). Looping one song repeats it until you press
   *Back to looping the checked songs*.
+- Switching between the Live and Saved tabs is just looking: whatever
+  is playing keeps playing, and the bottom controls follow the playing
+  side until you actually start the other one.
 - The built-in controls seek, pause and set volume as usual.
 - The mode, tag, language and checkbox selections are remembered per
   browser.

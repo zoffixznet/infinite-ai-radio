@@ -172,7 +172,28 @@
   }
 
   // ---- mode switch -------------------------------------------------
+  // The visible tab and the playing audio are independent: switching
+  // tabs is just looking, and whatever was playing keeps playing. The
+  // bottom transport follows the PLAYING source, not the tab - it only
+  // hands over when the listener actually starts the other side.
   var mode = store.get("iar.mode", "live");
+  var audioSource = "live"; // which player the transport controls
+  function syncSourceTransport() {
+    var live = audioSource === "live";
+    $("livetransport").hidden = !live;
+    $("savedtransport").hidden = live;
+  }
+  function setAudioSource(src) {
+    if (audioSource === src) return;
+    audioSource = src;
+    if (src === "saved") {
+      stopListening("stopped (playing a saved song)");
+    } else {
+      savedAudio.pause();
+    }
+    syncSourceTransport();
+    syncPrevAction();
+  }
   function setMode(m) {
     mode = m;
     store.set("iar.mode", m);
@@ -183,15 +204,9 @@
     $("mode-saved").classList.toggle("on", !live);
     $("mode-live").setAttribute("aria-selected", live ? "true" : "false");
     $("mode-saved").setAttribute("aria-selected", live ? "false" : "true");
-    $("livetransport").hidden = !live;
-    $("savedtransport").hidden = live;
     $("scroll").scrollTop = 0;
-    if (live) {
-      savedAudio.pause();
-    } else {
-      stopListening("stopped (switched to saved chunks)");
-      loadChunks();
-    }
+    if (!live) loadChunks();
+    syncSourceTransport();
     syncPrevAction();
   }
   $("mode-live").addEventListener("click", function () { setMode("live"); });
@@ -999,6 +1014,7 @@
   });
 
   function startListening() {
+    setAudioSource("live");
     store.set("iar.wasplaying", true);
     if (transport === "buffered" && idbSupported) startBuffered(); else startStream();
   }
@@ -1094,16 +1110,16 @@
   function msAction(action) {
     switch (action) {
       case "play":
-        if (mode === "live") { if (!tryResume()) startListening(); } else savedAudio.play();
+        if (audioSource === "live") { if (!tryResume()) startListening(); } else savedAudio.play();
         break;
       case "pause":
-        if (mode === "live") stopListening("stopped"); else savedAudio.pause();
+        if (audioSource === "live") stopListening("stopped"); else savedAudio.pause();
         break;
       case "stop":
-        if (mode === "live") stopListening("stopped"); else savedAudio.pause();
+        if (audioSource === "live") stopListening("stopped"); else savedAudio.pause();
         break;
       case "nexttrack":
-        if (mode === "live") {
+        if (audioSource === "live") {
           // Same debounce/double-fire guards as the on-page controls.
           if (pf.active) { pfSkip(); return; }
           if (me && me.steer) act($("next"), [stateEl, $("steerstatus")], "/next", "", "skipping…");
@@ -1112,7 +1128,7 @@
         }
         break;
       case "previoustrack":
-        if (mode === "live") { if (carSave) carSaveAction(); } else { repeatOne = null; updateLoopState(); step(-1); }
+        if (audioSource === "live") { if (carSave) carSaveAction(); } else { repeatOne = null; updateLoopState(); step(-1); }
         break;
     }
   }
@@ -1127,7 +1143,7 @@
   // mode, or live mode with the car-save toggle on), so a switched-off
   // toggle removes the dead ⏮ from the car instead of ignoring it.
   function syncPrevAction() {
-    var active = mode === "saved" || carSave;
+    var active = audioSource === "saved" || carSave;
     msHandler("previoustrack", active ? function () { msAction("previoustrack"); } : null);
   }
   syncPrevAction();
@@ -1659,7 +1675,7 @@
       // here; buffered mode plays this device's own track and sets its
       // metadata in pfPlay.
       var changed = false;
-      if (mode === "live" && !pf.active) {
+      if (audioSource === "live" && !pf.active) {
         var artist = t && t.number
           ? "Track " + t.number + (t.subtitle ? " · " + t.subtitle : "")
           : (s.session_desc || s.session || "");
@@ -1987,6 +2003,7 @@
   }
 
   function playChunk(c) {
+    setAudioSource("saved");
     current = c;
     savedAudio.src = c.url;
     savedAudio.play().catch(function (e) { $("savednow").textContent = "could not play: " + e.message; });

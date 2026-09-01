@@ -558,13 +558,20 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`return document.querySelectorAll('#chunks .chunk').length;`, &n)
 		return n == 1
 	})
-	var liveGone bool
-	w.exec(`return document.getElementById('liveaudio') === null;`, &liveGone)
-	if !liveGone {
-		t.Fatal("switching to saved mode must stop the live stream element")
+	// Switching tabs is just looking: the live stream keeps playing
+	// until a saved song is actually started.
+	var liveAlive bool
+	w.exec(`return document.getElementById('liveaudio') !== null && !document.getElementById('liveaudio').paused;`, &liveAlive)
+	if !liveAlive {
+		t.Fatal("switching to the saved tab must not stop the live stream")
 	}
 	w.click(`#chunks .chunk button[data-action="Play"]`)
 	saved := assertPlays(t, w, "savedaudio", 1.5, 20*time.Second)
+	var liveGone bool
+	w.exec(`return document.getElementById('liveaudio') === null;`, &liveGone)
+	if !liveGone {
+		t.Fatal("starting a saved song must stop the live stream element")
+	}
 	t.Logf("saved chunk: currentTime %.1fs readyState %d", saved.Time, saved.Ready)
 	w.click(`#chunks .chunk button[data-action="Loop"]`)
 	var loopText string
