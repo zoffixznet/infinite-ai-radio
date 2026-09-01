@@ -32,7 +32,7 @@ SCREEN_R = 42      # screen corner radius
 BODY_R = 53        # outer corner radius
 SHADOW_BLUR = 18
 SHADOW_DY = 9
-MARGIN = 30        # transparent room for the shadow
+MARGIN = 16        # transparent room for the shadow
 
 BODY = (26, 25, 24, 255)       # the phone's dark body
 RIM = (72, 69, 66, 255)        # a lighter hairline at its edge
@@ -171,7 +171,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("src", help="directory of raw screenshots")
     ap.add_argument("dst", help="directory to write the framed pictures into")
-    ap.add_argument("--width", type=int, default=480, help="output width in pixels (0 keeps full size)")
+    ap.add_argument("--width", type=int, default=840, help="output width in pixels (0 keeps full size)")
     args = ap.parse_args()
 
     os.makedirs(args.dst, exist_ok=True)
