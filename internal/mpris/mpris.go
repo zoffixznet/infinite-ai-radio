@@ -7,6 +7,7 @@ package mpris
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -37,6 +38,13 @@ type Server struct {
 	props *prop.Properties
 	ctl   Controls
 	log   *slog.Logger
+
+	// mu keeps a shutdown from pulling the connection out from under a
+	// property write. The prop package's SetMust panics instead of
+	// returning an error, so a write racing Close took the whole
+	// process down on the way out ("dbus: connection closed by user").
+	mu     sync.Mutex
+	closed bool
 }
 
 // Start connects to the session bus and exports the player. It returns an
@@ -134,6 +142,13 @@ func (s *Server) Close() {
 	if s == nil || s.conn == nil {
 		return
 	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return // both the refresh loop and the caller close this
+	}
+	s.closed = true
+	s.mu.Unlock()
 	s.conn.ReleaseName(BusName)
 	s.conn.Close()
 }
@@ -166,16 +181,28 @@ func (s *Server) refreshLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		paused, volume, title := s.ctl.Snapshot()
-		s.props.SetMust("org.mpris.MediaPlayer2.Player", "PlaybackStatus", statusString(paused))
-		s.props.SetMust("org.mpris.MediaPlayer2.Player", "Metadata", metadata(title))
-		// Only push volume when it changed elsewhere, to avoid fighting
-		// an in-flight external write.
-		cur, err := s.props.Get("org.mpris.MediaPlayer2.Player", "Volume")
-		if err == nil {
-			if f, ok := cur.Value().(float64); ok && int(f*100+0.5) != volume {
-				s.props.SetMust("org.mpris.MediaPlayer2.Player", "Volume", float64(volume)/100)
-			}
+		s.publish()
+	}
+}
+
+// publish mirrors one player snapshot into the D-Bus properties. It
+// holds the lock for the whole write so a concurrent Close cannot close
+// the connection mid-property; once closed it does nothing.
+func (s *Server) publish() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	paused, volume, title := s.ctl.Snapshot()
+	s.props.SetMust("org.mpris.MediaPlayer2.Player", "PlaybackStatus", statusString(paused))
+	s.props.SetMust("org.mpris.MediaPlayer2.Player", "Metadata", metadata(title))
+	// Only push volume when it changed elsewhere, to avoid fighting
+	// an in-flight external write.
+	cur, err := s.props.Get("org.mpris.MediaPlayer2.Player", "Volume")
+	if err == nil {
+		if f, ok := cur.Value().(float64); ok && int(f*100+0.5) != volume {
+			s.props.SetMust("org.mpris.MediaPlayer2.Player", "Volume", float64(volume)/100)
 		}
 	}
 }
