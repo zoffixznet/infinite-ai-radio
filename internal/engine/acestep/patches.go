@@ -24,6 +24,12 @@ type patchHunk struct {
 	file    string
 	find    string
 	replace string
+	// guard, when set, is text unique to this hunk's replacement. If it
+	// is already in the file but the current replacement is not, the
+	// file carries an *earlier* version of this same fix - applying
+	// again would append a second copy rather than upgrade the first.
+	// That is an error to report, not a thing to do quietly.
+	guard string
 }
 
 // enginePatch is one named fix, possibly spanning several files.
@@ -331,7 +337,8 @@ var enginePatches = []enginePatch{
 `,
 			},
 			{
-				file: "acestep/core/generation/handler/init_service_loader.py",
+				file:  "acestep/core/generation/handler/init_service_loader.py",
+				guard: "_iar_materialize_dit",
 				find: `        silence_latent_device = "cpu" if self.offload_to_cpu and self.offload_dit_to_cpu else device
         self.silence_latent = self.silence_latent.to(silence_latent_device).to(self.dtype)
         return attn_implementation
@@ -421,6 +428,49 @@ var enginePatches = []enginePatch{
 `,
 			},
 			{
+				// The third readiness gate, and the one that matters
+				// most: the planner's audio codes are decoded here, and
+				// this returned None the moment the DiT was deferred.
+				// Nothing downstream treats that as a failure - the
+				// caller falls back to conditioning on silence, whose
+				// tiled latents pool to the same code in every 200 ms
+				// window, so the song renders as a 5 Hz comb across
+				// every band instead of following its plan.
+				file:  "acestep/core/generation/handler/audio_codes.py",
+				guard: "iar-patch: dit-from-disk. A deferred DiT is not \"missing\" here either",
+				find: `        if self.model is None or not hasattr(self.model, "tokenizer") or not hasattr(self.model, "detokenizer"):
+            return None
+
+        code_ids = self._parse_audio_code_string(code_str)
+        if len(code_ids) == 0:
+            return None
+
+        with self._load_model_context("model"):
+            quantizer = self.model.tokenizer.quantizer
+`,
+				replace: `        # iar-patch: dit-from-disk. A deferred DiT is not "missing" here either:
+        # the model context below streams it from disk on demand. Bailing out
+        # first threw away the planner's codes on every phased render.
+        if self.model is None and not getattr(self, "offload_dit_to_disk", False):
+            return None
+
+        code_ids = self._parse_audio_code_string(code_str)
+        if len(code_ids) == 0:
+            return None
+
+        with self._load_model_context("model"):
+            if self.model is None or not hasattr(self.model, "tokenizer") or not hasattr(self.model, "detokenizer"):
+                # iar-patch: losing the codes costs the whole song, and the
+                # callers substitute silence without complaint. Say it loudly.
+                logger.error(
+                    "[_decode_audio_codes_to_latents] DiT unusable after load; dropping "
+                    f"{len(code_ids)} planned audio codes - this render will not follow its plan"
+                )
+                return None
+            quantizer = self.model.tokenizer.quantizer
+`,
+			},
+			{
 				file: "acestep/core/generation/handler/generate_music_request.py",
 				find: `        if self.model is None or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
 `,
@@ -483,6 +533,13 @@ func ApplyEnginePatches(dir string) ([]string, error) {
 			src := string(raw)
 			if strings.Contains(src, h.replace) {
 				continue
+			}
+			if h.guard != "" && strings.Contains(src, h.guard) {
+				return applied, fmt.Errorf(
+					"patch %s hunk %d: %s already carries an older version of this fix; "+
+						"reset the engine checkout (git -C <engine dir> checkout -- .) and run 'iar setup' "+
+						"so it is re-applied cleanly instead of duplicated",
+					p.name, i+1, h.file)
 			}
 			if n := strings.Count(src, h.find); n != 1 {
 				return applied, fmt.Errorf(
