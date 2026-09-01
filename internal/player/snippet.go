@@ -127,7 +127,8 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 // isTrackID reports whether a save selector is a track id rather than a
 // which keyword.
 func isTrackID(which string) bool {
-	return strings.HasPrefix(which, "t-") || strings.HasPrefix(which, libFillerPrefix)
+	return strings.HasPrefix(which, "t-") || strings.HasPrefix(which, libFillerPrefix) ||
+		strings.HasPrefix(which, bufTrackPrefix)
 }
 
 // maxSavedIDs bounds the remembered saved-track set.

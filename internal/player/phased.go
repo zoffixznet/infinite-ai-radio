@@ -55,12 +55,18 @@ func (o *Orchestrator) phasedEnabled() bool {
 	return ok
 }
 
-// syncPhasedEpoch aligns phased state with the steering epoch: a steer
-// makes every stored plan and rendered song stale, so they are dropped
-// and the ramp starts over.
-func (o *Orchestrator) syncPhasedEpoch() int {
+// syncPhasedState aligns the on-disk buffer with what the radio is
+// actually playing. Two identities are checked: the steering-context
+// key (which survives restarts - a buffer written for another session
+// or steering context is wiped wholesale) and the in-run epoch (a
+// steer drops the old epoch's files and restarts the ramp).
+func (o *Orchestrator) syncPhasedState() int {
+	_, sess := o.snapshotSession()
+	key := library.Key(sess)
 	o.mu.Lock()
 	epoch := o.epoch
+	booted := o.phasedSynced
+	o.phasedSynced = true
 	changed := epoch != o.phasedEpoch
 	if changed {
 		o.phasedEpoch = epoch
@@ -68,10 +74,23 @@ func (o *Orchestrator) syncPhasedEpoch() int {
 		o.phasedSeq = 0
 	}
 	o.mu.Unlock()
-	if changed {
+	if o.Buffer.Context() != key {
+		if dropped := o.Buffer.DropAll(); dropped > 0 {
+			o.log.Info("buffered work from another context dropped", "event", "buffer_context_dropped",
+				"files", dropped)
+		}
+		o.Buffer.SetContext(key)
+		return epoch
+	}
+	if changed || !booted {
+		// On the first sync of a run this also clears orphans from a
+		// previous run's steered epochs (the counter restarts at zero).
 		if dropped := o.Buffer.DropOtherEpochs(epoch); dropped > 0 {
 			o.log.Info("stale buffered work dropped", "event", "buffer_epoch_dropped",
 				"epoch", epoch, "files", dropped)
+		}
+		if changed {
+			o.Buffer.SetContext(key)
 		}
 	}
 	return epoch
@@ -124,8 +143,14 @@ func (o *Orchestrator) cycleTargets(epoch int) (planSecs, renderSecs float64, ba
 func (o *Orchestrator) wantCycle(epoch int) bool {
 	o.mu.Lock()
 	mode := o.sess.Mode
+	cooldown := o.cycleCooldown
 	o.mu.Unlock()
 	if mode != session.ModeMusic {
+		return false
+	}
+	if time.Now().Before(cooldown) {
+		// A recent cycle gave up on persistent failures; do not spin
+		// the engine awake again until the cooldown passes.
 		return false
 	}
 	low := float64(o.cfg.Buffer.RenderLowMinutes) * 60
@@ -165,7 +190,7 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 		case <-o.wake:
 		case <-time.After(2 * time.Second):
 		}
-		epoch := o.syncPhasedEpoch()
+		epoch := o.syncPhasedState()
 		if !o.wantCycle(epoch) {
 			continue
 		}
@@ -176,38 +201,43 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 	}
 }
 
-// runCycle wakes the engine, plans, renders, and hibernates.
+// runCycle wakes the engine and produces in interleaved bursts: it
+// plans while the rendered buffer is healthy, switches to rendering
+// whenever the buffer nears the low-water mark (playback must never
+// starve behind a long planning run), and tops the rendered buffer to
+// target before finishing. Model swaps happen once per burst switch,
+// not per song. Every exit path decides hibernation: the engine stays
+// warm only when more work is already due.
 func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	pe := o.eng.(phasedEngine)
 	o.setEngineActive(true)
+	defer func() {
+		if ctx.Err() == nil && o.wantCycle(o.syncPhasedState()) {
+			return // more work due (ramp climbing, or a fresh epoch): stay warm
+		}
+		if o.exportingNow() {
+			return // an export owns the engine; it finishes on its own
+		}
+		o.hibernateEngine()
+	}()
 	if !o.waitEngineReady(ctx) {
 		o.log.Warn("engine did not become ready for a cycle", "event", "cycle_engine_unready")
+		o.coolDown(2 * time.Minute)
 		return
 	}
 
-	epoch := o.syncPhasedEpoch()
+	epoch := o.syncPhasedState()
 	planTarget, renderTarget, batchCap := o.cycleTargets(epoch)
-
-	// Plan phase: the planner writes songs until the batch is full.
-	// With the disk-backed DiT the first plan job clears the diffusion
-	// model off the card, so the whole batch runs in the small window.
+	if renderTarget <= 0 {
+		// Ramp stages render up to the configured depth too; the cap
+		// is on how many new plans they write.
+		renderTarget = float64(o.cfg.Buffer.RenderAheadMinutes) * 60
+	}
+	low := float64(o.cfg.Buffer.RenderLowMinutes) * 60
 	plannedThisCycle := 0
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		if cur := o.syncPhasedEpoch(); cur != epoch {
-			return // steered mid-batch; everything planned so far is gone
-		}
-		_, plannedSecs := o.Buffer.PlanStats(epoch)
-		have := plannedSecs + o.bufferedSeconds(epoch)
-		if batchCap > 0 && plannedThisCycle >= batchCap {
-			break
-		}
-		if batchCap == 0 && have >= planTarget {
-			break
-		}
-		_, sess := o.snapshotSession()
+	storeFails := 0
+
+	planOne := func(sess *session.Session) bool {
 		spec := o.builder.BuildSpec(ctx, sess, o.cfg.TrackSeconds)
 		o.builder.TitleAsync(specPromptForLog(spec))
 		o.setGenBusy(true)
@@ -220,41 +250,32 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		o.genMu.Unlock()
 		o.setGenBusy(false)
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		if err != nil {
-			if !o.notePhasedFailure(ctx, "plan", err, failures, oomStreak) {
-				return
-			}
-			continue
+			return o.notePhasedFailure(ctx, "plan", err, failures, oomStreak)
 		}
 		o.notePhasedSuccess(failures, oomStreak)
 		seq := o.nextPhasedSeq(epoch)
 		if err := o.Buffer.PutPlan(epoch, seq, plan); err != nil {
+			storeFails++
 			o.log.Error("plan not stored", "event", "buffer_plan_failed", "error", err.Error())
-			return
+			if storeFails == 1 {
+				o.emit("the track buffer cannot be written (" + err.Error() + ")")
+			}
+			return storeFails < 3
 		}
 		plannedThisCycle++
 		o.log.Info("plan finished", "event", "plan_finished",
 			"elapsed_seconds", time.Since(start).Seconds(), "plan_seconds", plan.Seconds,
 			"epoch", epoch, "seq", seq)
+		return true
 	}
 
-	// Render phase: the diffusion model mounts once (from disk) and
-	// burns through the stored plans.
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		if cur := o.syncPhasedEpoch(); cur != epoch {
-			return
-		}
-		if renderTarget > 0 && o.bufferedSeconds(epoch) >= renderTarget {
-			break
-		}
+	renderOne := func() bool {
 		plan, seq, ok := o.Buffer.NextPlan(epoch)
 		if !ok {
-			break
+			return false
 		}
 		o.setGenBusy(true)
 		start := time.Now()
@@ -263,42 +284,102 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		o.genMu.Unlock()
 		o.setGenBusy(false)
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		if err != nil {
-			if !o.notePhasedFailure(ctx, "render", err, failures, oomStreak) {
-				return
+			// A plan whose render keeps failing must not block the
+			// whole pipeline from the head of the queue.
+			o.mu.Lock()
+			if o.renderFails == nil {
+				o.renderFails = map[int]int{}
 			}
-			continue
+			o.renderFails[seq]++
+			bad := o.renderFails[seq] >= 3
+			o.mu.Unlock()
+			if bad {
+				o.Buffer.DropPlan(epoch, seq)
+				o.log.Warn("plan dropped after repeated render failures",
+					"event", "plan_dropped", "epoch", epoch, "seq", seq, "error", err.Error())
+			}
+			return o.notePhasedFailure(ctx, "render", err, failures, oomStreak)
 		}
 		o.notePhasedSuccess(failures, oomStreak)
 		if o.cfg.NormalizeLoudness {
 			audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
 		}
+		o.fillTitle(track, specPromptForLog(plan.Spec))
 		if err := o.Buffer.PutTrack(ctx, epoch, seq, track); err != nil {
+			storeFails++
 			o.log.Error("rendered track not stored", "event", "buffer_track_failed", "error", err.Error())
-			return
+			if storeFails == 1 {
+				o.emit("the track buffer cannot be written (" + err.Error() + ")")
+			}
+			return storeFails < 3
 		}
 		o.Buffer.DropPlan(epoch, seq)
 		elapsed := time.Since(start)
 		o.mu.Lock()
 		o.genCount++
 		o.lastGen = elapsed
+		delete(o.renderFails, seq)
 		o.mu.Unlock()
 		o.log.Info("render finished", "event", "render_finished",
 			"elapsed_seconds", elapsed.Seconds(), "track_seconds", track.Duration().Seconds(),
 			"epoch", epoch, "seq", seq)
+		return true
 	}
 
-	// The ramp may already owe more work (a stage-0 track lands and
-	// immediately unlocks the small batch): keep the engine warm and
-	// let the loop re-enter instead of paying a pointless cold start.
-	if o.wantCycle(o.syncPhasedEpoch()) {
-		return
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if cur := o.syncPhasedState(); cur != epoch {
+			return // steered mid-cycle; the defer decides warm vs sleep
+		}
+		if storeFails >= 3 {
+			o.coolDown(2 * time.Minute)
+			return
+		}
+		planned, plannedSecs := o.Buffer.PlanStats(epoch)
+		buffered := o.bufferedSeconds(epoch)
+		needPlan := (batchCap > 0 && plannedThisCycle < batchCap) ||
+			(batchCap == 0 && plannedSecs+buffered < planTarget)
+		needRender := planned > 0 && buffered < renderTarget
+		urgentRender := planned > 0 && buffered < low
+		var ok bool
+		switch {
+		case urgentRender:
+			ok = renderOne()
+		case needPlan:
+			_, sess := o.snapshotSession()
+			ok = planOne(sess)
+		case needRender:
+			ok = renderOne()
+		default:
+			return // all targets met; the defer hibernates
+		}
+		if !ok {
+			if ctx.Err() == nil {
+				o.coolDown(time.Minute)
+			}
+			return
+		}
 	}
-	// Work done: give the card and the memory back until the buffer
-	// runs low again.
-	o.hibernateEngine()
+}
+
+// coolDown blocks new cycles for a while after persistent failures, so
+// an unfixable condition cannot spin the engine awake in a hot loop.
+func (o *Orchestrator) coolDown(d time.Duration) {
+	o.mu.Lock()
+	o.cycleCooldown = time.Now().Add(d)
+	o.mu.Unlock()
+}
+
+// exportingNow reports whether an export is running.
+func (o *Orchestrator) exportingNow() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.exporting != ""
 }
 
 // feedLoop keeps the in-memory prefetch filled from the disk buffer.
@@ -331,7 +412,6 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			o.queue = append(o.queue, track)
 			o.lastGood = track
 			o.lastGoodEpoch = epoch
-			o.playedInEpoch++
 		}
 		o.mu.Unlock()
 		if !kept {

@@ -76,12 +76,13 @@ so playing a banked track never changes what gets generated). While anything loa
 live progress: which phase it is in, how long it has been running, and
 how long it usually takes.
 
-Behind the scenes the engine runs as a shared background process. Three
-numbers matter: launch with banked tracks, audio in seconds; fresh
-generation ready in under a minute while the engine is warm, or a couple
-of minutes after a cold engine start; and the idle engine shuts itself
-down 15 minutes after the last Infinite AI Radio process exits (that number is a
-memory-saver, not a boot time).
+Behind the scenes the engine runs as a shared background process that
+the radio wakes only when there is work to do: songs are planned and
+rendered in batches to an on-disk buffer, and between batches the
+engine shuts down completely, freeing all of its graphics and system
+memory while playback continues from the buffer. A launch with banked
+tracks makes audio in seconds; a fresh steering context has its first
+new song in about a minute (a bit more when the engine was asleep).
 
 Useful variants:
 
@@ -100,11 +101,12 @@ Useful variants:
 Quit with `quit` (or Ctrl+C). Music generation runs a few times faster than
 realtime on a modern GPU, so the stream stays ahead of playback.
 
-The engine runs as a shared background process: quitting Infinite AI Radio leaves it
-warm so the next launch starts making music almost immediately, and it
-shuts itself down after 15 minutes without a Infinite AI Radio process using it
-(tunable via `idle_minutes`). Only one interactive Infinite AI Radio player runs at a
-time; a second one tells you where the first is.
+The engine runs as a shared background process that sleeps whenever the
+on-disk track buffer is comfortably ahead - which is most of the time -
+and wakes for the next batch on its own. A relaunch with a healthy
+buffer plays immediately without touching the graphics card at all.
+Only one interactive Infinite AI Radio player runs at a time; a second
+one tells you where the first is.
 
 ## Starting from a prompt
 

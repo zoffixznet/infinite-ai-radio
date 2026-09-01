@@ -263,7 +263,9 @@ func recentFailureStreak(logFile string) (streak int, lastReason string) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
-		case strings.Contains(line, `"event":"generation_finished"`):
+		case strings.Contains(line, `"event":"generation_finished"`),
+			strings.Contains(line, `"event":"plan_finished"`),
+			strings.Contains(line, `"event":"render_finished"`):
 			streak = 0
 			lastReason = ""
 		case strings.Contains(line, `"event":"generation_failed"`):

@@ -78,7 +78,10 @@ func runPlay(pf playFlags) error {
 		sess.NoiseColor = sess.NoiseBed
 	}
 
-	eng, _, engineNote := a.buildEngine(ctx)
+	// Phased mode starts the engine dormant: with a healthy disk buffer
+	// the radio plays without touching the graphics card, and the first
+	// cycle wakes the engine only when work is actually due.
+	eng, _, engineNote := a.buildEngine(ctx, a.cfg.Buffer.Phased && a.cfg.Engine == "acestep")
 	builder := a.buildBuilder(ctx, pf.noLLM)
 
 	pl, err := audio.NewPlayer(audio.PlayerOptions{

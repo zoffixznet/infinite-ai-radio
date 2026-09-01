@@ -336,6 +336,22 @@ func purgeObsoleteKeys(data []byte) ([]byte, bool) {
 
 // sanitize clamps out-of-range values back to safe ones.
 func (c *Config) sanitize() {
+	// Buffer targets must nest sanely: low < render <= plan, all positive.
+	if c.Buffer.PlanAheadMinutes < 10 {
+		c.Buffer.PlanAheadMinutes = 10
+	}
+	if c.Buffer.RenderAheadMinutes < 10 {
+		c.Buffer.RenderAheadMinutes = 10
+	}
+	if c.Buffer.RenderAheadMinutes > c.Buffer.PlanAheadMinutes {
+		c.Buffer.RenderAheadMinutes = c.Buffer.PlanAheadMinutes
+	}
+	if c.Buffer.RenderLowMinutes < 5 {
+		c.Buffer.RenderLowMinutes = 5
+	}
+	if c.Buffer.RenderLowMinutes > c.Buffer.RenderAheadMinutes-5 {
+		c.Buffer.RenderLowMinutes = c.Buffer.RenderAheadMinutes - 5
+	}
 	if c.TrackSeconds < 30 {
 		c.TrackSeconds = 30
 	}

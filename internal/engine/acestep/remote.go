@@ -29,6 +29,7 @@ type Remote struct {
 	phase       string
 	adopted     bool
 	active      bool
+	lastBeat    time.Time
 	lastSpawn   time.Time
 	forcedCount int
 	nextForced  time.Time
@@ -52,6 +53,9 @@ func (r *Remote) SetActive(on bool) {
 	r.mu.Lock()
 	was := r.active
 	r.active = on
+	if on {
+		r.lastBeat = time.Now()
+	}
 	r.mu.Unlock()
 	if on && !was {
 		r.dir.Heartbeat()
@@ -63,13 +67,24 @@ func (r *Remote) SetActive(on bool) {
 // stops keeping it alive, returning all of its graphics and system
 // memory. It reports whether a running daemon was actually stopped.
 // The next SetActive(true) (or probe while active) starts a fresh one.
+//
+// The daemon is shared, so a heartbeat fresher than this client's own
+// last one means another process (an export, a second player) is using
+// it right now: that daemon is left alone - deactivating is enough,
+// and the other client's heartbeats keep it alive as long as needed.
 func (r *Remote) Hibernate() bool {
 	r.mu.Lock()
 	r.active = false
 	pid := r.st.PID
+	lastBeat := r.lastBeat
 	r.phase = "hibernated"
 	r.mu.Unlock()
 	if pid == 0 || !state.PIDAlive(pid) {
+		return false
+	}
+	if age := r.dir.HeartbeatAge(); age < time.Since(lastBeat)-time.Second {
+		r.log.Info("engine daemon left running for another client",
+			"event", "engine_hibernate_shared", "pid", pid, "heartbeat_age", age.Seconds())
 		return false
 	}
 	r.log.Info("stopping engine daemon for hibernation", "event", "engine_hibernate", "pid", pid)
@@ -95,13 +110,15 @@ func (r *Remote) activeNow() bool {
 // Start adopts or spawns the daemon and begins the health-poll and
 // heartbeat loops. It returns quickly; readiness is reported by Ready.
 func (r *Remote) Start(ctx context.Context) {
-	r.ensureDaemon()
-	// Probe immediately so an adopted, already-ready daemon is usable
-	// without waiting for the first poll tick.
-	if phase := r.probe(ctx); phase != "" {
-		r.mu.Lock()
-		r.phase = phase
-		r.mu.Unlock()
+	if r.activeNow() {
+		r.ensureDaemon()
+		// Probe immediately so an adopted, already-ready daemon is
+		// usable without waiting for the first poll tick.
+		if phase := r.probe(ctx); phase != "" {
+			r.mu.Lock()
+			r.phase = phase
+			r.mu.Unlock()
+		}
 	}
 	go r.pollLoop(ctx)
 	go r.heartbeatLoop(ctx)
@@ -267,6 +284,12 @@ func (r *Remote) pollLoop(ctx context.Context) {
 		}
 		phase := r.probe(ctx)
 		r.mu.Lock()
+		if !r.active {
+			// An in-flight probe may have caught the daemon alive just
+			// before Hibernate killed it; while inactive, that stale
+			// answer must not resurrect a "ready" phase.
+			phase = "hibernated"
+		}
 		r.phase = phase
 		r.mu.Unlock()
 		if phase != lastPhase {
@@ -323,6 +346,9 @@ func (r *Remote) heartbeatLoop(ctx context.Context) {
 		case <-ticker.C:
 			if r.activeNow() {
 				r.dir.Heartbeat()
+				r.mu.Lock()
+				r.lastBeat = time.Now()
+				r.mu.Unlock()
 			}
 		}
 	}

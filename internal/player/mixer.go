@@ -177,6 +177,9 @@ func (o *Orchestrator) chooseNext(cur source) source {
 	if len(o.queue) > 0 {
 		t := o.queue[0]
 		o.queue = o.queue[1:]
+		// The ramp's stability count means songs the listener actually
+		// started hearing, not songs staged into the prefetch.
+		o.playedInEpoch++
 		defer o.kickGen()
 		return newTrackSource(t, summarize(t))
 	}

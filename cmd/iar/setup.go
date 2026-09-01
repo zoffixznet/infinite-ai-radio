@@ -83,7 +83,7 @@ func bankPresetTracks(ctx context.Context, a *app) error {
 		return nil
 	}
 	fmt.Println("Pre-generating starter tracks so launches begin playing instantly...")
-	eng, remote, note := a.buildEngine(ctx)
+	eng, remote, note := a.buildEngine(ctx, false)
 	if eng == nil {
 		return fmt.Errorf("%s", note)
 	}

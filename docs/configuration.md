@@ -175,11 +175,13 @@ admin; the Users page does the rest).
 
 ## acestep
 
-Settings in this section are read when the engine daemon starts, and the
-daemon outlives radio sessions - a playing radio keeps it alive
-indefinitely. After changing anything here, run `iar engine stop`: the
-next thing to need the engine brings up a fresh daemon with the new
-settings (playback rides out the restart from its buffered tracks).
+Settings in this section are read when the engine daemon starts. Under
+phased generation (the default) the radio stops and restarts the daemon
+around every batch, so an edit here is picked up within a cycle on its
+own; with `buffer.phased` off, the daemon outlives sessions and an
+`iar engine stop` is needed for changes (and after flipping
+`buffer.phased` itself, so the daemon restarts with the matching
+disk-backing mode).
 
 - `port`: pins the engine API to a fixed localhost port. The default 0
   allocates a free port for each engine daemon (the port is recorded in

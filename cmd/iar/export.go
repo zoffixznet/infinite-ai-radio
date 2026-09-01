@@ -61,7 +61,7 @@ needed.`,
 				Progress:         func(line string) { fmt.Println(line) },
 			}
 			if sess.Mode == session.ModeMusic {
-				eng, remote, note := a.buildEngine(ctx)
+				eng, remote, note := a.buildEngine(ctx, false)
 				if eng == nil {
 					if note == "" {
 						note = "music engine unavailable"

@@ -16,7 +16,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,17 +49,63 @@ func New(dir string, quality int, log *slog.Logger) *Store {
 // Dir returns the buffer's root directory.
 func (s *Store) Dir() string { return s.dir }
 
+// Context returns the steering-context key the buffer's content belongs
+// to (empty when the buffer is fresh or from an older version).
+func (s *Store) Context() string {
+	raw, err := os.ReadFile(filepath.Join(s.dir, "context"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// SetContext records the steering-context key the buffer now serves.
+func (s *Store) SetContext(key string) {
+	if os.MkdirAll(s.dir, 0o755) != nil {
+		return
+	}
+	tmp := filepath.Join(s.dir, "context.tmp")
+	if os.WriteFile(tmp, []byte(key+"\n"), 0o644) == nil {
+		os.Rename(tmp, filepath.Join(s.dir, "context"))
+	}
+}
+
+// DropAll removes every plan and rendered song regardless of epoch
+// (the buffer belonged to a different steering context).
+func (s *Store) DropAll() (dropped int) {
+	for _, dir := range []string{s.plansDir(), s.tracksDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if os.Remove(filepath.Join(dir, e.Name())) == nil {
+				dropped++
+			}
+		}
+	}
+	return dropped
+}
+
 func (s *Store) plansDir() string  { return filepath.Join(s.dir, "plans") }
 func (s *Store) tracksDir() string { return filepath.Join(s.dir, "tracks") }
 
 // name builds the sortable base name for an epoch/sequence pair.
 func name(epoch, seq int) string { return fmt.Sprintf("e%08d-%08d", epoch, seq) }
 
+// nameRe is the exact shape of a buffer base name; anything else -
+// trailing garbage, path separators, dot segments - is rejected, which
+// matters because Peek receives client-supplied names.
+var nameRe = regexp.MustCompile(`^e([0-9]{8})-([0-9]{8})$`)
+
 // parseName extracts epoch and sequence from a base name.
 func parseName(base string) (epoch, seq int, ok bool) {
-	if _, err := fmt.Sscanf(base, "e%08d-%08d", &epoch, &seq); err != nil {
+	m := nameRe.FindStringSubmatch(base)
+	if m == nil {
 		return 0, 0, false
 	}
+	epoch, _ = strconv.Atoi(m[1])
+	seq, _ = strconv.Atoi(m[2])
 	return epoch, seq, true
 }
 
@@ -174,6 +222,11 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, bool) 
 		var samples []int16
 		if err == nil {
 			samples, err = export.DecodePCM(ctx, mp3)
+		}
+		if ctx.Err() != nil {
+			// A cancelled context fails every decode; deleting on that
+			// would wipe the whole buffer during shutdown.
+			return nil, false
 		}
 		os.Remove(metaPath)
 		os.Remove(mp3)

@@ -23,7 +23,14 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		o.mu.Unlock()
 		return "an export is already running (" + o.exporting + ")"
 	}
-	if o.sess.Mode == session.ModeMusic && (o.eng == nil || !o.eng.Ready()) {
+	phased := o.Buffer != nil && o.cfg.Buffer.Phased
+	if o.sess.Mode == session.ModeMusic && o.eng == nil {
+		o.mu.Unlock()
+		return "the music engine is not available"
+	}
+	if o.sess.Mode == session.ModeMusic && !phased && !o.eng.Ready() {
+		// The phased engine may be deliberately hibernated; the export
+		// wakes it below. The fused path keeps the old behavior.
 		o.mu.Unlock()
 		return "the music engine is not ready yet; try again shortly"
 	}
@@ -40,6 +47,21 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		ctx = context.Background()
 	}
 	go func() {
+		if o.Buffer != nil && o.cfg.Buffer.Phased {
+			// Wake the hibernated engine and hold it awake for the
+			// export; the cycle loop skips hibernation while an export
+			// runs, and the next cycle decides afterwards.
+			o.setEngineActive(true)
+			if !o.waitEngineReady(ctx) {
+				o.mu.Lock()
+				o.exporting = ""
+				o.mu.Unlock()
+				o.log.Error("export failed", "event", "export_failed", "error", "engine did not become ready")
+				o.emit("export failed: the music engine did not become ready")
+				o.kickGen()
+				return
+			}
+		}
 		r := &export.Renderer{
 			Engine:           o.exportEngine(),
 			Builder:          o.builder,
@@ -56,6 +78,9 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		o.mu.Lock()
 		o.exporting = ""
 		o.mu.Unlock()
+		// Let the cycle loop reassess: it hibernates the engine if no
+		// generation work is due.
+		o.kickGen()
 		if err != nil {
 			o.log.Error("export failed", "event", "export_failed", "error", err.Error())
 			o.emit("export failed: " + err.Error())
@@ -95,10 +120,19 @@ func (o *Orchestrator) exportGate(ctx context.Context) error {
 			return err
 		}
 		o.mu.Lock()
-		healthy := o.sess.Mode == session.ModeNoise ||
-			len(o.queue) >= o.cfg.BufferTracks ||
-			o.eng == nil || !o.eng.Ready()
+		mode := o.sess.Mode
+		queued := len(o.queue)
+		phased := o.Buffer != nil && o.cfg.Buffer.Phased
+		epoch := o.epoch
 		o.mu.Unlock()
+		healthy := mode == session.ModeNoise || o.eng == nil
+		if !healthy && phased {
+			// Phased playback feeds from disk; the export may run as
+			// long as a comfortable margin of rendered audio remains.
+			healthy = o.bufferedSeconds(epoch) >= float64(o.cfg.Buffer.RenderLowMinutes)*60/2
+		} else if !healthy {
+			healthy = queued >= o.cfg.BufferTracks || !o.eng.Ready()
+		}
 		if healthy {
 			return nil
 		}

@@ -77,7 +77,11 @@ func (a *app) daemonLogFile() string {
 // buildEngine constructs the configured music engine backed by the shared
 // engine daemon (adopting a running one when possible), or returns nil
 // with a user-facing explanation when it cannot run.
-func (a *app) buildEngine(ctx context.Context) (engine.Engine, *acestep.Remote, string) {
+// buildEngine wires the engine backend. dormant starts the remote
+// inactive: the daemon is neither spawned nor kept alive until the
+// caller activates it - the phased player does this so a launch with a
+// healthy disk buffer plays for free without waking the engine.
+func (a *app) buildEngine(ctx context.Context, dormant bool) (engine.Engine, *acestep.Remote, string) {
 	switch a.cfg.Engine {
 	case "noise":
 		return nil, nil, ""
@@ -90,6 +94,9 @@ func (a *app) buildEngine(ctx context.Context) (engine.Engine, *acestep.Remote, 
 			return nil, nil, fmt.Sprintf("cannot locate the iar executable: %v", err)
 		}
 		remote := acestep.NewRemote(a.stateD, exe, a.daemonLogFile(), a.log)
+		if dormant {
+			remote.SetActive(false)
+		}
 		remote.Start(ctx)
 		eng := acestep.NewEngine(remote, acestep.Options{
 			InferenceSteps: a.cfg.ACEStep.InferenceSteps,

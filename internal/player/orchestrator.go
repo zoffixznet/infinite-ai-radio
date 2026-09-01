@@ -212,6 +212,13 @@ type Orchestrator struct {
 	phasedEpoch   int
 	phasedSeq     int
 	playedInEpoch int
+	// phasedSynced flags that the buffer was reconciled with this
+	// run's identity at least once; cycleCooldown blocks new cycles
+	// after persistent failures; renderFails counts render failures
+	// per plan sequence so a poisoned plan gets dropped.
+	phasedSynced  bool
+	cycleCooldown time.Time
+	renderFails   map[int]int
 	lastGen       time.Duration
 	exporting     string
 	phase         string
@@ -817,6 +824,14 @@ func (o *Orchestrator) currentPhase() string {
 			case "ready":
 				return "generating first track"
 			case "":
+				return "starting engine"
+			case "hibernated":
+				// Phased mode sleeps the engine on purpose while music
+				// plays from the buffer; that is normal operation, not
+				// a stuck startup.
+				if queued > 0 || last != nil || genCount > 0 {
+					return "playing"
+				}
 				return "starting engine"
 			default:
 				return ph
