@@ -28,6 +28,7 @@ type Remote struct {
 	client      *Client
 	phase       string
 	adopted     bool
+	active      bool
 	lastSpawn   time.Time
 	forcedCount int
 	nextForced  time.Time
@@ -36,7 +37,59 @@ type Remote struct {
 // NewRemote returns an unstarted remote handle. exe is the player binary
 // path; daemonLog is where the daemon writes its output.
 func NewRemote(dir state.Dir, exe, daemonLog string, log *slog.Logger) *Remote {
-	return &Remote{dir: dir, log: log, exe: exe, daemonLog: daemonLog, phase: "starting engine"}
+	// active starts true: every existing caller expects the daemon to
+	// be kept alive for the client's whole lifetime. Phased generation
+	// flips it around engine work via SetActive.
+	return &Remote{dir: dir, log: log, exe: exe, daemonLog: daemonLog, phase: "starting engine", active: true}
+}
+
+// SetActive tells the remote whether this player currently needs the
+// engine: while inactive, no heartbeats are written and a dead daemon
+// is not respawned, so the daemon is free to wind down (or has already
+// been stopped by Hibernate). Turning active back on revives the
+// daemon immediately.
+func (r *Remote) SetActive(on bool) {
+	r.mu.Lock()
+	was := r.active
+	r.active = on
+	r.mu.Unlock()
+	if on && !was {
+		r.dir.Heartbeat()
+		r.ensureDaemon()
+	}
+}
+
+// Hibernate stops the engine daemon this remote is attached to and
+// stops keeping it alive, returning all of its graphics and system
+// memory. It reports whether a running daemon was actually stopped.
+// The next SetActive(true) (or probe while active) starts a fresh one.
+func (r *Remote) Hibernate() bool {
+	r.mu.Lock()
+	r.active = false
+	pid := r.st.PID
+	r.phase = "hibernated"
+	r.mu.Unlock()
+	if pid == 0 || !state.PIDAlive(pid) {
+		return false
+	}
+	r.log.Info("stopping engine daemon for hibernation", "event", "engine_hibernate", "pid", pid)
+	state.Terminate(pid)
+	for i := 0; i < 50 && state.PIDAlive(pid); i++ {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if state.PIDAlive(pid) {
+		r.log.Error("engine daemon ignored SIGTERM", "event", "engine_hibernate_stuck", "pid", pid)
+		return false
+	}
+	r.dir.RemoveEngineStateIf(pid)
+	return true
+}
+
+// activeNow reports the activity flag.
+func (r *Remote) activeNow() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.active
 }
 
 // Start adopts or spawns the daemon and begins the health-poll and
@@ -246,6 +299,11 @@ func (r *Remote) probe(ctx context.Context) string {
 		// restarting after a crash).
 		return "starting engine"
 	default:
+		if !r.activeNow() {
+			// Hibernated on purpose: nothing respawns until the player
+			// needs the engine again.
+			return "hibernated"
+		}
 		// Daemon died; try to bring a fresh one up.
 		r.log.Warn("engine daemon gone, restarting", "event", "engine_gone")
 		r.ensureDaemon()
@@ -263,7 +321,9 @@ func (r *Remote) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.dir.Heartbeat()
+			if r.activeNow() {
+				r.dir.Heartbeat()
+			}
 		}
 	}
 }

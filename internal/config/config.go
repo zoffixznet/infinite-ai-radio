@@ -73,9 +73,34 @@ type Config struct {
 	VocalLanguagesOff []string `json:"vocal_languages_off,omitempty"`
 
 	ACEStep  ACEStep  `json:"acestep"`
+	Buffer   Buffer   `json:"buffer"`
 	Ollama   Ollama   `json:"ollama"`
 	Remote   Remote   `json:"remote"`
 	Sessions Sessions `json:"sessions"`
+}
+
+// Buffer tunes phased generation: songs are planned in one batch (the
+// planner model alone on the graphics card), rendered in another (the
+// audio model alone), stored on disk, and served from there while both
+// models stay completely unloaded. Batch sizes ramp up as a steering
+// context proves stable, so fiddling with prompts never wastes a deep
+// buffer of work.
+type Buffer struct {
+	// Phased turns the phase-split pipeline on. Off, the player
+	// generates each track in one fused engine job, holding the audio
+	// model resident the whole time (the pre-buffer behavior).
+	Phased bool `json:"phased"`
+	// PlanAheadMinutes is how much audio the planner writes ahead once
+	// the steering context is stable. Plans are small JSON files;
+	// planning is the cheap-memory phase, so this can be deep.
+	PlanAheadMinutes int `json:"plan_ahead_minutes"`
+	// RenderAheadMinutes is how much rendered audio is kept on disk
+	// ahead of playback. Rendering is the phase that is thrown away by
+	// a steer, so it stays shallower than the plans.
+	RenderAheadMinutes int `json:"render_ahead_minutes"`
+	// RenderLowMinutes is the refill trigger: when the rendered buffer
+	// drops below this, the engine wakes for another cycle.
+	RenderLowMinutes int `json:"render_low_minutes"`
 }
 
 // Sessions tunes session housekeeping.
@@ -210,6 +235,12 @@ func Default() Config {
 		LibraryMaxMB:      600,
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
+		Buffer: Buffer{
+			Phased:             true,
+			PlanAheadMinutes:   360,
+			RenderAheadMinutes: 120,
+			RenderLowMinutes:   45,
+		},
 		ACEStep: ACEStep{
 			Port:            0,
 			IdleMinutes:     15,

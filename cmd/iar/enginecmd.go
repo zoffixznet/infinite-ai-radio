@@ -141,6 +141,7 @@ func runEngineDaemon() error {
 			LMModelPath:     cfg.ACEStep.LMModelPath,
 			LMBackend:       cfg.ACEStep.LMBackend,
 			OffloadDIT:      cfg.ACEStep.OffloadDIT,
+			OffloadDITDisk:  cfg.Buffer.Phased,
 			MaxTrackSeconds: cfg.ACEStep.MaxTrackSeconds,
 		},
 		IdleTimeout: time.Duration(cfg.ACEStep.IdleMinutes) * time.Minute,

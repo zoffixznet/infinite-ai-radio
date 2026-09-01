@@ -42,6 +42,11 @@ type SidecarConfig struct {
 	// MaxTrackSeconds caps the track length the engine's planner may
 	// choose when it writes the words itself. Zero means no ceiling.
 	MaxTrackSeconds int
+	// OffloadDITDisk runs the music model disk-backed (dit-from-disk
+	// patch): never parked in system memory, streamed onto the card on
+	// demand and dropped when planning work starts. Phased generation
+	// requires it; it implies the CPU-offload base flags.
+	OffloadDITDisk bool
 }
 
 // Sidecar supervises the ACE-Step API server as a child process: it starts
@@ -113,6 +118,14 @@ func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
 		// GPU-tier default that would switch it on, so it stays
 		// resident unless we say otherwise.
 		cmd.Env = append(cmd.Env, "ACESTEP_OFFLOAD_DIT_TO_CPU=true")
+	}
+	if s.cfg.OffloadDITDisk {
+		// dit-from-disk builds on the CPU-offload machinery, so both
+		// flags travel together; the disk flag wins inside the engine
+		// (weights are dropped and re-streamed, never parked in RAM).
+		cmd.Env = append(cmd.Env,
+			"ACESTEP_OFFLOAD_DIT_TO_CPU=true",
+			"ACESTEP_OFFLOAD_DIT_TO_DISK=true")
 	}
 	if s.cfg.MaxTrackSeconds > 0 {
 		// Read by the sample-duration-cap engine patch: a ceiling on

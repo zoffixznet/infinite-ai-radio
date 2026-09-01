@@ -17,6 +17,7 @@ import (
 	"iar/internal/session"
 	"iar/internal/snippets"
 	"iar/internal/state"
+	"iar/internal/trackbuffer"
 	"iar/internal/ui"
 )
 
@@ -94,6 +95,9 @@ func runPlay(pf playFlags) error {
 	orch := player.New(a.cfg, eng, builder, store, sess, pl, a.log)
 	orch.Timings = a.timings
 	orch.Library = a.library()
+	if a.cfg.Buffer.Phased {
+		orch.Buffer = trackbuffer.New(filepath.Join(a.paths.DataDir, "buffer"), a.cfg.MP3Quality, a.log)
+	}
 	orch.SnippetsDir = a.snippetsDir()
 	// Saves land here; say so up front instead of making the listener
 	// dig the path out of a save acknowledgment or the docs.

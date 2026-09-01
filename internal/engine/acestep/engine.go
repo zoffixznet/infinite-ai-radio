@@ -214,3 +214,20 @@ func orDefault(v, def string) string {
 	}
 	return def
 }
+
+// SetEngineActive forwards phased generation's activity signal to the
+// backend (heartbeats and respawns follow it).
+func (e *Engine) SetEngineActive(on bool) {
+	if a, ok := e.be.(interface{ SetActive(bool) }); ok {
+		a.SetActive(on)
+	}
+}
+
+// HibernateEngine stops the engine process entirely between cycles,
+// reporting whether a running daemon was stopped.
+func (e *Engine) HibernateEngine() bool {
+	if h, ok := e.be.(interface{ Hibernate() bool }); ok {
+		return h.Hibernate()
+	}
+	return false
+}

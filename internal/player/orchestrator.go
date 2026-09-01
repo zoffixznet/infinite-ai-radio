@@ -18,6 +18,7 @@ import (
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/state"
+	"iar/internal/trackbuffer"
 )
 
 // Event is a transient user-facing message from the stream machinery.
@@ -161,6 +162,10 @@ type Orchestrator struct {
 	// Library is the on-disk track cache used for instant starts and
 	// opportunistic banking; nil disables it. Set before Start.
 	Library *library.Library
+	// Buffer is the on-disk buffer of phased generation (plans awaiting
+	// render, rendered songs awaiting play). Set before Start; nil (or
+	// buffer.phased=false in the config) selects the fused path.
+	Buffer *trackbuffer.Store
 	// SnippetsDir is where the save command writes captured tracks.
 	SnippetsDir string
 	// Tap, when set before Start, receives the mastered stream at the
@@ -201,17 +206,23 @@ type Orchestrator struct {
 	paused       bool
 	genBusy      bool
 	genCount     int
-	lastGen      time.Duration
-	exporting    string
-	phase        string
-	phaseStart   time.Time
-	started      time.Time
-	firstMusic   bool
-	failStreak   int
-	lastFailure  string
-	curTrack     *engine.Track
-	prevTrack    *engine.Track
-	saving       bool
+	// Phased-generation state: the epoch the buffer currently belongs
+	// to, the last handed-out file sequence number, and how many tracks
+	// of this epoch have been fed to playback (drives the batch ramp).
+	phasedEpoch   int
+	phasedSeq     int
+	playedInEpoch int
+	lastGen       time.Duration
+	exporting     string
+	phase         string
+	phaseStart    time.Time
+	started       time.Time
+	firstMusic    bool
+	failStreak    int
+	lastFailure   string
+	curTrack      *engine.Track
+	prevTrack     *engine.Track
+	saving        bool
 	// playCount numbers the tracks as they start playing (per process);
 	// curTrackNum is the playing track's number.
 	playCount   int
@@ -285,7 +296,16 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	o.ring.Write(make([]byte, audio.DurationToBytes(300*time.Millisecond)))
 	o.recordCurrent()
 	o.wg.Add(4)
-	go func() { defer o.wg.Done(); o.genLoop(ctx) }()
+	if o.phasedEnabled() {
+		// Phased generation: a producer cycle (plan batch, render
+		// batch, hibernate) and a feeder that decodes rendered songs
+		// from disk into the playback prefetch.
+		o.wg.Add(1)
+		go func() { defer o.wg.Done(); o.cycleLoop(ctx) }()
+		go func() { defer o.wg.Done(); o.feedLoop(ctx) }()
+	} else {
+		go func() { defer o.wg.Done(); o.genLoop(ctx) }()
+	}
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.pumpLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.phaseLoop(ctx) }()
