@@ -258,7 +258,11 @@ type Orchestrator struct {
 	lastFailure    string
 	curTrack       *engine.Track
 	prevTrack      *engine.Track
-	saving         bool
+	// bankRefs remembers where a still-provisional track's banked
+	// library copy lives (track ID -> key and library id), so a late
+	// name reaches the banked sidecar too. Pruned as tracks retire.
+	bankRefs map[string]bankRef
+	saving   bool
 	// playCount numbers the tracks as they start playing (per process);
 	// curTrackNum is the playing track's number.
 	playCount   int
@@ -287,16 +291,17 @@ type Orchestrator struct {
 // engine (noise only, with clear messaging).
 func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store *session.Store, sess *session.Session, pl audio.Player, log *slog.Logger) *Orchestrator {
 	o := &Orchestrator{
-		cfg:     cfg,
-		eng:     eng,
-		builder: builder,
-		store:   store,
-		log:     log,
-		player:  pl,
-		ring:    audio.NewRing(2 * audio.BytesPerSecond),
-		sess:    sess,
-		events:  make(chan Event, 16),
-		wake:    make(chan struct{}, 1),
+		cfg:      cfg,
+		eng:      eng,
+		builder:  builder,
+		store:    store,
+		log:      log,
+		player:   pl,
+		ring:     audio.NewRing(2 * audio.BytesPerSecond),
+		sess:     sess,
+		events:   make(chan Event, 16),
+		wake:     make(chan struct{}, 1),
+		bankRefs: map[string]bankRef{},
 	}
 	o.volume.Store(int32(cfg.Volume))
 	return o
@@ -345,6 +350,8 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	} else {
 		go func() { defer o.wg.Done(); o.genLoop(ctx) }()
 	}
+	o.wg.Add(1)
+	go func() { defer o.wg.Done(); o.retitleLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.pumpLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.phaseLoop(ctx) }()
@@ -620,7 +627,7 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			o.wg.Add(1)
 			go func(t *engine.Track) {
 				defer o.wg.Done()
-				if err := o.Library.Put(key, t); err != nil {
+				if _, err := o.Library.Put(key, t); err != nil {
 					o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
 				}
 			}(track)

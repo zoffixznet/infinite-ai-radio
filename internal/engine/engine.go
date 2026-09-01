@@ -68,6 +68,12 @@ type Track struct {
 	// The player fills them before the track enters the stream.
 	Title    string
 	Subtitle string
+	// TitleKey names the helper's title slot for this song, and
+	// TitleProvisional marks a fallback name a late helper answer may
+	// still replace: the helper can run minutes behind the music, so
+	// names are re-checked while the song is queued and playing.
+	TitleKey         string
+	TitleProvisional bool
 	// Seed reports the seed(s) used, when known.
 	Seed string
 	// GenTime is how long generation took.

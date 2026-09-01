@@ -413,11 +413,14 @@ func hookLine(lyrics string) string {
 
 // fillAsync runs one helper call in the background and caches its result.
 // At most one call per key is in flight.
-func (b *Builder) fillAsync(key string, fn func(ctx context.Context) (string, error)) {
+// fillAsync starts a background helper call for key, reporting whether
+// it actually launched one (false when the same key is already in
+// flight).
+func (b *Builder) fillAsync(key string, fn func(ctx context.Context) (string, error)) bool {
 	b.mu.Lock()
 	if b.pending[key] {
 		b.mu.Unlock()
-		return
+		return false
 	}
 	b.pending[key] = true
 	runCtx := b.runCtx
@@ -437,6 +440,7 @@ func (b *Builder) fillAsync(key string, fn func(ctx context.Context) (string, er
 		b.store(key, out)
 		b.log.Info("helper result ready", "event", "helper_ready", "key_kind", key[:1])
 	}()
+	return true
 }
 
 // helperUsable reports whether the helper should be consulted.
@@ -503,6 +507,17 @@ func (b *Builder) store(key, v string) {
 		delete(b.cache, b.cacheOrder[0])
 		b.cacheOrder = b.cacheOrder[1:]
 	}
+}
+
+// PrimeTitle records a name for a song key as if the helper had
+// answered, so a name from another source enters the same cache the
+// late-title pass reads.
+func (b *Builder) PrimeTitle(key, title, subtitle string) {
+	raw, err := json.Marshal(map[string]string{"title": title, "subtitle": subtitle})
+	if err != nil {
+		return
+	}
+	b.store("n|"+key, string(raw))
 }
 
 // SpecUpdate is a helper-proposed structured update to the steering

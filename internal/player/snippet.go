@@ -71,13 +71,20 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 	}
 
 	slug := snippets.Slug(tag)
-	if track.Title == "" {
-		track.Title, track.Subtitle = prompting.TrackTitle(track.Prompt)
+	// Copy the display fields under the lock: the retitle loop may
+	// still be replacing a provisional name on this very track. The
+	// save then uses one consistent name throughout, whichever side of
+	// the rename it caught.
+	o.mu.Lock()
+	title, subtitle := track.Title, track.Subtitle
+	o.mu.Unlock()
+	if title == "" {
+		title, subtitle = prompting.TrackTitle(track.Prompt)
 	}
 	// The file is named after what the interface shows - the title, in
 	// its own language's script - plus the sung language's tag, so a
 	// track heard on the remote is findable on disk by the same name.
-	path := snippets.Path(o.SnippetsDir, tag, track.Title, track.Spec.VocalLanguage, time.Now())
+	path := snippets.Path(o.SnippetsDir, tag, title, track.Spec.VocalLanguage, time.Now())
 	// User-facing acknowledgments show only the tag directory and file
 	// name; the absolute path stays in the log.
 	shown := filepath.Join(slug, filepath.Base(path))
@@ -99,8 +106,8 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 		}
 		err := export.EncodeMP3(ctx, track.Samples, path, export.MP3Options{
 			Quality:  o.cfg.MP3Quality,
-			Title:    track.Title,
-			Subtitle: track.Subtitle,
+			Title:    title,
+			Subtitle: subtitle,
 			Artist:   "Infinite AI Radio",
 			Album:    slug,
 			Comment:  snippetComment(track),

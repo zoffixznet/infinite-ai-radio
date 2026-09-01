@@ -70,18 +70,18 @@ func Key(s *session.Session) string {
 }
 
 // Put banks a track under key and enforces the size cap.
-func (l *Library) Put(key string, t *engine.Track) error {
+func (l *Library) Put(key string, t *engine.Track) (string, error) {
 	if l == nil || t == nil || len(t.Samples) == 0 {
-		return nil
+		return "", nil
 	}
 	dir := filepath.Join(l.dir, session.SanitizeName(key))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	id := time.Now().UTC().Format("20060102-150405") + fmt.Sprintf("-%04d", rand.IntN(10000))
 	wavTmp := filepath.Join(dir, "."+id+".wav.tmp")
 	if err := os.WriteFile(wavTmp, audio.EncodeWAV(t.Samples), 0o644); err != nil {
-		return err
+		return "", err
 	}
 	m, err := json.Marshal(meta{
 		Prompt: t.Prompt, Lyrics: t.Lyrics, Title: t.Title, Subtitle: t.Subtitle,
@@ -89,18 +89,52 @@ func (l *Library) Put(key string, t *engine.Track) error {
 	})
 	if err != nil {
 		os.Remove(wavTmp)
-		return err
+		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(dir, id+".json"), m, 0o644); err != nil {
 		os.Remove(wavTmp)
-		return err
+		return "", err
 	}
 	if err := os.Rename(wavTmp, filepath.Join(dir, id+".wav")); err != nil {
-		return err
+		return "", err
 	}
 	l.log.Info("track banked", "event", "library_put", "key", key, "id", id)
 	l.evict()
-	return nil
+	return id, nil
+}
+
+// SetTitle writes a late-resolved name into a banked track's metadata,
+// so instant starts and filler in later runs show the real name rather
+// than the stand-in the track was banked under. An entry evicted since
+// banking is a quiet no-op.
+func (l *Library) SetTitle(key, id, title, subtitle string) bool {
+	if l == nil {
+		return false
+	}
+	dir := filepath.Join(l.dir, session.SanitizeName(key))
+	metaPath := filepath.Join(dir, id+".json")
+	raw, err := os.ReadFile(metaPath)
+	if err != nil {
+		return false
+	}
+	var m meta
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	m.Title, m.Subtitle = title, subtitle
+	out, err := json.Marshal(m)
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, id+".wav")); err != nil {
+		return false
+	}
+	tmp := metaPath + ".tmp"
+	if os.WriteFile(tmp, out, 0o644) != nil || os.Rename(tmp, metaPath) != nil {
+		os.Remove(tmp)
+		return false
+	}
+	return true
 }
 
 // Pick loads a random banked track for key, returning its file id so

@@ -22,7 +22,7 @@ func track(frames int, v int16) *engine.Track {
 
 func TestPutPickRoundTrip(t *testing.T) {
 	lib := New(t.TempDir(), 100, testLog())
-	if err := lib.Put("lofi-study", track(4800, 1234)); err != nil {
+	if _, err := lib.Put("lofi-study", track(4800, 1234)); err != nil {
 		t.Fatal(err)
 	}
 	if got := lib.Count("lofi-study"); got != 1 {
@@ -54,7 +54,7 @@ func TestEvictionKeepsUnderCap(t *testing.T) {
 	// Each track: 48000 frames * 4 bytes = ~187KB. Cap at 1MB.
 	lib := New(t.TempDir(), 1, testLog())
 	for i := 0; i < 10; i++ {
-		if err := lib.Put("k", track(48000, int16(i+1))); err != nil {
+		if _, err := lib.Put("k", track(48000, int16(i+1))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -72,7 +72,7 @@ func TestDisabledLibraryIsNil(t *testing.T) {
 		t.Fatal("cap 0 should disable the library")
 	}
 	// Nil-safe methods.
-	if err := lib.Put("k", track(10, 1)); err != nil {
+	if _, err := lib.Put("k", track(10, 1)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, ok := lib.Pick("k"); ok {
@@ -104,7 +104,7 @@ func TestKeyDerivation(t *testing.T) {
 func TestCorruptTrackIsDroppedGracefully(t *testing.T) {
 	dir := t.TempDir()
 	lib := New(dir, 100, testLog())
-	if err := lib.Put("k", track(100, 5)); err != nil {
+	if _, err := lib.Put("k", track(100, 5)); err != nil {
 		t.Fatal(err)
 	}
 	// Corrupt the wav.
@@ -133,12 +133,12 @@ func TestEvictionIsFairAcrossKeys(t *testing.T) {
 	// must not wipe out B's instant-start tracks.
 	lib := New(t.TempDir(), 1, testLog())
 	for i := 0; i < 2; i++ {
-		if err := lib.Put("b-vibe", track(24000, 7)); err != nil { // ~94KB each
+		if _, err := lib.Put("b-vibe", track(24000, 7)); err != nil { // ~94KB each
 			t.Fatal(err)
 		}
 	}
 	for i := 0; i < 12; i++ {
-		if err := lib.Put("a-vibe", track(24000, 9)); err != nil {
+		if _, err := lib.Put("a-vibe", track(24000, 9)); err != nil {
 			t.Fatal(err)
 		}
 	}

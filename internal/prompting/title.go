@@ -131,16 +131,19 @@ func (b *Builder) TitleAsync(prompt string) {
 // the caller's per-song key and fed the song's actual words - so every
 // song gets its own name instead of sharing its steering context's.
 // Never blocks; does nothing when the helper is unusable.
-func (b *Builder) TitleSongAsync(key, caption, lyrics string) {
+// It reports whether a new helper call actually started, so callers
+// that ration requests do not spend a slot on a no-op (cached answer,
+// call already in flight, helper unusable).
+func (b *Builder) TitleSongAsync(key, caption, lyrics string) bool {
 	if key == "" || lyrics == "" || !b.helperUsable() {
-		return
+		return false
 	}
 	ck := "n|" + key
 	if _, ok := b.lookup(ck); ok {
-		return
+		return false
 	}
 	user := "MUSIC STYLE: " + caption + "\nLYRICS:\n" + lyricExcerpt(lyrics, 14)
-	b.fillAsync(ck, func(ctx context.Context) (string, error) {
+	return b.fillAsync(ck, func(ctx context.Context) (string, error) {
 		return b.ollama.ChatWith(ctx, titleSongSystem, user, ChatOpts{
 			Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
 		})

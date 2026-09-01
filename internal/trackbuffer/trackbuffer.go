@@ -372,6 +372,43 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string
 	}
 }
 
+// SetTitle writes a late-resolved name into a rendered song's metadata,
+// so listings and later runs show it, reporting whether it wrote. A
+// song fed or dropped since it was listed is not an error: the write is
+// skipped when the audio is already gone, and a re-check afterwards
+// removes the metadata again if the audio vanished mid-write (a steer
+// wiping the epoch), so no orphan survives the race.
+func (s *Store) SetTitle(epoch int, base, title, subtitle string) bool {
+	metaPath := filepath.Join(s.tracksDir(), base+".json")
+	mp3Path := filepath.Join(s.tracksDir(), base+".mp3")
+	raw, err := os.ReadFile(metaPath)
+	if err != nil {
+		return false
+	}
+	var m trackMeta
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	m.Title, m.Subtitle = title, subtitle
+	out, err := json.Marshal(m)
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat(mp3Path); err != nil {
+		return false
+	}
+	tmp := metaPath + ".tmp"
+	if os.WriteFile(tmp, out, 0o644) != nil || os.Rename(tmp, metaPath) != nil {
+		os.Remove(tmp)
+		return false
+	}
+	if _, err := os.Stat(mp3Path); err != nil {
+		os.Remove(metaPath)
+		return false
+	}
+	return true
+}
+
 // PlanStats reports how many plans of the epoch await rendering and
 // the audio seconds they will produce.
 func (s *Store) PlanStats(epoch int) (count int, seconds float64) {

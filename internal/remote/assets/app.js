@@ -704,6 +704,28 @@
       pf.rows.forEach(function (row) {
         if (pf.have[row.id] && !pf.have[row.id].dur) pf.have[row.id].dur = row.duration_s;
       });
+      // Songs are often downloaded before the server has settled on
+      // their name; when a fresh listing carries a better one, adopt
+      // it - in the record, in the store, and on the lock screen if
+      // that song is the one playing.
+      pf.rows.forEach(function (row) {
+        var rec = pf.have[row.id];
+        if (!rec || !row.title || (rec.title === row.title && rec.subtitle === row.subtitle)) return;
+        rec.title = row.title;
+        rec.subtitle = row.subtitle;
+        idbReq(idbStore("readonly").get(row.id)).then(function (stored) {
+          if (!stored) return;
+          stored.title = row.title;
+          stored.subtitle = row.subtitle;
+          return idbReq(idbStore("readwrite").put(stored));
+        })["catch"](function () {});
+        if (row.id === pf.playingId) {
+          lastNow = rec.title || rec.prompt || "buffered track";
+          msArtist = "Track " + (pf.played || 0) + (rec.subtitle ? " \u00b7 " + rec.subtitle : "");
+          applyMediaMetadata();
+          pfStatus();
+        }
+      });
       pfShowMinutes();
       pfEnsureDownloads();
       // While waiting for the very first track, poll the listing much

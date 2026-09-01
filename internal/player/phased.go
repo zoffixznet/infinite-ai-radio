@@ -506,6 +506,7 @@ func (o *Orchestrator) applySongTitle(t *engine.Track, key string) {
 		if subtitle != "" {
 			t.Subtitle = subtitle
 		}
+		t.TitleProvisional = false
 		return
 	}
 	if !t.Spec.Vocal() {
@@ -552,6 +553,7 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			continue
 		}
 		track.ID = newTrackID()
+		track.TitleKey = titleKey
 		if track.Title == "" && titleKey != "" {
 			// The helper may have finished naming the song after it was
 			// rendered; feed time is the last chance to pick that up.
@@ -565,6 +567,12 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		}
 		if track.Title == "" {
 			o.fillTitle(track, specPromptForLog(track.Spec))
+			// A prompt-derived name for a song that has its own words
+			// is a stand-in, not an answer; the retitle loop keeps
+			// checking for the real one while the song is queued and
+			// playing.
+			track.TitleProvisional = titleKey != "" &&
+				track.Lyrics != "" && track.Lyrics != engine.InstrumentalLyrics
 		}
 		o.mu.Lock()
 		kept := epoch == o.epoch
@@ -580,15 +588,29 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		}
 		// Bank on consumption: a track goes into the instant-start
 		// library when it is actually about to be heard, so a dropped
-		// buffer never churns the library.
+		// buffer never churns the library. The banked copy is a
+		// snapshot taken under the lock - the retitle loop may rename
+		// the live track at any moment - and where the name is still
+		// provisional the banked location is remembered so the rename
+		// reaches the sidecar too.
 		key := library.Key(sess)
+		o.mu.Lock()
+		banked := *track // shallow: Samples are shared and immutable
+		o.mu.Unlock()
 		o.wg.Add(1)
-		go func(t *engine.Track) {
+		go func() {
 			defer o.wg.Done()
-			if err := o.Library.Put(key, t); err != nil {
+			id, err := o.Library.Put(key, &banked)
+			if err != nil {
 				o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
+				return
 			}
-		}(track)
+			if banked.TitleProvisional && id != "" {
+				o.mu.Lock()
+				o.bankRefs[banked.ID] = bankRef{key: key, id: id}
+				o.mu.Unlock()
+			}
+		}()
 	}
 }
 

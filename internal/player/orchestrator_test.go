@@ -353,7 +353,7 @@ func TestLibraryInstantStart(t *testing.T) {
 		banked.Samples[i] = int16(i % 2000)
 	}
 	sess := session.New()
-	if err := lib.Put(library.Key(sess), banked); err != nil {
+	if _, err := lib.Put(library.Key(sess), banked); err != nil {
 		t.Fatal(err)
 	}
 
@@ -563,7 +563,7 @@ func TestTapCarriesEveryAudiblePath(t *testing.T) {
 			banked.Samples[i] = int16(1500)
 		}
 		sess := session.New()
-		if err := lib.Put(library.Key(sess), banked); err != nil {
+		if _, err := lib.Put(library.Key(sess), banked); err != nil {
 			t.Fatal(err)
 		}
 		eng := enginetest.NewMock()
@@ -1080,7 +1080,7 @@ func TestQueueListingDuringASwitchover(t *testing.T) {
 	for _, lang := range []string{"English", "Russian"} {
 		tr := mkTrack("banked "+lang, 1)
 		tr.Spec.VocalLanguageName = lang
-		if err := lib.Put(library.Key(sess), tr); err != nil {
+		if _, err := lib.Put(library.Key(sess), tr); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(1100 * time.Millisecond) // ids start with a whole-second timestamp
