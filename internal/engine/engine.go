@@ -93,3 +93,24 @@ type Engine interface {
 	// Ready reports whether the engine can currently generate.
 	Ready() bool
 }
+
+// Plan is a fully planned track that has not been rendered yet: the
+// planner's metadata, the words, and the audio codes that are the
+// song's score. Rendering a plan needs only the diffusion model.
+type Plan struct {
+	// Spec is the request the plan was made for.
+	Spec Spec
+	// Caption is the final music description the planner settled on.
+	Caption string
+	// Lyrics are the words that will be sung (or the instrumental
+	// marker).
+	Lyrics string
+	// AudioCodes is the planner's audio-code string for the whole song.
+	AudioCodes string
+	// Seconds is the planned track length, derived from the song.
+	Seconds float64
+	// BPM, KeyScale and TimeSignature are the planner's final values.
+	BPM           int
+	KeyScale      string
+	TimeSignature string
+}

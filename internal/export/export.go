@@ -252,3 +252,22 @@ func RetitleMP3(ctx context.Context, path, title string) error {
 	}
 	return nil
 }
+
+// DecodePCM reads any audio file ffmpeg understands and returns the
+// player's internal PCM format (s16le, 48 kHz stereo).
+func DecodePCM(ctx context.Context, path string) ([]int16, error) {
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error",
+		"-i", path,
+		"-f", "s16le", "-ar", fmt.Sprint(audio.SampleRate), "-ac", fmt.Sprint(audio.Channels),
+		"-",
+	)
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg decode: %w: %s", err, bytes.TrimSpace(errBuf.Bytes()))
+	}
+	return audio.BytesToSamples(out.Bytes()), nil
+}

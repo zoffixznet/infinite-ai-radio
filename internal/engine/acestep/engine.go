@@ -76,11 +76,75 @@ func (e *Engine) noteGenerationOK() {
 	}
 }
 
-// Generate implements engine.Engine.
-func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track, error) {
+// Plan implements the planning half of phased generation: the planner
+// writes the song (metadata, words, audio codes) and no audio exists
+// yet. Plans always think - the planner LM is the whole job - and with
+// the dit-from-disk patch active a plan job clears the diffusion model
+// off the card first, so a batch of plans runs with the card nearly
+// empty.
+func (e *Engine) Plan(ctx context.Context, spec engine.Spec) (*engine.Plan, error) {
 	if !e.Ready() {
 		return nil, fmt.Errorf("engine not ready")
 	}
+	req := e.request(spec)
+	req.Thinking = true
+	res, err := e.be.Client().Plan(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &engine.Plan{
+		Spec:          spec,
+		Caption:       res.Caption,
+		Lyrics:        res.Lyrics,
+		AudioCodes:    res.AudioCodes,
+		Seconds:       res.Seconds,
+		BPM:           res.BPM,
+		KeyScale:      res.KeyScale,
+		TimeSignature: res.TimeSignature,
+	}, nil
+}
+
+// Render turns a plan into audio. Every conditioning value the
+// diffusion model needs travels in the request, and thinking is off,
+// so the planner LM is never touched: only the diffusion model mounts.
+func (e *Engine) Render(ctx context.Context, plan *engine.Plan) (*engine.Track, error) {
+	if !e.Ready() {
+		return nil, fmt.Errorf("engine not ready")
+	}
+	req := GenerateRequest{
+		AudioFormat:     "wav",
+		AudioCodeString: plan.AudioCodes,
+		Thinking:        false,
+		Prompt:          plan.Caption,
+		Lyrics:          plan.Lyrics,
+		AudioDuration:   plan.Seconds,
+		BPM:             plan.BPM,
+		KeyScale:        plan.KeyScale,
+		TimeSignature:   plan.TimeSignature,
+		VocalLanguage:   plan.Spec.VocalLanguage,
+		InferenceSteps:  e.opts.InferenceSteps,
+		BatchSize:       1,
+		UseRandomSeed:   plan.Spec.Seed < 0,
+		Seed:            plan.Spec.Seed,
+	}
+	res, err := e.be.Client().Generate(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	e.noteGenerationOK()
+	return &engine.Track{
+		Samples: res.Samples,
+		Spec:    plan.Spec,
+		Prompt:  plan.Caption,
+		Lyrics:  plan.Lyrics,
+		Seed:    res.Seed,
+		GenTime: res.Elapsed,
+	}, nil
+}
+
+// request builds the shared request shape for a spec (used by both the
+// fused Generate path and the planning half of phased generation).
+func (e *Engine) request(spec engine.Spec) GenerateRequest {
 	req := GenerateRequest{
 		AudioFormat:    "wav",
 		AudioDuration:  float64(spec.Seconds),
@@ -121,7 +185,15 @@ func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track,
 		req.LMNegativePrompt = spec.NegativePrompt
 		req.LMCfgScale = spec.LMCfgScale
 	}
-	res, err := e.be.Client().Generate(ctx, req)
+	return req
+}
+
+// Generate implements engine.Engine (the fused single-job path).
+func (e *Engine) Generate(ctx context.Context, spec engine.Spec) (*engine.Track, error) {
+	if !e.Ready() {
+		return nil, fmt.Errorf("engine not ready")
+	}
+	res, err := e.be.Client().Generate(ctx, e.request(spec))
 	if err != nil {
 		return nil, err
 	}

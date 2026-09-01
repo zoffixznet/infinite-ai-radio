@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,17 +77,23 @@ func (c *Client) Health(ctx context.Context) (*Health, error) {
 // GenerateRequest mirrors the fields of the server's release_task API that
 // this application uses.
 type GenerateRequest struct {
-	Prompt         string  `json:"prompt,omitempty"`
-	Lyrics         string  `json:"lyrics,omitempty"`
-	SampleMode     bool    `json:"sample_mode,omitempty"`
-	SampleQuery    string  `json:"sample_query,omitempty"`
-	Thinking       bool    `json:"thinking"`
-	AudioDuration  float64 `json:"audio_duration,omitempty"`
-	AudioFormat    string  `json:"audio_format"`
-	InferenceSteps int     `json:"inference_steps,omitempty"`
-	BatchSize      int     `json:"batch_size"`
-	UseRandomSeed  bool    `json:"use_random_seed"`
-	Seed           int64   `json:"seed"`
+	Prompt      string `json:"prompt,omitempty"`
+	Lyrics      string `json:"lyrics,omitempty"`
+	SampleMode  bool   `json:"sample_mode,omitempty"`
+	SampleQuery string `json:"sample_query,omitempty"`
+	// PlanOnly runs the planner phases (metadata, lyrics, audio codes)
+	// and returns them without rendering any audio (plan-only patch).
+	PlanOnly      bool    `json:"plan_only,omitempty"`
+	Thinking      bool    `json:"thinking"`
+	AudioDuration float64 `json:"audio_duration,omitempty"`
+	// AudioCodeString carries a plan's audio codes into a render job;
+	// with Thinking off the planner LM is never consulted.
+	AudioCodeString string `json:"audio_code_string,omitempty"`
+	AudioFormat     string `json:"audio_format"`
+	InferenceSteps  int    `json:"inference_steps,omitempty"`
+	BatchSize       int    `json:"batch_size"`
+	UseRandomSeed   bool   `json:"use_random_seed"`
+	Seed            int64  `json:"seed"`
 
 	// Structured constraints: the server injects these as hard metadata
 	// during constrained decoding (user metadata always wins).
@@ -108,6 +115,36 @@ type GenerateResult struct {
 	Prompt string `json:"prompt"`
 	Lyrics string `json:"lyrics"`
 	Seed   string `json:"seed_value"`
+	// AudioCodes is the planned audio-code string of a plan-only job.
+	AudioCodes string `json:"audio_codes"`
+	// Metas carries the planner's final metadata; numeric fields may
+	// arrive as numbers or as the string "N/A".
+	Metas planMetas `json:"metas"`
+}
+
+// planMetas is the loosely-typed metadata block of a task result.
+type planMetas struct {
+	BPM           any    `json:"bpm"`
+	Duration      any    `json:"duration"`
+	Keyscale      string `json:"keyscale"`
+	Timesignature string `json:"timesignature"`
+}
+
+// metaFloat coerces a metadata value that may be a number or "N/A".
+func metaFloat(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int:
+		return float64(x)
+	case string:
+		f, err := strconv.ParseFloat(x, 64)
+		if err != nil {
+			return 0
+		}
+		return f
+	}
+	return 0
 }
 
 // TaskError reports a generation job the engine marked failed, carrying
@@ -370,4 +407,44 @@ func resampleWithFFmpeg(ctx context.Context, in []byte) ([]int16, error) {
 		return nil, fmt.Errorf("ffmpeg resample: %w: %s", err, bytes.TrimSpace(errBuf.Bytes()))
 	}
 	return audio.BytesToSamples(out.Bytes()), nil
+}
+
+// Plan runs a plan-only job: the planner phases produce metadata,
+// lyrics and audio codes, and no audio is rendered or fetched.
+func (c *Client) Plan(ctx context.Context, req GenerateRequest) (*PlanResult, error) {
+	start := time.Now()
+	req.PlanOnly = true
+	taskID, err := c.releaseTask(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	res, err := c.waitForTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if res.AudioCodes == "" {
+		return nil, fmt.Errorf("plan task %s returned no audio codes", taskID)
+	}
+	return &PlanResult{
+		Caption:       res.Prompt,
+		Lyrics:        res.Lyrics,
+		AudioCodes:    res.AudioCodes,
+		Seconds:       metaFloat(res.Metas.Duration),
+		BPM:           int(metaFloat(res.Metas.BPM)),
+		KeyScale:      res.Metas.Keyscale,
+		TimeSignature: res.Metas.Timesignature,
+		Elapsed:       time.Since(start),
+	}, nil
+}
+
+// PlanResult is a completed planning job.
+type PlanResult struct {
+	Caption       string
+	Lyrics        string
+	AudioCodes    string
+	Seconds       float64
+	BPM           int
+	KeyScale      string
+	TimeSignature string
+	Elapsed       time.Duration
 }
