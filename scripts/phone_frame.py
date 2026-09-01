@@ -171,16 +171,32 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("src", help="directory of raw screenshots")
     ap.add_argument("dst", help="directory to write the framed pictures into")
-    ap.add_argument("--width", type=int, default=840, help="output width in pixels (0 keeps full size)")
+    ap.add_argument("--width", type=int, default=0,
+                    help="full-size output width (0 keeps the shot's own resolution)")
+    ap.add_argument("--thumb-width", type=int, default=265,
+                    help="width of the thumbs/ copies the README embeds at natural size (0 skips them)")
     args = ap.parse_args()
 
     os.makedirs(args.dst, exist_ok=True)
     names = sorted(n for n in os.listdir(args.src) if n.endswith(".png"))
     if not names:
         sys.exit(f"no screenshots in {args.src}")
+    thumbdir = os.path.join(args.dst, "thumbs")
+    if args.thumb_width:
+        os.makedirs(thumbdir, exist_ok=True)
     for name in names:
         size = frame(os.path.join(args.src, name), os.path.join(args.dst, name), args.width)
-        print(f"{name}: {size[0]}x{size[1]}")
+        line = f"{name}: {size[0]}x{size[1]}"
+        if args.thumb_width:
+            # The README shows the thumb at its own pixel size - no
+            # browser rescaling, so it stays sharp - and links it to
+            # the full-size picture.
+            full = Image.open(os.path.join(args.dst, name))
+            h = round(full.height * args.thumb_width / full.width)
+            full.resize((args.thumb_width, h), Image.LANCZOS).save(
+                os.path.join(thumbdir, name), optimize=True)
+            line += f" (thumb {args.thumb_width}x{h})"
+        print(line)
 
 
 if __name__ == "__main__":

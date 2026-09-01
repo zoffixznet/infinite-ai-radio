@@ -1,7 +1,6 @@
 # Contributing
 
-Bug reports, ideas and patches are all welcome. This is a small project;
-there is no process to speak of.
+Bug reports, ideas and patches are all welcome.
 
 ## Before you start
 
@@ -52,6 +51,9 @@ race detector, the smoke test, and a cross-compile for arm64. Running
 - Do not commit anything that fails to build or whose tests fail.
 
 ## Reporting a bug
+
+For a security issue, use GitHub's private vulnerability reporting on
+the repository instead of a public issue.
 
 `iar doctor` prints your environment and the path to the structured log.
 Both are far more useful than a description. If the problem involves
