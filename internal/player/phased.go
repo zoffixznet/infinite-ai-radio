@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"iar/internal/audio"
@@ -239,7 +240,11 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 
 	planOne := func(sess *session.Session) bool {
 		spec := o.builder.BuildSpec(ctx, sess, o.cfg.TrackSeconds)
-		o.builder.TitleAsync(specPromptForLog(spec))
+		if !spec.Vocal() {
+			// Instrumentals have no words to name from; the generic
+			// prompt-keyed name is the best available.
+			o.builder.TitleAsync(specPromptForLog(spec))
+		}
 		o.setGenBusy(true)
 		o.log.Info("plan started", "event", "plan_started",
 			"prompt", specPromptForLog(spec), "lyric_mode", lyricMode(spec),
@@ -266,6 +271,11 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			return storeFails < 3
 		}
 		plannedThisCycle++
+		if plan.Lyrics != "" && plan.Lyrics != engine.InstrumentalLyrics {
+			// Name the song from its own words, keyed per song - two
+			// songs from the same context must never share a name.
+			o.builder.TitleSongAsync(songTitleKey(epoch, seq), plan.Caption, plan.Lyrics)
+		}
 		o.log.Info("plan finished", "event", "plan_finished",
 			"elapsed_seconds", time.Since(start).Seconds(), "plan_seconds", plan.Seconds,
 			"epoch", epoch, "seq", seq)
@@ -307,8 +317,9 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		if o.cfg.NormalizeLoudness {
 			audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
 		}
-		o.fillTitle(track, specPromptForLog(plan.Spec))
-		if err := o.Buffer.PutTrack(ctx, epoch, seq, track); err != nil {
+		key := songTitleKey(epoch, seq)
+		o.applySongTitle(track, key)
+		if err := o.Buffer.PutTrack(ctx, epoch, seq, key, track); err != nil {
 			storeFails++
 			o.log.Error("rendered track not stored", "event", "buffer_track_failed", "error", err.Error())
 			if storeFails == 1 {
@@ -367,6 +378,28 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	}
 }
 
+// songTitleKey names the helper's title slot for one planned song.
+func songTitleKey(epoch, seq int) string {
+	return fmt.Sprintf("song:%d-%d", epoch, seq)
+}
+
+// applySongTitle sets the song-keyed helper name when it is ready;
+// otherwise the track keeps an empty title for a later resolution
+// attempt (feed time), with the deterministic fallback as last resort.
+func (o *Orchestrator) applySongTitle(t *engine.Track, key string) {
+	if title, subtitle, ok := o.builder.TitleForKey(key); ok {
+		t.Title = title
+		if subtitle != "" {
+			t.Subtitle = subtitle
+		}
+		return
+	}
+	if !t.Spec.Vocal() {
+		// Instrumentals fall back to the prompt-keyed generic name.
+		o.fillTitle(t, specPromptForLog(t.Spec))
+	}
+}
+
 // coolDown blocks new cycles for a while after persistent failures, so
 // an unfixable condition cannot spin the engine awake in a hot loop.
 func (o *Orchestrator) coolDown(d time.Duration) {
@@ -399,13 +432,20 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			continue
 		}
 		epoch, sess := o.snapshotSession()
-		track, ok := o.Buffer.NextTrack(ctx, epoch)
+		track, titleKey, ok := o.Buffer.NextTrack(ctx, epoch)
 		if !ok {
 			o.kickGen() // nothing on disk: the cycle loop should wake
 			continue
 		}
 		track.ID = newTrackID()
-		o.fillTitle(track, specPromptForLog(track.Spec))
+		if track.Title == "" && titleKey != "" {
+			// The helper may have finished naming the song after it was
+			// rendered; feed time is the last chance to pick that up.
+			o.applySongTitle(track, titleKey)
+		}
+		if track.Title == "" {
+			o.fillTitle(track, specPromptForLog(track.Spec))
+		}
 		o.mu.Lock()
 		kept := epoch == o.epoch
 		if kept {

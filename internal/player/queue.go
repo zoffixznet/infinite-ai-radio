@@ -66,12 +66,12 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 		// prefetch these exactly like the in-memory queue; the feeder
 		// consumes them in the same order.
 		for _, e := range o.Buffer.List(epoch) {
-			title, subtitle := prompting.TrackTitle(e.Prompt)
-			if t2, s2, ok := o.builder.TitleFor(specPromptForLog(e.Spec)); ok {
-				title = t2
-				if s2 != "" {
-					subtitle = s2
-				}
+			title, subtitle := e.Title, e.Subtitle
+			if title == "" && e.TitleKey != "" {
+				title, subtitle, _ = o.builder.TitleForKey(e.TitleKey)
+			}
+			if title == "" {
+				title, subtitle = prompting.TrackTitle(e.Prompt)
 			}
 			lyr := e.Lyrics
 			if lyr == engine.InstrumentalLyrics {

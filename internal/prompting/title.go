@@ -58,6 +58,15 @@ prompt, reply with JSON {"title", "subtitle"}. title: an evocative 2-4
 word song name, no quotes, not a list of genres. subtitle: at most 6
 words naming the genre and mood. Never mention prompts or AI.`
 
+// titleSongSystem names one specific song from its own words, which is
+// what keeps two songs from the same station from sharing a name.
+const titleSongSystem = `You name songs. Given a song's music style and
+its lyrics, reply with JSON {"title", "subtitle"}. title: a distinctive
+2-4 word name drawn from this song's own words and imagery - its hook
+line or sharpest image, in the language the lyrics are written in;
+never a genre label, never generic. subtitle: at most 6 words naming
+the genre and mood, in English. Never mention prompts or AI.`
+
 // titleSchema constrains the helper's reply.
 var titleSchema = map[string]any{
 	"type": "object",
@@ -86,6 +95,48 @@ func (b *Builder) TitleAsync(prompt string) {
 			Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
 		})
 	})
+}
+
+// TitleSongAsync names one specific song in the background, keyed by
+// the caller's per-song key and fed the song's actual words - so every
+// song gets its own name instead of sharing its steering context's.
+// Never blocks; does nothing when the helper is unusable.
+func (b *Builder) TitleSongAsync(key, caption, lyrics string) {
+	if key == "" || lyrics == "" || !b.helperUsable() {
+		return
+	}
+	ck := "n|" + key
+	if _, ok := b.lookup(ck); ok {
+		return
+	}
+	user := "MUSIC STYLE: " + caption + "\nLYRICS:\n" + lyricExcerpt(lyrics, 14)
+	b.fillAsync(ck, func(ctx context.Context) (string, error) {
+		return b.ollama.ChatWith(ctx, titleSongSystem, user, ChatOpts{
+			Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
+		})
+	})
+}
+
+// lyricExcerpt returns up to n sung lines (tags skipped) for a prompt.
+func lyricExcerpt(lyrics string, n int) string {
+	var out []string
+	for _, line := range strings.Split(lyrics, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "[") {
+			continue
+		}
+		out = append(out, line)
+		if len(out) >= n {
+			break
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// TitleForKey returns the song-keyed name when ready (see
+// TitleSongAsync); ok is false otherwise.
+func (b *Builder) TitleForKey(key string) (title, subtitle string, ok bool) {
+	return b.TitleFor(key)
 }
 
 // TitleFor returns the helper's short name for a prompt when it is

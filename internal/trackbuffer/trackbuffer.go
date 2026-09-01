@@ -124,6 +124,12 @@ type trackMeta struct {
 	GenTime time.Duration `json:"gen_time,omitempty"`
 	Spec    engine.Spec   `json:"spec"`
 	Created time.Time     `json:"created"`
+	// Title/Subtitle are the resolved display names when they were
+	// ready at render time; TitleKey lets later readers pick up a name
+	// that resolved afterwards (the helper model can be slow).
+	Title    string `json:"title,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
+	TitleKey string `json:"title_key,omitempty"`
 }
 
 // PutPlan stores one plan under epoch/seq.
@@ -170,19 +176,24 @@ func (s *Store) DropPlan(epoch, seq int) {
 }
 
 // PutTrack encodes a rendered track to MP3 with a metadata sidecar.
-func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) error {
+// titleKey names the helper's pending title for this song, so a name
+// that resolves after rendering is still picked up at feed time.
+func (s *Store) PutTrack(ctx context.Context, epoch, seq int, titleKey string, t *engine.Track) error {
 	if err := os.MkdirAll(s.tracksDir(), 0o755); err != nil {
 		return err
 	}
 	base := filepath.Join(s.tracksDir(), name(epoch, seq))
 	meta := trackMeta{
-		Prompt:  t.Prompt,
-		Lyrics:  t.Lyrics,
-		Seconds: float64(len(t.Samples)) / float64(audio.SampleRate*audio.Channels),
-		Seed:    t.Seed,
-		GenTime: t.GenTime,
-		Spec:    t.Spec,
-		Created: time.Now(),
+		Prompt:   t.Prompt,
+		Lyrics:   t.Lyrics,
+		Seconds:  float64(len(t.Samples)) / float64(audio.SampleRate*audio.Channels),
+		Seed:     t.Seed,
+		GenTime:  t.GenTime,
+		Spec:     t.Spec,
+		Created:  time.Now(),
+		Title:    t.Title,
+		Subtitle: t.Subtitle,
+		TitleKey: titleKey,
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -204,13 +215,14 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) e
 	return os.Rename(tmp, base+".json")
 }
 
-// NextTrack decodes and removes the oldest rendered song of the epoch.
-// A song that cannot be decoded is dropped and the next one tried.
-func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, bool) {
+// NextTrack decodes and removes the oldest rendered song of the epoch,
+// returning its pending title key alongside. A song that cannot be
+// decoded is dropped and the next one tried.
+func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string, bool) {
 	for {
 		base, ok := s.oldest(s.tracksDir(), epoch, ".json")
 		if !ok {
-			return nil, false
+			return nil, "", false
 		}
 		mp3 := filepath.Join(s.tracksDir(), base+".mp3")
 		metaPath := filepath.Join(s.tracksDir(), base+".json")
@@ -226,7 +238,7 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, bool) 
 		if ctx.Err() != nil {
 			// A cancelled context fails every decode; deleting on that
 			// would wipe the whole buffer during shutdown.
-			return nil, false
+			return nil, "", false
 		}
 		os.Remove(metaPath)
 		os.Remove(mp3)
@@ -236,13 +248,15 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, bool) 
 			continue
 		}
 		return &engine.Track{
-			Samples: samples,
-			Spec:    meta.Spec,
-			Prompt:  meta.Prompt,
-			Lyrics:  meta.Lyrics,
-			Seed:    meta.Seed,
-			GenTime: meta.GenTime,
-		}, true
+			Samples:  samples,
+			Spec:     meta.Spec,
+			Prompt:   meta.Prompt,
+			Lyrics:   meta.Lyrics,
+			Seed:     meta.Seed,
+			GenTime:  meta.GenTime,
+			Title:    meta.Title,
+			Subtitle: meta.Subtitle,
+		}, meta.TitleKey, true
 	}
 }
 
@@ -364,11 +378,14 @@ func (s *Store) each(dir string, epoch int, ext string, fn func(path string)) {
 // Entry summarizes one rendered song awaiting play, without touching
 // its audio.
 type Entry struct {
-	Base    string
-	Prompt  string
-	Lyrics  string
-	Seconds float64
-	Spec    engine.Spec
+	Base     string
+	Prompt   string
+	Lyrics   string
+	Seconds  float64
+	Spec     engine.Spec
+	Title    string
+	Subtitle string
+	TitleKey string
 }
 
 // List returns the epoch's rendered songs in play order, metadata only.
@@ -384,11 +401,14 @@ func (s *Store) List(epoch int) []Entry {
 			return
 		}
 		out = append(out, Entry{
-			Base:    strings.TrimSuffix(filepath.Base(path), ".json"),
-			Prompt:  m.Prompt,
-			Lyrics:  m.Lyrics,
-			Seconds: m.Seconds,
-			Spec:    m.Spec,
+			Base:     strings.TrimSuffix(filepath.Base(path), ".json"),
+			Prompt:   m.Prompt,
+			Lyrics:   m.Lyrics,
+			Seconds:  m.Seconds,
+			Spec:     m.Spec,
+			Title:    m.Title,
+			Subtitle: m.Subtitle,
+			TitleKey: m.TitleKey,
 		})
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Base < out[j].Base })
@@ -416,11 +436,13 @@ func (s *Store) Peek(ctx context.Context, epoch int, base string) (*engine.Track
 		return nil, false
 	}
 	return &engine.Track{
-		Samples: samples,
-		Spec:    meta.Spec,
-		Prompt:  meta.Prompt,
-		Lyrics:  meta.Lyrics,
-		Seed:    meta.Seed,
-		GenTime: meta.GenTime,
+		Samples:  samples,
+		Spec:     meta.Spec,
+		Prompt:   meta.Prompt,
+		Lyrics:   meta.Lyrics,
+		Seed:     meta.Seed,
+		GenTime:  meta.GenTime,
+		Title:    meta.Title,
+		Subtitle: meta.Subtitle,
 	}, true
 }
