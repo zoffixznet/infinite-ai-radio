@@ -1650,7 +1650,7 @@
       if (s.session) meta += (meta ? "  ·  " : "") + s.session;
       if (s.elapsed) meta += (meta ? "  ·  " : "") + s.elapsed + " / " + s.duration;
       if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
-      meta += (meta ? "  ·  " : "") + s.queued + " ready" + (s.generating ? " · generating" : "");
+      meta += (meta ? "  ·  " : "") + (s.ready || s.queued + " ready") + (s.generating ? " · generating" : "");
 
       $("meta").textContent = meta;
       // A pause at the machine is a fact about a room this listener is

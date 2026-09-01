@@ -30,9 +30,9 @@ import (
 	"iar/internal/audio"
 	"iar/internal/engine"
 	"iar/internal/export"
-	"iar/internal/snippets"
 	"iar/internal/player"
 	"iar/internal/session"
+	"iar/internal/snippets"
 )
 
 func init() { accounts.Cost = bcrypt.MinCost }
@@ -1853,5 +1853,27 @@ func TestChunkRenameRewritesTitleAndName(t *testing.T) {
 	}
 	if info.Title != "Дождь на закате" {
 		t.Fatalf("ID3 title = %q", info.Title)
+	}
+}
+
+// The phone showed "2 ready" while half an hour of music sat on disk:
+// it was rendering the in-memory prefetch, which phased generation
+// pins at two regardless of how far ahead the radio actually is.
+func TestReadySummaryReportsTheDiskBuffer(t *testing.T) {
+	fused := player.Status{Queued: 3}
+	if got := readySummary(fused); got != "3 ready" {
+		t.Errorf("fused summary = %q, want %q", got, "3 ready")
+	}
+	phased := player.Status{Phased: true, Queued: 2, BufferedTracks: 11, BufferedSeconds: 37 * 60}
+	if got := readySummary(phased); got != "11 ready · 37m" {
+		t.Errorf("phased summary = %q, want %q", got, "11 ready · 37m")
+	}
+	deep := player.Status{Phased: true, Queued: 2, BufferedTracks: 40, BufferedSeconds: 2*60*60 + 7*60}
+	if got := readySummary(deep); got != "40 ready · 2h07m" {
+		t.Errorf("deep summary = %q, want %q", got, "40 ready · 2h07m")
+	}
+	empty := player.Status{Phased: true, Queued: 0}
+	if got := readySummary(empty); got != "0 ready" {
+		t.Errorf("empty summary = %q, want %q", got, "0 ready")
 	}
 }

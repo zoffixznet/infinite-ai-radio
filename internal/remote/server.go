@@ -499,14 +499,19 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u accounts
 // stateJSON is the shared now-playing and steering payload the page
 // polls: every client and every reload renders the same state.
 type stateJSON struct {
-	State      string `json:"state"`
-	Source     string `json:"source"`
-	Session    string `json:"session"`
-	Phase      string `json:"phase"`
-	PhaseInfo  string `json:"phase_info"`
-	Elapsed    string `json:"elapsed"`
-	Duration   string `json:"duration"`
-	Queued     int    `json:"queued"`
+	State     string `json:"state"`
+	Source    string `json:"source"`
+	Session   string `json:"session"`
+	Phase     string `json:"phase"`
+	PhaseInfo string `json:"phase_info"`
+	Elapsed   string `json:"elapsed"`
+	Duration  string `json:"duration"`
+	Queued    int    `json:"queued"`
+	// Ready is how much music is actually secured, in the listener's
+	// words ("11 songs, 37m"). Queued counts only what is decoded in
+	// memory, which under phased generation is a fixed two and says
+	// nothing about whether the radio is keeping up.
+	Ready      string `json:"ready"`
 	Generating bool   `json:"generating"`
 	Paused     bool   `json:"paused"`
 	Volume     int    `json:"volume"`
@@ -583,6 +588,23 @@ type trackJSON struct {
 	Lyrics string `json:"lyrics,omitempty"`
 }
 
+// readySummary says how much music is secured, in one short phrase.
+// Phased generation buffers to disk, so the honest number is songs and
+// minutes there, not the size of the in-memory prefetch.
+func readySummary(st player.Status) string {
+	if !st.Phased {
+		return fmt.Sprintf("%d ready", st.Queued)
+	}
+	if st.BufferedTracks == 0 {
+		return "0 ready"
+	}
+	mins := int(st.BufferedSeconds / 60)
+	if mins >= 60 {
+		return fmt.Sprintf("%d ready · %dh%02dm", st.BufferedTracks, mins/60, mins%60)
+	}
+	return fmt.Sprintf("%d ready · %dm", st.BufferedTracks, mins)
+}
+
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	st := s.ctl.Status()
 	out := stateJSON{
@@ -590,6 +612,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 		Source:          st.Source,
 		Session:         st.Session,
 		Queued:          st.Queued,
+		Ready:           readySummary(st),
 		Generating:      st.Generating,
 		Paused:          st.Paused,
 		Volume:          st.Volume,

@@ -292,23 +292,29 @@ func (m *tuiModel) renderChrome() string {
 	}
 	b.WriteString(header + "\n")
 
-	// Now-playing panel.
+	// Now-playing panel. Its width is fixed and its lines are clipped
+	// rather than wrapped: a title one character too long would
+	// otherwise add a row and shift everything below it.
 	var panel strings.Builder
-	panel.WriteString(s.label.Render("now     ") + s.value.Render(st.Source) + "\n")
-	line := s.label.Render("session ") + s.value.Render(st.Session)
+	room := m.panelWidth() - panelChrome - labelWidth
+	panel.WriteString(s.label.Render("now     ") + s.value.Render(clip(nowLine(st), room)) + "\n")
+	tail := ""
 	if st.Duration > 0 {
-		line += s.value.Render(fmt.Sprintf("   %s / %s", fmtDur(st.Elapsed), fmtDur(st.Duration)))
+		tail = fmt.Sprintf("   %s / %s", fmtDur(st.Elapsed), fmtDur(st.Duration))
 	}
+	line := s.label.Render("session ") + s.value.Render(clip(st.Session, room-len([]rune(tail)))+tail)
 	panel.WriteString(line + "\n")
-	next := fmt.Sprintf("%d track(s) ready", st.Queued)
-	if st.Generating {
-		next += " · generating"
-	}
+	// Generation is reported by its own row below, which is always
+	// present; repeating it here only made the panel's border grow and
+	// shrink several times a minute.
+	next := bufferReady(st)
 	if st.Exporting != "" {
 		next += " · exporting " + st.Exporting
 	}
-	panel.WriteString(s.label.Render("next    ") + s.value.Render(next))
-	b.WriteString(s.panel.Render(panel.String()) + "\n")
+	panel.WriteString(s.label.Render("next    ") + s.value.Render(clip(next, room)))
+	// A fixed width keeps the border still when a long track title
+	// follows a short one; the panel lines up with the separator below.
+	b.WriteString(s.panel.Width(m.panelWidth()).Render(panel.String()) + "\n")
 
 	// Startup phase progress (determinate, from recorded expectations).
 	if st.Phase != "" && st.Phase != "playing" {
@@ -317,7 +323,7 @@ func (m *tuiModel) renderChrome() string {
 			frac = float64(st.PhaseElapsed) / float64(st.PhaseExpected)
 		}
 		line := s.label.Render(fmt.Sprintf("%-8s", "status")) +
-			m.bar(frac, 24) +
+			m.bar(frac, barWidth) +
 			fmt.Sprintf(" %s  %s", st.Phase, fmtDur(st.PhaseElapsed))
 		if st.PhaseExpected > 0 {
 			line += fmt.Sprintf(" of ~%s", fmtDur(st.PhaseExpected))
@@ -332,20 +338,79 @@ func (m *tuiModel) renderChrome() string {
 		b.WriteString(s.warn.Render(fmt.Sprintf("%d generation failure(s) in a row - engine will restart itself", st.FailStreak)) + "\n")
 	}
 
-	// Generation activity and buffer gauge.
+	// Generation activity and buffer gauge. The generation row is always
+	// drawn, even when nothing is in flight: it toggles several times a
+	// minute as the cycle moves between plan and render jobs, and a row
+	// that appears and disappears shifts everything below it.
+	genLine := s.label.Render(fmt.Sprintf("%-8s", "gen"))
 	if st.Generating {
-		b.WriteString(s.label.Render(fmt.Sprintf("%-8s", "gen")) + m.pulseBar(24) +
-			" generating next track\n")
+		genLine += m.pulseBar(barWidth) + " " + s.value.Render(clip("generating next track", m.textRoom()))
+	} else {
+		genLine += m.bar(0, barWidth) + " " + s.muted.Render(clip(genIdle(st), m.textRoom()))
 	}
-	maxBuf := st.BufferTarget
-	if maxBuf > 0 {
+	b.WriteString(genLine + "\n")
+	if frac, text, ok := bufferGauge(st); ok {
 		b.WriteString(s.label.Render(fmt.Sprintf("%-8s", "buffer")) +
-			m.bar(float64(st.Queued)/float64(maxBuf), 24) +
-			fmt.Sprintf(" %d/%d buffered\n", st.Queued, maxBuf))
+			m.bar(frac, barWidth) + " " + s.value.Render(clip(text, m.textRoom())) + "\n")
 	}
 
-	b.WriteString(s.muted.Render(strings.Repeat("─", max(20, min(m.width, 78)))) + "\n")
+	// Resource telemetry, when the radio was started with --telemetry:
+	// what the machine has left, and what the engine is holding. Rows
+	// without a gauge are indented past where the bars end, so every
+	// value in the block starts in the same column.
+	for _, row := range telemetryRows(st.Telemetry) {
+		line := s.label.Render(fmt.Sprintf("%-8s", row.Label))
+		if row.Frac >= 0 {
+			line += m.bar(row.Frac, barWidth)
+		} else {
+			line += strings.Repeat(" ", barWidth)
+		}
+		b.WriteString(line + " " + s.value.Render(clip(row.Text, m.textRoom())) + "\n")
+	}
+
+	b.WriteString(s.muted.Render(strings.Repeat("─", m.panelWidth())) + "\n")
 	return b.String()
+}
+
+const (
+	// panelChrome is what the panel's own border and padding take out of
+	// its declared width; lipgloss counts both inside Width.
+	panelChrome = 4
+	// labelWidth is the "now     " / "session " / "next    " column.
+	labelWidth = 8
+	// barWidth is every gauge bar's width.
+	barWidth = 24
+)
+
+// textRoom is how many columns a gauge row has for its text once the
+// label, the bar and their separating space are taken. Text past that
+// wraps, which adds a line and shifts everything under it - the same
+// jitter a disappearing row causes, just from the other direction.
+func (m *tuiModel) textRoom() int {
+	w := m.width
+	if w <= 0 {
+		w = 78
+	}
+	return w - labelWidth - barWidth - 1
+}
+
+// clip shortens text to n columns, marking the cut so a truncated title
+// does not read as the whole one.
+func clip(text string, n int) string {
+	if n < 4 {
+		n = 4
+	}
+	r := []rune(text)
+	if len(r) <= n {
+		return text
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// panelWidth is the width the chrome lays itself out to: the terminal,
+// capped so a very wide window does not stretch the panel across it.
+func (m *tuiModel) panelWidth() int {
+	return max(20, min(m.width, 78))
 }
 
 func (m tuiModel) View() tea.View {

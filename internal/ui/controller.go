@@ -120,8 +120,8 @@ func (c *Controller) Handle(line string) (string, bool) {
 	case "engine":
 		st := c.O.Status()
 		out := statusText(st)
-		if n := len(st.EngineTail); n > 0 {
-			tail := st.EngineTail
+		if tail := c.O.EngineTail(); len(tail) > 0 {
+			n := len(tail)
 			if n > 8 {
 				tail = tail[n-8:]
 			}
@@ -263,7 +263,12 @@ func statusText(st player.Status) string {
 		}
 	}
 	fmt.Fprintf(&b, "engine:   %s\n", engine)
-	fmt.Fprintf(&b, "buffer:   %d track(s) queued, generating: %v\n", st.Queued, st.Generating)
+	if _, text, ok := bufferGauge(st); ok {
+		fmt.Fprintf(&b, "buffer:   %s, generating: %v\n", text, st.Generating)
+	}
+	for _, row := range telemetryRows(st.Telemetry) {
+		fmt.Fprintf(&b, "%-9s %s\n", row.Label+":", row.Text)
+	}
 	if st.GenCount > 0 {
 		fmt.Fprintf(&b, "gen:      %d tracks, last took %s\n", st.GenCount, st.LastGenTime.Round(time.Second))
 	}
