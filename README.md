@@ -32,8 +32,10 @@ radio produced it:
 
 Reproduce any of them with `iar export --minutes 2 --preset <name>` -
 you will get a different song, because every generation is its own roll
-of the dice. A weak track is usually followed by a better one, and
-`skip` is always there.
+of the dice. The non-English takes were rendered with that language as
+the configured `languages` list; out of the box these presets sing in
+English. A weak track is usually followed by a better one, and `skip`
+is always there.
 
 ## Requirements
 
@@ -297,9 +299,10 @@ terminal:
 
 With `--remote` the machine is the station, not the listening room -
 type `volume 80` in its terminal to also hear it locally. The player
-prints the URL to open; the stream is MP3 at ~192 kbps, and non-browser
-players (VLC, `mpv`) can take it straight from `/stream.mp3`. The page
-can be installed as an app from the browser menu ("Add to Home screen").
+prints the URL to open; the stream is MP3 at ~192 kbps. Like everything
+else it sits behind the login, so a non-browser player needs the session
+cookie passed along to read `/stream.mp3`. The page can be installed as
+an app from the browser menu ("Add to Home screen").
 
 For safety the remote binds only to localhost and, when the machine has
 one, its Tailscale address - never your LAN or the internet unless you
