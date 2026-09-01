@@ -27,7 +27,7 @@ func TrackTitle(prompt string) (title, subtitle string) {
 	if len(segs) == 0 {
 		return "Generated Track", ""
 	}
-	title = titleCase(shorten(segs[0], 32))
+	title = titleCase(nameFromPhrase(segs[0], 32))
 	words := 0
 	var parts []string
 	for _, seg := range segs[1:] {
@@ -39,6 +39,36 @@ func TrackTitle(prompt string) (title, subtitle string) {
 		words += n
 	}
 	return title, strings.Join(parts, ", ")
+}
+
+// A deterministic title has to look finished on its own, and a prompt
+// written as prose ("An aggressive and high-energy nu-metal track
+// driven by...") otherwise became "An Aggressive And High-Energy": an
+// article at the front and whatever word the cut happened to land on at
+// the back. Only articles are dropped from the front - anything more
+// eats the words that carry the meaning.
+var (
+	titleLeading  = map[string]bool{"a": true, "an": true, "the": true}
+	titleTrailing = map[string]bool{
+		"a": true, "an": true, "the": true, "and": true, "or": true,
+		"with": true, "of": true, "in": true, "on": true, "for": true,
+		"to": true, "by": true, "from": true, "that": true, "which": true,
+		"driven": true, "featuring": true, "backed": true, "built": true,
+	}
+)
+
+// nameFromPhrase shortens a prompt segment into something that reads as
+// a name: no leading article, and no conjunction or preposition left
+// dangling by the cut.
+func nameFromPhrase(seg string, n int) string {
+	words := strings.Fields(shorten(seg, n))
+	for len(words) > 1 && titleLeading[strings.ToLower(words[0])] {
+		words = words[1:]
+	}
+	for len(words) > 1 && titleTrailing[strings.ToLower(words[len(words)-1])] {
+		words = words[:len(words)-1]
+	}
+	return strings.Join(words, " ")
 }
 
 // titleCase capitalizes the first letter of every word.

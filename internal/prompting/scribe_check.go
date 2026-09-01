@@ -144,8 +144,8 @@ func checkSection(lines []string, spec sectionSpec, usedEnds map[string]bool) ch
 		if strings.ContainsAny(line, "0123456789") {
 			hard("line %d contains digits; spell numbers out as words", ln)
 		}
-		if allVocables(line) {
-			hard("line %d is only filler sounds; write real words", ln)
+		if chantLine(line) {
+			hard("line %d carries no words (filler sounds, or one word repeated); write real lyrics", ln)
 		}
 		if ws := prosody.Words(line); len(ws) > 0 && strings.HasPrefix(ws[0], "n") {
 			soft("start line %d with a different word (the singer garbles lines that start with n)", ln)
@@ -267,10 +267,36 @@ func checkSection(lines []string, spec sectionSpec, usedEnds map[string]bool) ch
 	return res
 }
 
-// allVocables reports a line made entirely of singable filler ("doo
-// doo doo") - the degenerate chant shape.
-func allVocables(line string) bool {
+// chantLine reports a line that carries no words: either only singable
+// filler ("doo doo doo") or one token repeated ("dumdam dumdam
+// dumdam"). The second shape needs its own rule because the writer
+// invents its own syllables and no fixed list of vocables can name them
+// all - what gives it away is the repetition, and that reads the same
+// in every language the radio sings in.
+func chantLine(line string) bool {
 	ws := prosody.Words(line)
+	if len(ws) == 0 {
+		return false
+	}
+	if allVocables(ws) {
+		return true
+	}
+	// Two words repeated is a hook ("run, run"); three or more with a
+	// single distinct token is filler wearing a word's clothes.
+	if len(ws) < 3 {
+		return false
+	}
+	for _, w := range ws[1:] {
+		if w != ws[0] {
+			return false
+		}
+	}
+	return true
+}
+
+// allVocables reports words that are all singable filler ("doo doo
+// doo") - the degenerate chant shape.
+func allVocables(ws []string) bool {
 	if len(ws) == 0 {
 		return false
 	}

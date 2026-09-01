@@ -288,7 +288,7 @@ func TestScribeFormFromPlan(t *testing.T) {
 		{2, true, 5, 18, 2},
 		{3, false, 6, 24, 3},
 		{3, true, 7, 26, 3},
-		{0, true, 5, 18, 2},  // nonsense plans fall back to two verses
+		{0, true, 5, 18, 2}, // nonsense plans fall back to two verses
 		{9, false, 4, 16, 2},
 	}
 	for _, c := range cases {
@@ -508,4 +508,36 @@ func TestScribeAvoidHooksReachBrief(t *testing.T) {
 		t.Error("avoid-hooks must reach the planning call")
 	}
 	_ = prosody.Known
+}
+
+// The engine sang "Dumdam dumdam dumdam" through the [Intro], [Bridge]
+// and [Outro] of every track for a day. The filler check only knew a
+// fixed list of vocables (oh, ooh, na, la, ...), and an invented
+// syllable is not on any list - the tell is that the line is one token
+// repeated, which reads the same in every language.
+func TestChantLine(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"Dumdam dumdam dumdam", true},
+		{"Dumdam dumdam dumdam dumdam", true},
+		{"doo doo doo", true},
+		{"oh oh oh yeah", true},
+		{"la la la", true},
+		// Two of a word is a hook, not filler.
+		{"Run, run", false},
+		{"go go", false},
+		// Real lines, in the languages the radio actually sings in.
+		{"Tumakbo ako, sumira sa mga kadena", false},
+		{"I break the chains they welded shut", false},
+		{"Ang apoy sa dibdib ko ay laging", false},
+		{"", false},
+		// A repeated word among others is ordinary emphasis.
+		{"run run into the light", false},
+	} {
+		if got := chantLine(tc.line); got != tc.want {
+			t.Errorf("chantLine(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
 }
