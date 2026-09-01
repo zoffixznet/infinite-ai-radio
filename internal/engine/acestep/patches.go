@@ -367,6 +367,10 @@ var enginePatches = []enginePatch{
                 logger.warning(f"[dit-from-disk] load with {candidate} failed: {exc}")
         if self.model is None:
             raise RuntimeError(f"dit-from-disk: failed to load DiT: {last_error}") from last_error
+        # device_map placement can leave stragglers (buffers, modules a
+        # custom architecture creates post-hoc) in float32; the fused
+        # loader force-casts after construction, so mirror it.
+        self.model = self.model.to(self.dtype)
         self.config = self.model.config
         self._sync_alignment_config()
         self._apply_cuda_bool_argsort_workaround()
@@ -414,6 +418,32 @@ var enginePatches = []enginePatch{
         if model is None:
             yield
             return
+`,
+			},
+			{
+				file: "acestep/core/generation/handler/generate_music_request.py",
+				find: `        if self.model is None or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
+`,
+				replace: `        # iar-patch: dit-from-disk. A deferred DiT is not "missing": the
+        # model context streams it from disk the moment a job needs it.
+        model_ok = self.model is not None or getattr(self, "offload_dit_to_disk", False)
+        if not model_ok or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
+`,
+			},
+			{
+				file: "acestep/core/generation/handler/generate_music.py",
+				find: `        progress = self._resolve_generate_music_progress(progress)
+        if self.model is None or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
+            readiness_error = self._validate_generate_music_readiness()
+            return readiness_error
+`,
+				replace: `        progress = self._resolve_generate_music_progress(progress)
+        # iar-patch: dit-from-disk. A deferred DiT is not "missing": the
+        # model context streams it from disk the moment a job needs it.
+        _iar_model_ok = self.model is not None or getattr(self, "offload_dit_to_disk", False)
+        if not _iar_model_ok or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
+            readiness_error = self._validate_generate_music_readiness()
+            return readiness_error
 `,
 			},
 			{
