@@ -27,6 +27,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -70,15 +71,37 @@ func wdCall(t *testing.T, method, url string, body any) json.RawMessage {
 	return out.Value
 }
 
+// The browser runs at phone proportions, so the tests and the README
+// screenshots see the layout a listener sees. Firefox will not make its
+// window narrower than 500 CSS pixels, so rather than fight it the
+// height is the one that gives a phone's 9:19.5 shape at that width
+// (500 x 1082 has the same aspect as 390 x 844). The remote's stylesheet
+// has no width breakpoints, so the layout is identical either way.
+const (
+	phoneWidth  = 500
+	phoneHeight = 1082
+)
+
 func newWebDriver(t *testing.T, driverURL string) *webDriver {
+	return newWebDriverScaled(t, driverURL, 1)
+}
+
+// newWebDriverScaled opens headless Firefox at phone size. scale is the
+// device pixel ratio: 1 for tests, higher for crisp screenshots.
+func newWebDriverScaled(t *testing.T, driverURL string, scale int) *webDriver {
 	t.Helper()
 	caps := map[string]any{"capabilities": map[string]any{"alwaysMatch": map[string]any{
 		"browserName": "firefox",
 		"moz:firefoxOptions": map[string]any{
-			"args": []string{"-headless"},
+			"args": []string{
+				"-headless",
+				fmt.Sprintf("--width=%d", phoneWidth),
+				fmt.Sprintf("--height=%d", phoneHeight),
+			},
 			"prefs": map[string]any{
 				"media.autoplay.default":         0,
 				"media.autoplay.blocking_policy": 0,
+				"layout.css.devPixelsPerPx":      fmt.Sprint(scale),
 			},
 		},
 	}}}
@@ -92,8 +115,42 @@ func newWebDriver(t *testing.T, driverURL string) *webDriver {
 	}
 	wd := &webDriver{t: t, base: driverURL + "/session/" + s.SessionID}
 	t.Cleanup(func() { wdCall(t, "DELETE", wd.base, nil) })
-	wdCall(t, "POST", wd.base+"/window/rect", map[string]any{"width": 390, "height": 844})
+	wd.fitViewport(phoneWidth, phoneHeight)
 	return wd
+}
+
+// fitViewport sizes the window until the page sees the viewport we want.
+// Firefox clamps the rect it is given and counts it in its own units
+// (which a device pixel ratio further skews), so rather than trusting
+// one request this measures what the document actually got and corrects
+// proportionally until it lands.
+func (w *webDriver) fitViewport(width, height int) {
+	type size struct {
+		W int `json:"w"`
+		H int `json:"h"`
+	}
+	for i := 0; i < 6; i++ {
+		var vp size
+		w.exec(`return {w: window.innerWidth, h: window.innerHeight};`, &vp)
+		if vp.W == width && vp.H == height {
+			return
+		}
+		if vp.W == 0 || vp.H == 0 {
+			return
+		}
+		var rect size
+		json.Unmarshal(wdCall(w.t, "GET", w.base+"/window/rect", nil), &struct {
+			Width  *int `json:"width"`
+			Height *int `json:"height"`
+		}{&rect.W, &rect.H})
+		wdCall(w.t, "POST", w.base+"/window/rect", map[string]any{
+			"width":  int(math.Round(float64(rect.W) * float64(width) / float64(vp.W))),
+			"height": int(math.Round(float64(rect.H) * float64(height) / float64(vp.H))),
+		})
+	}
+	var got size
+	w.exec(`return {w: window.innerWidth, h: window.innerHeight};`, &got)
+	w.t.Logf("viewport settled at %dx%d (wanted %dx%d)", got.W, got.H, width, height)
 }
 
 func (w *webDriver) navigate(url string) {
@@ -275,7 +332,8 @@ type sandbox struct {
 	dir, bin string
 	port     int
 	base     string
-	engine   string // "noise" or "acestep" (fake daemon)
+	engine   string   // "noise" or "acestep" (fake daemon)
+	args     []string // extra flags for the player process
 	player   *exec.Cmd
 	stdin    io.WriteCloser
 	logFile  *os.File
@@ -380,7 +438,14 @@ func (sb *sandbox) env() []string {
 // engine, null audio, plain mode with stdin held open.
 func (sb *sandbox) startPlayer(t *testing.T) {
 	t.Helper()
-	sb.player = exec.Command(sb.bin, "--engine", sb.engine, "--player", "null", "--plain")
+	sb.player = exec.Command(sb.bin, append([]string{
+		"--engine", sb.engine, "--player", "null", "--plain"}, sb.args...)...)
+	// Tie the player's life to the test's. A test that dies without
+	// running its cleanups - killed, panicking, or terminated by the
+	// engine supervision it is pretending to be - must not leave a
+	// player behind, because a live player keeps spawning engine
+	// daemons of its own.
+	sb.player.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	sb.player.Env = sb.env()
 	var err error
 	sb.stdin, err = sb.player.StdinPipe()
@@ -714,14 +779,34 @@ func TestRealBrowser(t *testing.T) {
 // fakeEngine serves the slice of the ACE-Step API the app uses,
 // producing short sine tracks instantly. Recording it in the engine
 // daemon state file makes the app adopt it like a real daemon.
+// fakeTask is one job the fake engine accepted.
+type fakeTask struct {
+	prompt string
+	// planOnly marks a planning job: it answers with audio codes and
+	// metadata instead of a rendered file.
+	planOnly bool
+	// seconds is the duration the caller asked for, 0 when unset.
+	seconds float64
+}
+
 type fakeEngine struct {
 	mu      sync.Mutex
 	nextID  int
-	tasks   map[string]string // task id -> prompt
+	tasks   map[string]fakeTask // task id -> job
 	prompts []string
 	// trackSeconds is the length of generated tracks (default 6: short,
 	// so track boundaries arrive quickly).
 	trackSeconds int
+	// lyrics, when set, replaces the per-task placeholder words the
+	// engine echoes back.
+	lyrics string
+}
+
+// setLyrics fixes the words the engine reports for every track.
+func (f *fakeEngine) setLyrics(s string) {
+	f.mu.Lock()
+	f.lyrics = s
+	f.mu.Unlock()
 }
 
 // setTrackSeconds changes the length of subsequently generated tracks.
@@ -743,8 +828,10 @@ func (f *fakeEngine) handler() http.Handler {
 	})
 	mux.HandleFunc("/release_task", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Prompt      string `json:"prompt"`
-			SampleQuery string `json:"sample_query"`
+			Prompt        string  `json:"prompt"`
+			SampleQuery   string  `json:"sample_query"`
+			PlanOnly      bool    `json:"plan_only"`
+			AudioDuration float64 `json:"audio_duration"`
 		}
 		json.NewDecoder(r.Body).Decode(&req)
 		prompt := req.Prompt
@@ -754,7 +841,7 @@ func (f *fakeEngine) handler() http.Handler {
 		f.mu.Lock()
 		f.nextID++
 		id := fmt.Sprintf("task-%d", f.nextID)
-		f.tasks[id] = prompt
+		f.tasks[id] = fakeTask{prompt: prompt, planOnly: req.PlanOnly, seconds: req.AudioDuration}
 		f.prompts = append(f.prompts, prompt)
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(wrap(map[string]any{"task_id": id}))
@@ -767,14 +854,33 @@ func (f *fakeEngine) handler() http.Handler {
 		var rows []map[string]any
 		f.mu.Lock()
 		for _, id := range req.TaskIDs {
-			prompt := f.tasks[id]
-			inner, _ := json.Marshal([]map[string]any{{
-				"file": "/v1/audio?path=" + id, "status": 1,
-				"prompt": prompt, "seed_value": "7",
-				// The engine echoes back the words it sang; the page
-				// shows them, so the fake has to return some.
-				"lyrics": "[Verse]\nthe words for " + id + "\n\n[Chorus]\nand its chorus",
-			}})
+			task := f.tasks[id]
+			// The engine echoes back the words it sang; the page
+			// shows them, so the fake has to return some.
+			lyrics := "[Verse]\nthe words for " + id + "\n\n[Chorus]\nand its chorus"
+			if f.lyrics != "" {
+				lyrics = f.lyrics
+			}
+			row := map[string]any{
+				"status": 1, "prompt": task.prompt, "seed_value": "7", "lyrics": lyrics,
+			}
+			if task.planOnly {
+				// A planning job answers with audio codes and the
+				// metadata the render job is built from; no audio
+				// exists yet.
+				secs := task.seconds
+				if secs == 0 {
+					secs = float64(f.trackSeconds)
+				}
+				row["audio_codes"] = "codes-for-" + id
+				row["metas"] = map[string]any{
+					"bpm": 120, "duration": secs,
+					"keyscale": "C major", "timesignature": "4/4",
+				}
+			} else {
+				row["file"] = "/v1/audio?path=" + id
+			}
+			inner, _ := json.Marshal([]map[string]any{row})
 			rows = append(rows, map[string]any{"task_id": id, "status": 1, "result": string(inner)})
 		}
 		f.mu.Unlock()
@@ -783,8 +889,12 @@ func (f *fakeEngine) handler() http.Handler {
 	mux.HandleFunc("/v1/audio", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("path")
 		f.mu.Lock()
-		n := len(f.tasks[id]) // vary the tone a little per prompt
+		task := f.tasks[id]
+		n := len(task.prompt) // vary the tone a little per prompt
 		secs := f.trackSeconds
+		if task.seconds > 0 {
+			secs = int(task.seconds)
+		}
 		f.mu.Unlock()
 		freq := 220 + float64(n%12)*30
 		samples := make([]int16, secs*audio.SampleRate*audio.Channels)
@@ -818,7 +928,7 @@ func (f *fakeEngine) lastPrompt() string {
 // engine daemon in stateDir.
 func startFakeEngine(t *testing.T, stateDir string) *fakeEngine {
 	t.Helper()
-	fe := &fakeEngine{tasks: map[string]string{}, trackSeconds: 6}
+	fe := &fakeEngine{tasks: map[string]fakeTask{}, trackSeconds: 6}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -828,8 +938,20 @@ func startFakeEngine(t *testing.T, stateDir string) *fakeEngine {
 	t.Cleanup(func() { srv.Close() })
 	port := l.Addr().(*net.TCPAddr).Port
 	os.MkdirAll(stateDir, 0o755)
+	// The app supervises whatever PID the state file names and
+	// terminates it when phased generation hibernates the engine. Name a
+	// harmless placeholder process, never the test binary - recording
+	// our own PID here means the first hibernation kills the test.
+	decoy := exec.Command("sleep", "120")
+	if err := decoy.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		decoy.Process.Kill()
+		decoy.Wait()
+	})
 	state := fmt.Sprintf(`{"pid": %d, "port": %d, "engine_dir": "", "started": %q}`,
-		os.Getpid(), port, time.Now().Format(time.RFC3339))
+		decoy.Process.Pid, port, time.Now().Format(time.RFC3339))
 	if err := os.WriteFile(filepath.Join(stateDir, "engine.json"), []byte(state), 0o644); err != nil {
 		t.Fatal(err)
 	}

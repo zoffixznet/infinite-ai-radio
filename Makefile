@@ -3,6 +3,15 @@
 BINARY  := iar
 GO      ?= go
 PREFIX  ?= $(HOME)/.local
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
+# -trimpath keeps the building machine's paths out of the binary; the
+# version is stamped into the variable cmd/iar/main.go declares for it.
+BUILDFLAGS  := -trimpath -ldflags "-X main.version=$(VERSION)"
+RELFLAGS    := -trimpath -ldflags "-s -w -X main.version=$(VERSION)"
+# Platforms release tarballs are built for. The binary is pure Go and
+# every asset is embedded, so these cross-compile without a toolchain.
+PLATFORMS   := linux/amd64 linux/arm64
 
 # System packages needed at runtime/build time (Debian/Ubuntu names)
 APT_PKGS := ffmpeg git build-essential
@@ -18,7 +27,7 @@ help: ## Show this help
 
 .PHONY: build
 build: ## Build the iar binary into the repo root
-	$(GO) build -o $(BINARY) ./cmd/iar
+	$(GO) build $(BUILDFLAGS) -o $(BINARY) ./cmd/iar
 
 .PHONY: run
 run: build ## Build and run Infinite AI Radio (starts playback)
@@ -64,8 +73,8 @@ browser-test: ## Drive the phone remote in headless Firefox (needs geckodriver, 
 	$(GO) test -tags browser -count=1 -v -run TestRealBrowser -timeout 12m ./internal/remote/
 
 .PHONY: screenshots
-screenshots: ## Re-shoot the README's phone remote screenshots into assets/ (runs browser-test)
-	IAR_SHOTS=$(CURDIR)/assets $(GO) test -tags browser -count=1 -run TestRealBrowser -timeout 12m ./internal/remote/
+screenshots: ## Re-shoot the README's phone remote screenshots into assets/ (needs geckodriver, firefox, pactl, Pillow)
+	./scripts/screenshots.sh assets
 
 .PHONY: lint
 lint: ## Run go vet and check gofmt
@@ -79,9 +88,26 @@ lint: ## Run go vet and check gofmt
 install: build ## Install the binary into ~/.local/bin
 	install -d $(PREFIX)/bin
 	install -m 0755 $(BINARY) $(PREFIX)/bin/$(BINARY)
-	@rm -f $(PREFIX)/bin/bgm
+
+.PHONY: release
+release: ## Build release tarballs and checksums for every platform into dist/
+	@rm -rf dist && mkdir -p dist
+	@for p in $(PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; \
+		name=$(BINARY)_$(VERSION)_$${os}_$${arch}; \
+		echo "building $$name"; \
+		mkdir -p dist/$$name; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build $(RELFLAGS) -o dist/$$name/$(BINARY) ./cmd/iar || exit 1; \
+		cp README.md LICENSE dist/$$name/; \
+		cp internal/prosody/data/LICENSE dist/$$name/LICENSE.third-party; \
+		cp -r docs dist/$$name/docs; \
+		tar -C dist -czf dist/$$name.tar.gz $$name; \
+		rm -rf dist/$$name; \
+	done
+	@cd dist && sha256sum *.tar.gz > SHA256SUMS
+	@echo; ls -l dist
 
 .PHONY: clean
 clean: ## Remove build outputs
 	rm -f $(BINARY) coverage.out
-	rm -rf dist
+	rm -rf dist .shots
