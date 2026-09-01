@@ -374,6 +374,13 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
 		}
 		key := songTitleKey(epoch, seq)
+		// The name was asked for when this song was planned, which can
+		// be hours and a restart ago - the helper's answers live in
+		// memory only. Ask again from the plan's own words; the call is
+		// cached and idempotent, and feed time picks up the answer.
+		if plan.Lyrics != "" && plan.Lyrics != engine.InstrumentalLyrics {
+			o.builder.TitleSongAsync(key, plan.Caption, plan.Lyrics)
+		}
 		o.applySongTitle(track, key)
 		if err := o.Buffer.PutTrack(ctx, epoch, seq, key, track); err != nil {
 			storeFails++
@@ -548,6 +555,12 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		if track.Title == "" && titleKey != "" {
 			// The helper may have finished naming the song after it was
 			// rendered; feed time is the last chance to pick that up.
+			// The words are on disk beside the song, so a name that was
+			// never asked for - or was asked for in a previous run -
+			// can still be requested here for the next time around.
+			if track.Lyrics != "" && track.Lyrics != engine.InstrumentalLyrics {
+				o.builder.TitleSongAsync(titleKey, specPromptForLog(track.Spec), track.Lyrics)
+			}
 			o.applySongTitle(track, titleKey)
 		}
 		if track.Title == "" {

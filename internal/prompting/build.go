@@ -25,9 +25,12 @@ type Builder struct {
 	ollama *Ollama
 	log    *slog.Logger
 
-	mu      sync.Mutex
-	cache   map[string]string
-	pending map[string]bool
+	mu    sync.Mutex
+	cache map[string]string
+	// cacheOrder is insertion order, so the cache can drop its oldest
+	// entry instead of emptying itself when it fills.
+	cacheOrder []string
+	pending    map[string]bool
 	// defaultGen names the lyric generator used when the session does
 	// not pick one (set from configuration; empty falls back to the
 	// built-in default).
@@ -69,8 +72,8 @@ const helperRest = 4 * time.Minute
 // the work needs because the helper degrades instead of failing: with
 // the graphics card full, the daemon runs the model on the CPU, where a
 // cold load plus a short reply is minutes, not seconds. A slow call is
-// slow, not broken, and treating it as broken is what used to stand the
-// lyric writer down for the rest of the evening.
+// slow, not broken; treating it as broken stands the lyric writer down
+// for the rest of the run.
 const chatTimeout = 3 * time.Minute
 
 // probeTimeout bounds one usability probe: a real chat round-trip with
@@ -478,13 +481,28 @@ func (b *Builder) lookup(key string) (string, bool) {
 	return v, ok
 }
 
+// cacheCapacity bounds the helper's answer cache. It has to comfortably
+// exceed how many songs can sit planned but not yet rendered, because a
+// song's name is asked for when it is planned and read back when it is
+// rendered - with the default six-hour planning horizon that is well
+// over a hundred songs apart.
+const cacheCapacity = 512
+
+// store remembers a helper answer, evicting the oldest entry when full.
+// It must evict one at a time rather than emptying itself: a wholesale
+// wipe throws away the names of every song still waiting to be
+// rendered, which is most of them.
 func (b *Builder) store(key, v string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.cache) > 64 {
-		b.cache = map[string]string{}
+	if _, seen := b.cache[key]; !seen {
+		b.cacheOrder = append(b.cacheOrder, key)
 	}
 	b.cache[key] = v
+	for len(b.cacheOrder) > cacheCapacity {
+		delete(b.cache, b.cacheOrder[0])
+		b.cacheOrder = b.cacheOrder[1:]
+	}
 }
 
 // SpecUpdate is a helper-proposed structured update to the steering
