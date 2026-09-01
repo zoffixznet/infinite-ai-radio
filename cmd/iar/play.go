@@ -17,6 +17,7 @@ import (
 	"iar/internal/session"
 	"iar/internal/snippets"
 	"iar/internal/state"
+	"iar/internal/telemetry"
 	"iar/internal/trackbuffer"
 	"iar/internal/ui"
 )
@@ -100,6 +101,17 @@ func runPlay(pf playFlags) error {
 	orch.Library = a.library()
 	if a.cfg.Buffer.Phased {
 		orch.Buffer = trackbuffer.New(filepath.Join(a.paths.DataDir, "buffer"), a.cfg.MP3Quality, a.log)
+	}
+	if pf.telemetry {
+		// Phased generation's whole point is an empty card between
+		// cycles; this is the window onto whether it is actually so.
+		orch.Telemetry = telemetry.New(a.daemonLogFile(), func() int {
+			st, ok := a.stateD.ReadEngineState()
+			if !ok || !state.PIDAlive(st.PID) {
+				return 0
+			}
+			return st.PID
+		})
 	}
 	orch.SnippetsDir = a.snippetsDir()
 	// Saves land here; say so up front instead of making the listener

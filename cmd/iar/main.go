@@ -26,6 +26,7 @@ type playFlags struct {
 	noLLM      bool
 	verbose    bool
 	remote     bool
+	telemetry  bool
 }
 
 func main() {
@@ -77,6 +78,7 @@ Built-in presets (start with --preset, list with 'iar presets'):
 	fl.BoolVar(&pf.remote, "remote", false, "enable the phone remote (control page + live stream)")
 	fl.BoolVar(&pf.noLLM, "no-llm", false, "disable Ollama-assisted prompt rewriting")
 	fl.BoolVarP(&pf.verbose, "verbose", "v", false, "mirror logs to stderr")
+	fl.BoolVar(&pf.telemetry, "telemetry", false, "show system memory, graphics memory and which engine models are on the card")
 
 	root.AddCommand(
 		setupCommand(),

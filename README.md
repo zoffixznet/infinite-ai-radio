@@ -92,6 +92,7 @@ Useful variants:
 ./iar --session gym-grind     # resume a saved session
 ./iar --engine noise          # noise only, no GPU needed
 ./iar --plain                 # line-based interface (also used automatically in pipes)
+./iar --telemetry             # show memory, graphics memory and which models are loaded
 ./iar presets                 # list the built-in presets
 ./iar doctor                  # check your environment
 ./iar engine status           # is the shared engine running and ready?
@@ -107,6 +108,17 @@ and wakes for the next batch on its own. A relaunch with a healthy
 buffer plays immediately without touching the graphics card at all.
 Only one interactive Infinite AI Radio player runs at a time; a second
 one tells you where the first is.
+
+### Watching the machine
+
+Start with `--telemetry` to add a resource readout under the status bar:
+system memory and swap, graphics memory with the card's utilisation and
+temperature, which processes hold graphics memory (yours and anyone
+else's sharing the card), and which of the engine's models are loaded
+right now and how much each occupies. Between batches it should read
+`models: none - engine hibernated`, which is the pipeline working as
+intended. It is read-only and costs nothing: the numbers are sampled on
+a background timer, not while the display repaints.
 
 ## Starting from a prompt
 
