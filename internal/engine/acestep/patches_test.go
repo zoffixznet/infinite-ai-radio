@@ -8,21 +8,20 @@ import (
 )
 
 // fixtureEngine writes a fake engine tree whose files contain each
-// patch's anchor text, returning its root. Several patches may target
-// the same file, so anchors are accumulated per file.
+// hunk's anchor text, returning its root. Several hunks (from any
+// patch) may target the same file, so anchors accumulate per file.
 func fixtureEngine(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]*strings.Builder{}
 	for _, p := range enginePatches {
-		b := files[p.file]
-		if b == nil {
-			b = &strings.Builder{}
-			files[p.file] = b
-		}
-		b.WriteString("# synthetic fixture section for " + p.name + "\n")
 		for _, h := range p.hunks {
-			b.WriteString("# unrelated line\n")
+			b := files[h.file]
+			if b == nil {
+				b = &strings.Builder{}
+				files[h.file] = b
+			}
+			b.WriteString("# fixture section for " + p.name + "\n")
 			b.WriteString(h.find)
 		}
 	}
@@ -49,12 +48,14 @@ func TestApplyEnginePatchesAppliesOnceAndIsIdempotent(t *testing.T) {
 		t.Fatalf("applied %v; want all %d patches", applied, len(enginePatches))
 	}
 	for _, p := range enginePatches {
-		raw, err := os.ReadFile(filepath.Join(dir, p.file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(raw), p.marker) {
-			t.Errorf("patch %s: marker missing after apply", p.name)
+		for i, h := range p.hunks {
+			raw, err := os.ReadFile(filepath.Join(dir, h.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), h.replace) {
+				t.Errorf("patch %s hunk %d: replacement missing after apply", p.name, i+1)
+			}
 		}
 	}
 
@@ -69,14 +70,13 @@ func TestApplyEnginePatchesAppliesOnceAndIsIdempotent(t *testing.T) {
 
 func TestApplyEnginePatchesRefusesDriftedSource(t *testing.T) {
 	dir := fixtureEngine(t)
-	// Corrupt the first patch's anchor so it no longer matches.
-	p := enginePatches[0]
-	path := filepath.Join(dir, p.file)
+	h := enginePatches[0].hunks[0]
+	path := filepath.Join(dir, h.file)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	drifted := strings.Replace(string(raw), p.hunks[0].find, "# upstream rewrote this\n", 1)
+	drifted := strings.Replace(string(raw), h.find, "# upstream rewrote this\n", 1)
 	if err := os.WriteFile(path, []byte(drifted), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -87,14 +87,13 @@ func TestApplyEnginePatchesRefusesDriftedSource(t *testing.T) {
 
 func TestApplyEnginePatchesRefusesAmbiguousAnchor(t *testing.T) {
 	dir := fixtureEngine(t)
-	p := enginePatches[0]
-	path := filepath.Join(dir, p.file)
+	h := enginePatches[0].hunks[0]
+	path := filepath.Join(dir, h.file)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Duplicate the anchor so it matches twice.
-	if err := os.WriteFile(path, append(raw, []byte(p.hunks[0].find)...), 0o644); err != nil {
+	if err := os.WriteFile(path, append(raw, []byte(h.find)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ApplyEnginePatches(dir); err == nil {
@@ -103,8 +102,11 @@ func TestApplyEnginePatchesRefusesAmbiguousAnchor(t *testing.T) {
 }
 
 // TestEnginePatchesFitInstalledEngine checks the real checkout on this
-// machine: every patch must either already be applied or have exactly
-// one anchor match. Skipped where no engine is installed.
+// machine: every hunk must either already be applied byte-exactly or
+// have exactly one anchor match. On a machine whose checkout carries
+// the patches, this doubles as a transcription-fidelity check between
+// this file and what is actually running. Skipped where no engine is
+// installed.
 func TestEnginePatchesFitInstalledEngine(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -115,17 +117,17 @@ func TestEnginePatchesFitInstalledEngine(t *testing.T) {
 		t.Skip("no installed engine")
 	}
 	for _, p := range enginePatches {
-		raw, err := os.ReadFile(filepath.Join(dir, p.file))
-		if err != nil {
-			t.Fatalf("patch %s: %v", p.name, err)
-		}
-		src := string(raw)
-		if strings.Contains(src, p.marker) {
-			continue
-		}
 		for i, h := range p.hunks {
+			raw, err := os.ReadFile(filepath.Join(dir, h.file))
+			if err != nil {
+				t.Fatalf("patch %s: %v", p.name, err)
+			}
+			src := string(raw)
+			if strings.Contains(src, h.replace) {
+				continue
+			}
 			if n := strings.Count(src, h.find); n != 1 {
-				t.Errorf("patch %s hunk %d: anchor matches %d times in installed engine", p.name, i+1, n)
+				t.Errorf("patch %s hunk %d: neither applied nor a unique anchor (%d matches) in installed engine", p.name, i+1, n)
 			}
 		}
 	}
