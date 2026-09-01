@@ -82,11 +82,11 @@ everything else keeps its default.
   writes the words itself, its planner picks a natural song length) -
   bounded only by `max_track_seconds`.
 - `crossfade_seconds` (0.5-10): equal-power crossfade between tracks.
-- `buffer_tracks` (1-8): how many finished tracks to keep generated ahead
-  of playback. The queue also feeds phone listeners who prefetch
-  upcoming tracks to ride out signal dead zones, so the default is a
-  deeper 6. Higher survives longer engine stalls and deeper dead zones,
-  uses more memory (about 28 MB per 150-second track).
+- `buffer_tracks` (1-8): fused path only - how many finished tracks the
+  in-memory queue keeps ahead of playback (about 28 MB per 150-second
+  track). With phased generation (the default) the queue ahead of
+  playback lives on disk instead (see the `buffer` section) and phone
+  listeners prefetch straight from it, so this setting is not used.
 - `volume` (0-100): initial output volume. Starting the player with the
   `--remote` flag overrides this to 0 - a machine started as the
   station should not blast music into its own room. Turn the local

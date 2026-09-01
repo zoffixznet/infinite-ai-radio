@@ -307,3 +307,67 @@ func (s *Store) each(dir string, epoch int, ext string, fn func(path string)) {
 		}
 	}
 }
+
+// Entry summarizes one rendered song awaiting play, without touching
+// its audio.
+type Entry struct {
+	Base    string
+	Prompt  string
+	Lyrics  string
+	Seconds float64
+	Spec    engine.Spec
+}
+
+// List returns the epoch's rendered songs in play order, metadata only.
+func (s *Store) List(epoch int) []Entry {
+	var out []Entry
+	s.each(s.tracksDir(), epoch, ".json", func(path string) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		var m trackMeta
+		if json.Unmarshal(raw, &m) != nil {
+			return
+		}
+		out = append(out, Entry{
+			Base:    strings.TrimSuffix(filepath.Base(path), ".json"),
+			Prompt:  m.Prompt,
+			Lyrics:  m.Lyrics,
+			Seconds: m.Seconds,
+			Spec:    m.Spec,
+		})
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Base < out[j].Base })
+	return out
+}
+
+// Peek decodes one rendered song by its base name without consuming it
+// (remote listeners prefetch ahead of the local player). The base must
+// parse as this epoch's naming; anything else is refused.
+func (s *Store) Peek(ctx context.Context, epoch int, base string) (*engine.Track, bool) {
+	ep, _, ok := parseName(base)
+	if !ok || ep != epoch {
+		return nil, false
+	}
+	raw, err := os.ReadFile(filepath.Join(s.tracksDir(), base+".json"))
+	if err != nil {
+		return nil, false
+	}
+	var meta trackMeta
+	if json.Unmarshal(raw, &meta) != nil {
+		return nil, false
+	}
+	samples, err := export.DecodePCM(ctx, filepath.Join(s.tracksDir(), base+".mp3"))
+	if err != nil || len(samples) == 0 {
+		return nil, false
+	}
+	return &engine.Track{
+		Samples: samples,
+		Spec:    meta.Spec,
+		Prompt:  meta.Prompt,
+		Lyrics:  meta.Lyrics,
+		Seed:    meta.Seed,
+		GenTime: meta.GenTime,
+	}, true
+}

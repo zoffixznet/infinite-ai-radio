@@ -1,6 +1,7 @@
 package player
 
 import (
+	"context"
 	"strings"
 
 	"iar/internal/engine"
@@ -32,6 +33,10 @@ type QueueTrack struct {
 // libFillerPrefix marks track ids that resolve to the on-disk library.
 const libFillerPrefix = "lib:"
 
+// bufTrackPrefix marks queue-listing ids that live in the phased disk
+// buffer rather than the in-memory queue.
+const bufTrackPrefix = "buf:"
+
 // maxLibraryFiller bounds how many banked tracks pad the queue listing.
 const maxLibraryFiller = 6
 
@@ -54,6 +59,31 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 			Seconds: t.Duration().Seconds(), Kind: "queue", Lyrics: trackLyrics(t),
 		})
 	}
+	buffered := o.Buffer != nil && o.cfg.Buffer.Phased
+	o.mu.Unlock()
+	if buffered {
+		// Phased mode: the deep queue lives on disk. Remote listeners
+		// prefetch these exactly like the in-memory queue; the feeder
+		// consumes them in the same order.
+		for _, e := range o.Buffer.List(epoch) {
+			title, subtitle := prompting.TrackTitle(e.Prompt)
+			if t2, s2, ok := o.builder.TitleFor(specPromptForLog(e.Spec)); ok {
+				title = t2
+				if s2 != "" {
+					subtitle = s2
+				}
+			}
+			lyr := e.Lyrics
+			if lyr == engine.InstrumentalLyrics {
+				lyr = ""
+			}
+			out = append(out, QueueTrack{
+				ID: bufTrackPrefix + e.Base, Prompt: e.Prompt, Title: title, Subtitle: subtitle,
+				Seconds: e.Seconds, Kind: "queue", Lyrics: lyr,
+			})
+		}
+	}
+	o.mu.Lock()
 	// Mid-switchover the queue is empty by design, so filler would be
 	// the whole listing - and a remote client that starts playing it is
 	// switching into audio older than what it is already playing, quite
@@ -124,6 +154,23 @@ func (o *Orchestrator) enabledLanguageNamesLocked() map[string]bool {
 // playing and previous tracks, the loop fallback, and library filler.
 // ok is false when the id is unknown or already evicted.
 func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
+	if base, isBuf := strings.CutPrefix(id, bufTrackPrefix); isBuf {
+		if o.Buffer == nil {
+			return nil, false
+		}
+		o.mu.Lock()
+		epoch := o.epoch
+		o.mu.Unlock()
+		ctx := o.runCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		t, ok := o.Buffer.Peek(ctx, epoch, base)
+		if ok {
+			o.fillTitle(t, specPromptForLog(t.Spec))
+		}
+		return t, ok
+	}
 	if rest, isLib := strings.CutPrefix(id, libFillerPrefix); isLib {
 		key, fileID, found := strings.Cut(rest, "/")
 		if !found {
