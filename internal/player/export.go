@@ -23,7 +23,7 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		o.mu.Unlock()
 		return "an export is already running (" + o.exporting + ")"
 	}
-	phased := o.Buffer != nil && o.cfg.Buffer.Phased
+	phased := o.phasedEnabled()
 	if o.sess.Mode == session.ModeMusic && o.eng == nil {
 		o.mu.Unlock()
 		return "the music engine is not available"
@@ -47,7 +47,10 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		ctx = context.Background()
 	}
 	go func() {
-		if o.Buffer != nil && o.cfg.Buffer.Phased {
+		// The same predicate the pipeline itself uses: a configured
+		// buffer is not a phased run unless the engine can plan and
+		// render (with --engine noise there is no engine at all).
+		if o.phasedEnabled() {
 			// Wake the hibernated engine and hold it awake for the
 			// export; the cycle loop skips hibernation while an export
 			// runs, and the next cycle decides afterwards.
@@ -122,11 +125,10 @@ func (o *Orchestrator) exportGate(ctx context.Context) error {
 		o.mu.Lock()
 		mode := o.sess.Mode
 		queued := len(o.queue)
-		phased := o.Buffer != nil && o.cfg.Buffer.Phased
 		epoch := o.epoch
 		o.mu.Unlock()
 		healthy := mode == session.ModeNoise || o.eng == nil
-		if !healthy && phased {
+		if !healthy && o.phasedEnabled() {
 			// Phased playback feeds from disk; the export may run as
 			// long as a comfortable margin of rendered audio remains.
 			healthy = o.bufferedSeconds(epoch) >= float64(o.cfg.Buffer.RenderLowMinutes)*60/2

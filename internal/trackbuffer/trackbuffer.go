@@ -59,6 +59,118 @@ func (s *Store) Context() string {
 	return strings.TrimSpace(string(raw))
 }
 
+// RenderVersion identifies the render path that produced the songs in
+// a buffer. Bump it whenever a fix changes what the renderer produces:
+// songs already on disk were made by the old path and are dropped on
+// the next start, while their plans - which the renderer reads, not
+// writes - are kept and simply rendered again.
+//
+//	2: the deferred DiT silently discarded the planner's audio codes,
+//	   so every phased render was conditioned on silence and came out
+//	   with a 5 Hz comb across the whole song.
+const RenderVersion = 2
+
+// RenderVersionOf returns the render path that wrote this buffer's
+// songs; 0 for a buffer from before the marker existed.
+func (s *Store) RenderVersionOf() int {
+	raw, err := os.ReadFile(filepath.Join(s.dir, "render-version"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// SetRenderVersion records the render path that wrote this buffer.
+func (s *Store) SetRenderVersion(v int) {
+	if os.MkdirAll(s.dir, 0o755) != nil {
+		return
+	}
+	tmp := filepath.Join(s.dir, "render-version.tmp")
+	if os.WriteFile(tmp, []byte(strconv.Itoa(v)+"\n"), 0o644) == nil {
+		os.Rename(tmp, filepath.Join(s.dir, "render-version"))
+	}
+}
+
+// DropTracks removes every rendered song, of any epoch, leaving the
+// plans alone: the audio is unusable but the work that produced it is
+// still good.
+func (s *Store) DropTracks() (dropped int) {
+	entries, err := os.ReadDir(s.tracksDir())
+	if err != nil {
+		return 0
+	}
+	for _, e := range entries {
+		if os.Remove(filepath.Join(s.tracksDir(), e.Name())) == nil && strings.HasSuffix(e.Name(), ".json") {
+			dropped++
+		}
+	}
+	return dropped
+}
+
+// Sweep removes debris a crash leaves behind: half-written files from
+// an interrupted encode, and songs whose audio and metadata got
+// separated. Nothing else ever collects these - the epoch and context
+// sweeps both work through parsed base names, and a ".part" or a
+// sidecar-less MP3 parses as nothing, so it would sit on disk forever.
+// One player runs at a time, so a sweep at startup cannot race a write.
+func (s *Store) Sweep() (dropped int, freed int64) {
+	for _, dir := range []string{s.plansDir(), s.tracksDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		// Both halves of a stored song must be present: PutTrack writes
+		// the audio first, so a crash between the two leaves a large
+		// MP3 that no listing will ever look at.
+		have := map[string]map[string]bool{}
+		for _, e := range entries {
+			name := e.Name()
+			ext := filepath.Ext(name)
+			base := strings.TrimSuffix(name, ext)
+			if _, _, ok := parseName(base); !ok {
+				continue
+			}
+			if have[base] == nil {
+				have[base] = map[string]bool{}
+			}
+			have[base][ext] = true
+		}
+		for _, e := range entries {
+			name := e.Name()
+			path := filepath.Join(dir, name)
+			ext := filepath.Ext(name)
+			base := strings.TrimSuffix(name, ext)
+			junk := false
+			switch {
+			case ext == ".part" || ext == ".tmp":
+				junk = true // an encode or a write that never finished
+			case dir == s.tracksDir() && (ext == ".mp3" || ext == ".json"):
+				// A song needs both halves to be playable.
+				junk = !have[base][".mp3"] || !have[base][".json"]
+			default:
+				_, _, ok := parseName(base)
+				junk = !ok
+			}
+			if !junk {
+				continue
+			}
+			size := int64(0)
+			if info, err := e.Info(); err == nil {
+				size = info.Size()
+			}
+			if os.Remove(path) == nil {
+				dropped++
+				freed += size
+			}
+		}
+	}
+	return dropped, freed
+}
+
 // SetContext records the steering-context key the buffer now serves.
 func (s *Store) SetContext(key string) {
 	if os.MkdirAll(s.dir, 0o755) != nil {

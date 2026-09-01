@@ -2,7 +2,9 @@ package player
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,5 +102,45 @@ func TestPhasedCyclePlansRendersFeedsAndHibernates(t *testing.T) {
 	}
 	if track.Title == "" {
 		t.Fatal("fed track has no title")
+	}
+}
+
+// A configured disk buffer is not a phased run: with --engine noise
+// there is no engine at all, and the phased export path used to walk
+// straight into it. `mp3 1` on a noise session crashed the whole radio.
+func TestExportWithADiskBufferButNoEngineDoesNotCrash(t *testing.T) {
+	cfg := testConfig()
+	cfg.Buffer.Phased = true
+	sess := session.New()
+	sess.Mode = session.ModeNoise
+	sess.NoiseColor = "white"
+	builder := prompting.NewBuilder(nil, testLogger())
+	o := New(cfg, nil, builder, session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
+	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	o.Start(ctx)
+	t.Cleanup(func() { o.Close() })
+
+	if o.phasedEnabled() {
+		t.Fatal("an orchestrator with no engine must not report a phased pipeline")
+	}
+	dir := t.TempDir()
+	if ack := o.Export(1, "", dir); !strings.Contains(ack, "export") {
+		t.Fatalf("export not accepted: %q", ack)
+	}
+	// The export runs in the background; the crash was immediate, so
+	// surviving a moment of it is the assertion.
+	waitFor(t, 30*time.Second, "the export to finish", func() bool {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		return o.exporting == ""
+	})
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Error("noise export produced no file")
 	}
 }

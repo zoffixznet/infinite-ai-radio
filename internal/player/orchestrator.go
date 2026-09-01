@@ -18,6 +18,7 @@ import (
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/state"
+	"iar/internal/telemetry"
 	"iar/internal/trackbuffer"
 )
 
@@ -76,11 +77,28 @@ type Status struct {
 	// Exporting describes a running export, empty otherwise.
 	Exporting string
 	// BufferTarget is how many tracks the generate-ahead worker aims to
-	// keep queued.
+	// keep queued. It describes the fused path only; phased generation
+	// buffers to disk in minutes of audio, reported below.
 	BufferTarget int
-	// EngineTail holds recent engine output lines, newest last, when the
-	// engine exposes them.
-	EngineTail []string
+	// Phased reports whether the disk-backed pipeline is running. When
+	// it is, Queued counts only the small in-memory prefetch and the
+	// fields below are the buffer worth showing.
+	Phased bool
+	// BufferedTracks and BufferedSeconds are the songs already rendered
+	// and waiting to play (on disk, plus the in-memory prefetch).
+	BufferedTracks  int
+	BufferedSeconds float64
+	// PlannedTracks and PlannedSeconds are songs the planner has
+	// written but the renderer has not turned into audio yet.
+	PlannedTracks  int
+	PlannedSeconds float64
+	// BufferTargetSeconds is the rendered-audio depth the cycle aims
+	// for, and BufferLowSeconds the depth that triggers a refill.
+	BufferTargetSeconds float64
+	BufferLowSeconds    float64
+	// Telemetry is a recent machine-resource sample, present only when
+	// the radio was started with resource telemetry enabled.
+	Telemetry *telemetry.Sample
 	// FailStreak counts consecutive generation failures; LastFailure is
 	// the most recent failure reason ("" when the last generation
 	// succeeded).
@@ -181,6 +199,10 @@ type Orchestrator struct {
 	// StateDir, when set, records which session is playing so other
 	// processes (the CLI's delete) can refuse to remove it.
 	StateDir *state.Dir
+	// Telemetry, when set before Start, samples system and graphics
+	// memory and the engine's model residency for the status display.
+	// Nil leaves those fields of Status empty.
+	Telemetry *telemetry.Sampler
 
 	mu       sync.Mutex
 	sess     *session.Session
@@ -219,17 +241,24 @@ type Orchestrator struct {
 	phasedSynced  bool
 	cycleCooldown time.Time
 	renderFails   map[int]int
-	lastGen       time.Duration
-	exporting     string
-	phase         string
-	phaseStart    time.Time
-	started       time.Time
-	firstMusic    bool
-	failStreak    int
-	lastFailure   string
-	curTrack      *engine.Track
-	prevTrack     *engine.Track
-	saving        bool
+	// Cached on-disk buffer depth, refreshed by the phased loops. The
+	// status display repaints four times a second; counting the buffer
+	// directory that often is not worth the disk.
+	bufTracks      int
+	bufSeconds     float64
+	bufPlans       int
+	bufPlanSeconds float64
+	lastGen        time.Duration
+	exporting      string
+	phase          string
+	phaseStart     time.Time
+	started        time.Time
+	firstMusic     bool
+	failStreak     int
+	lastFailure    string
+	curTrack       *engine.Track
+	prevTrack      *engine.Track
+	saving         bool
 	// playCount numbers the tracks as they start playing (per process);
 	// curTrackNum is the playing track's number.
 	playCount   int
@@ -302,6 +331,9 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	// heard) as an underrun right at launch.
 	o.ring.Write(make([]byte, audio.DurationToBytes(300*time.Millisecond)))
 	o.recordCurrent()
+	if o.Telemetry != nil {
+		o.Telemetry.Start(ctx)
+	}
 	o.wg.Add(4)
 	if o.phasedEnabled() {
 		// Phased generation: a producer cycle (plan batch, render

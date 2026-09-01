@@ -3,7 +3,9 @@ package trackbuffer
 import (
 	"context"
 	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"iar/internal/audio"
@@ -79,5 +81,114 @@ func TestTrackRoundTrip(t *testing.T) {
 	}
 	if _, _, ok := s.NextTrack(context.Background(), 1); ok {
 		t.Fatal("track not consumed")
+	}
+}
+
+// Songs rendered by a path that has since been fixed must not keep
+// playing: the render-version marker drops the audio on the next start
+// while keeping the plans, which the renderer reads rather than writes.
+func TestRenderVersionDropsSongsButKeepsPlans(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	s := New(dir, 9, nil)
+	if got := s.RenderVersionOf(); got != 0 {
+		t.Fatalf("a fresh buffer reports version %d, want 0", got)
+	}
+	if err := s.PutPlan(1, 1, &engine.Plan{Caption: "keep me", Seconds: 3}); err != nil {
+		t.Fatal(err)
+	}
+	track := &engine.Track{Samples: make([]int16, audio.SampleRate*audio.Channels)}
+	if err := s.PutTrack(context.Background(), 1, 2, "k", track); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.TrackStats(1); n != 1 {
+		t.Fatalf("setup: %d songs stored, want 1", n)
+	}
+
+	if dropped := s.DropTracks(); dropped != 1 {
+		t.Errorf("DropTracks removed %d songs, want 1", dropped)
+	}
+	if n, _ := s.TrackStats(1); n != 0 {
+		t.Errorf("%d songs survived the drop", n)
+	}
+	if n, _ := s.PlanStats(1); n != 1 {
+		t.Errorf("%d plans survived the drop, want 1 - plans are still good", n)
+	}
+	// The audio file must go with its sidecar, not linger as garbage.
+	entries, err := os.ReadDir(filepath.Join(dir, "tracks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("tracks directory still holds %d file(s)", len(entries))
+	}
+
+	s.SetRenderVersion(RenderVersion)
+	if got := s.RenderVersionOf(); got != RenderVersion {
+		t.Errorf("RenderVersionOf = %d, want %d", got, RenderVersion)
+	}
+}
+
+// A crash mid-encode leaves a ".part"; a crash between writing a song's
+// audio and its sidecar leaves an MP3 no listing will ever look at.
+// Neither parses as a buffer name, so the epoch and context sweeps skip
+// them and they stay on disk for good.
+func TestSweepRemovesCrashDebris(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir, 9, nil)
+	tracks := filepath.Join(dir, "tracks")
+	plans := filepath.Join(dir, "plans")
+	for _, d := range []string{tracks, plans} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path string, n int) {
+		t.Helper()
+		if err := os.WriteFile(path, make([]byte, n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A complete song: both halves, must survive.
+	write(filepath.Join(tracks, "e00000001-00000001.mp3"), 100)
+	writeJSON(filepath.Join(tracks, "e00000001-00000001.json"), `{"seconds":200}`)
+	// A plan, must survive.
+	writeJSON(filepath.Join(plans, "e00000001-00000009.json"), `{"plan":{"Seconds":200}}`)
+	// Debris.
+	write(filepath.Join(tracks, ".e00000001-00000002.mp3.part"), 7_000_000)
+	write(filepath.Join(tracks, "e00000001-00000003.json.tmp"), 20)
+	write(filepath.Join(tracks, "e00000001-00000004.mp3"), 6_000_000)            // no sidecar
+	writeJSON(filepath.Join(tracks, "e00000001-00000005.json"), `{"seconds":9}`) // no audio
+
+	dropped, freed := s.Sweep()
+	if dropped != 4 {
+		t.Errorf("swept %d files, want 4", dropped)
+	}
+	if freed < 13_000_000 {
+		t.Errorf("freed %d bytes, want at least 13 MB", freed)
+	}
+	for _, keep := range []string{
+		filepath.Join(tracks, "e00000001-00000001.mp3"),
+		filepath.Join(tracks, "e00000001-00000001.json"),
+		filepath.Join(plans, "e00000001-00000009.json"),
+	} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("sweep removed a good file: %s", keep)
+		}
+	}
+	if n, _ := s.TrackStats(1); n != 1 {
+		t.Errorf("%d songs after the sweep, want 1", n)
+	}
+	// Sweeping a clean buffer must do nothing.
+	if dropped, _ := s.Sweep(); dropped != 0 {
+		t.Errorf("second sweep removed %d files, want 0", dropped)
 	}
 }

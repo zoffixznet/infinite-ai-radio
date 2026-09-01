@@ -393,6 +393,22 @@ func (o *Orchestrator) DeleteSession(name string) string {
 	return "session " + name + " deleted"
 }
 
+// EngineTail returns recent engine output lines, newest last, for the
+// diagnostic command that asks for them. It is deliberately not part of
+// Status: reading it costs a pass over the engine daemon's log, which
+// grows to hundreds of megabytes over a run, and Status is called on
+// every repaint.
+func (o *Orchestrator) EngineTail() []string {
+	if o.eng == nil {
+		return nil
+	}
+	t, ok := o.eng.(interface{ Tail() []string })
+	if !ok {
+		return nil
+	}
+	return t.Tail()
+}
+
 // Status returns a snapshot for status displays.
 func (o *Orchestrator) Status() Status {
 	o.mu.Lock()
@@ -421,9 +437,21 @@ func (o *Orchestrator) Status() Status {
 		st.EngineName = o.eng.Name()
 		st.EngineReady = o.eng.Ready()
 		st.EngineStarting = !st.EngineReady
-		if t, ok := o.eng.(interface{ Tail() []string }); ok {
-			st.EngineTail = t.Tail()
-		}
+	}
+	if o.phasedEnabled() {
+		st.Phased = true
+		st.BufferedTracks = o.bufTracks
+		st.BufferedSeconds = o.bufSeconds
+		st.PlannedTracks = o.bufPlans
+		st.PlannedSeconds = o.bufPlanSeconds
+		st.BufferTargetSeconds = float64(o.cfg.Buffer.RenderAheadMinutes) * 60
+		st.BufferLowSeconds = float64(o.cfg.Buffer.RenderLowMinutes) * 60
+	}
+	if o.Telemetry != nil {
+		// The sampler measures on its own timer; this is a copy of the
+		// last snapshot, cheap enough for every repaint.
+		s := o.Telemetry.Sample()
+		st.Telemetry = &s
 	}
 	if o.cur != nil {
 		st.Source = o.cur.label()

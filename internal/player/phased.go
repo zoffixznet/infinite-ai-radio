@@ -9,6 +9,7 @@ import (
 	"iar/internal/engine"
 	"iar/internal/library"
 	"iar/internal/session"
+	"iar/internal/trackbuffer"
 )
 
 // Phased generation runs the two models in separate windows so they
@@ -38,6 +39,14 @@ const (
 	// engineWakeBudget bounds one engine wake (cold start plus model
 	// load); beyond it the cycle backs off and retries.
 	engineWakeBudget = 4 * time.Minute
+	// starveMinutes is how little rendered audio counts as an
+	// emergency: below it, rendering preempts planning mid-batch so
+	// playback cannot run dry. This is deliberately NOT the refill
+	// trigger (render_low_minutes, 45 minutes by default). Using the
+	// refill trigger here made every batch degenerate into one plan
+	// and one render, with a model swap between every single song,
+	// until three quarters of an hour of audio had accumulated.
+	starveMinutes = 8
 )
 
 // phasedEngine is what phased generation needs from the engine.
@@ -75,6 +84,26 @@ func (o *Orchestrator) syncPhasedState() int {
 		o.phasedSeq = 0
 	}
 	o.mu.Unlock()
+	if !booted {
+		// A crash, a kill or a power cut leaves half-written files and
+		// songs missing one of their two halves. Nothing else collects
+		// them, so they would sit on disk for good.
+		if dropped, freed := o.Buffer.Sweep(); dropped > 0 {
+			o.log.Info("buffer debris from an interrupted run removed",
+				"event", "buffer_swept", "files", dropped, "bytes", freed)
+		}
+	}
+	if was := o.Buffer.RenderVersionOf(); !booted && was != trackbuffer.RenderVersion {
+		// Songs on disk came out of a render path that has since been
+		// fixed. Their plans are still good, so only the audio goes.
+		if dropped := o.Buffer.DropTracks(); dropped > 0 {
+			o.log.Info("buffered songs from an older render path dropped",
+				"event", "buffer_render_version_dropped", "songs", dropped,
+				"was", was, "now", trackbuffer.RenderVersion)
+			o.emit(fmt.Sprintf("dropped %d buffered song(s) made by an older render path; they are being rendered again", dropped))
+		}
+		o.Buffer.SetRenderVersion(trackbuffer.RenderVersion)
+	}
 	if o.Buffer.Context() != key {
 		if dropped := o.Buffer.DropAll(); dropped > 0 {
 			o.log.Info("buffered work from another context dropped", "event", "buffer_context_dropped",
@@ -106,6 +135,24 @@ func (o *Orchestrator) nextPhasedSeq(epoch int) int {
 	}
 	o.phasedSeq++
 	return o.phasedSeq
+}
+
+// publishBufferStats records what the on-disk buffer holds, so status
+// displays can report the real depth without scanning the buffer
+// directory themselves several times a second.
+func (o *Orchestrator) publishBufferStats(epoch int) {
+	tracks, secs := o.Buffer.TrackStats(epoch)
+	plans, planSecs := o.Buffer.PlanStats(epoch)
+	o.mu.Lock()
+	o.bufTracks = tracks
+	o.bufSeconds = secs
+	o.bufPlans = plans
+	o.bufPlanSeconds = planSecs
+	for _, t := range o.queue {
+		o.bufTracks++
+		o.bufSeconds += t.Duration().Seconds()
+	}
+	o.mu.Unlock()
 }
 
 // bufferedSeconds is the audio already secured for the epoch: rendered
@@ -192,6 +239,10 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 		case <-time.After(2 * time.Second):
 		}
 		epoch := o.syncPhasedState()
+		// The status display reads these; counting them here keeps the
+		// directory scan on the producer's timer instead of on every
+		// repaint.
+		o.publishBufferStats(epoch)
 		if !o.wantCycle(epoch) {
 			continue
 		}
@@ -234,7 +285,12 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		// is on how many new plans they write.
 		renderTarget = float64(o.cfg.Buffer.RenderAheadMinutes) * 60
 	}
-	low := float64(o.cfg.Buffer.RenderLowMinutes) * 60
+	// starve is the floor that interrupts a plan burst, never the
+	// refill target: a batch is only a batch if planning gets to run.
+	starve := float64(starveMinutes) * 60
+	if low := float64(o.cfg.Buffer.RenderLowMinutes) * 60; starve > low {
+		starve = low
+	}
 	plannedThisCycle := 0
 	storeFails := 0
 
@@ -353,19 +409,22 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		}
 		planned, plannedSecs := o.Buffer.PlanStats(epoch)
 		buffered := o.bufferedSeconds(epoch)
-		needPlan := (batchCap > 0 && plannedThisCycle < batchCap) ||
-			(batchCap == 0 && plannedSecs+buffered < planTarget)
-		needRender := planned > 0 && buffered < renderTarget
-		urgentRender := planned > 0 && buffered < low
 		var ok bool
-		switch {
-		case urgentRender:
+		switch nextCycleStep(cycleState{
+			planned:          planned,
+			plannedSecs:      plannedSecs,
+			buffered:         buffered,
+			planTarget:       planTarget,
+			renderTarget:     renderTarget,
+			starve:           starve,
+			batchCap:         batchCap,
+			plannedThisCycle: plannedThisCycle,
+		}) {
+		case stepRender:
 			ok = renderOne()
-		case needPlan:
+		case stepPlan:
 			_, sess := o.snapshotSession()
 			ok = planOne(sess)
-		case needRender:
-			ok = renderOne()
 		default:
 			return // all targets met; the defer hibernates
 		}
@@ -376,6 +435,54 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			return
 		}
 	}
+}
+
+// cycleState is everything one scheduling decision depends on.
+type cycleState struct {
+	// planned and plannedSecs are the stored plans awaiting a render.
+	planned     int
+	plannedSecs float64
+	// buffered is the rendered audio already secured, in seconds.
+	buffered float64
+	// planTarget and renderTarget are the depths this ramp stage aims
+	// for; starve is the depth below which playback is in danger.
+	planTarget   float64
+	renderTarget float64
+	starve       float64
+	// batchCap limits how many plans this cycle writes (0 means plan to
+	// planTarget instead); plannedThisCycle counts those written so far.
+	batchCap         int
+	plannedThisCycle int
+}
+
+// cycleStep is what a cycle does next.
+type cycleStep int
+
+const (
+	stepDone cycleStep = iota
+	stepPlan
+	stepRender
+)
+
+// nextCycleStep chooses between planning ahead and rendering now.
+// Rendering preempts a plan burst only when playback is genuinely close
+// to running dry, so the models swap once per burst rather than once
+// per song. The far larger refill trigger decides whether a cycle runs
+// at all, never what it does once it is running - conflating the two
+// turned every batch into a single plan followed by a single render.
+func nextCycleStep(s cycleState) cycleStep {
+	if s.planned > 0 && s.buffered < s.starve {
+		return stepRender
+	}
+	needPlan := (s.batchCap > 0 && s.plannedThisCycle < s.batchCap) ||
+		(s.batchCap == 0 && s.plannedSecs+s.buffered < s.planTarget)
+	if needPlan {
+		return stepPlan
+	}
+	if s.planned > 0 && s.buffered < s.renderTarget {
+		return stepRender
+	}
+	return stepDone
 }
 
 // songTitleKey names the helper's title slot for one planned song.
@@ -454,6 +561,7 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			o.lastGoodEpoch = epoch
 		}
 		o.mu.Unlock()
+		o.publishBufferStats(epoch)
 		if !kept {
 			continue
 		}
@@ -544,6 +652,9 @@ func (o *Orchestrator) notePhasedSuccess(failures, oomStreak *int) {
 // waitEngineReady blocks until the engine answers with models loaded
 // (waking it involves a cold start when it was hibernated).
 func (o *Orchestrator) waitEngineReady(ctx context.Context) bool {
+	if o.eng == nil {
+		return false
+	}
 	deadline := time.Now().Add(engineWakeBudget)
 	for time.Now().Before(deadline) {
 		if o.eng.Ready() {
