@@ -1,8 +1,13 @@
 # Build outputs
 /iar
 /dist/
+/.shots/
 coverage.out
 
 # Editor litter
 *.swp
 *~
+
+# Local engineering notes and agent scratch: never part of a release
+/.internal-tools-notes/
+/.claude/

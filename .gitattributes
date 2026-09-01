@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+*.png binary
+*.mp3 binary
+*.go   text diff=golang
+*.md   text
+*.json text
+*.sh   text eol=lf
