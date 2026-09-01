@@ -101,8 +101,11 @@ everything else keeps its default.
   cost of a slightly slower response to volume/pause.
 - `normalize_loudness`: level every generated track to a consistent
   loudness (peak-safe) before playback and banking.
-- `mp3_quality` (0-9): libmp3lame VBR quality for exports and snippets;
-  0 is best (the default), 9 is smallest.
+- `mp3_quality` (0-9): libmp3lame VBR quality for exports, snippets
+  and - under phased generation, the default - the songs stored in the
+  disk buffer, which are decoded back for playback. 0 is best (the
+  default), 9 is smallest; raising it shrinks the disk buffer at the
+  cost of playback quality.
 - `snippets_dir`: where the `save` command writes captured tracks, one
   subdirectory per tag (`untagged/` for saves without one). Empty means
   `snippets/` under the data directory.
@@ -126,8 +129,11 @@ everything else keeps its default.
   same language can come up twice in a row. Empty - the default -
   leaves the choice to the music engine, which sings in whatever
   language it likes. The `languages` command and the phone remote edit
-  this list, and both write it back here; the remote's switches then
-  narrow it down for the playing session without changing the list.
+  this list, and both write it back here. Switching a single language
+  off (`languages -Russian`, or a tap on the remote's Live screen)
+  narrows the choice without editing the list itself; that narrowing is
+  saved as `vocal_languages_off` and carries across restarts and new
+  sessions.
   The music engine publishes about fifty language tags but never checks
   a request against the list, and the model behind it knows more
   languages than the list names - Cebuano among them, asked for by its
@@ -140,6 +146,12 @@ everything else keeps its default.
   names a language of its own does not. Editing the list releases that
   pin, drops the tracks queued ahead and starts generating in the new
   languages.
+- `vocal_languages_off`: which of the languages above are currently
+  switched off. Written by the `languages -Name` command and the phone
+  remote's per-language switches; it is a standing preference, so a
+  language you turn off stays off across restarts and new sessions.
+  Delete the key to switch everything back on.
+
 ## remote
 
 The phone remote (page + live MP3 stream + saved-chunk player); see the
@@ -188,7 +200,10 @@ disk-backing mode).
   the state directory and shown by `iar engine status`).
 - `idle_minutes`: the shared engine daemon shuts down after this long
   with nothing using it, freeing GPU memory. Restarting the player
-  within the window reuses the warm engine instantly.
+  within the window reuses the warm engine instantly. Under phased
+  generation (the default) the daemon is stopped at the end of every
+  cycle anyway, so this is only a backstop for one left running by an
+  interrupted run.
 - `lm_model_path`: pins the engine's internal planner language model
   (e.g. `"acestep-5Hz-lm-0.6B"` or `"acestep-5Hz-lm-1.7B"`). Empty lets
   the engine pick one that fits your GPU.
@@ -205,7 +220,10 @@ disk-backing mode).
   little more brightness.
 - `thinking`: when true, the engine's planner LM sketches the track
   before synthesis, which improves musical coherence at some speed cost.
-- `offload_dit`: when true, the music model is kept in system memory
+- `offload_dit`: fused path only. Under phased generation (the default)
+  the music model is already streamed from disk and released between
+  cycles, so this setting changes nothing. With `buffer.phased` off:
+  when true, the music model is kept in system memory
   between tracks instead of staying resident on the graphics card. Turn
   it on when something else needs the card - a speech-to-text model, a
   game, another generator. The radio only computes for about a fifth of
@@ -247,14 +265,17 @@ ramp, so trying prompts never wastes deep work.
 - `phased`: turns the split pipeline on (the default). false restores
   the fused path: each track generated in one engine job with the audio
   model resident the whole time.
-- `plan_ahead_minutes`: how much audio the planner writes ahead at full
+- `plan_ahead_minutes` (10 or more): how much audio the planner writes ahead at full
   depth. Plans are small text files; planning is the cheap-memory
   phase, so this is deep by default (6 hours).
-- `render_ahead_minutes`: how much rendered audio is kept on disk ahead
+- `render_ahead_minutes` (10 or more, never deeper than
+  `plan_ahead_minutes`): how much rendered audio is kept on disk ahead
   of playback (2 hours by default, roughly 250 MB of MP3). Rendering is
   what a steer throws away, so it stays shallower than the plans.
-- `render_low_minutes`: the refill trigger; when the rendered buffer
-  drops below this, the engine wakes for another cycle.
+- `render_low_minutes` (5 or more, and at least 5 below
+  `render_ahead_minutes`): the refill trigger; when the rendered buffer
+  drops below this, the engine wakes for another cycle. Values outside
+  these ranges are clamped to them at load.
 
 ## ollama
 
@@ -297,6 +318,8 @@ ramp, so trying prompts never wastes deep work.
   (testing only).
 - `IAR_TEE_PCM`: path of a file to append every PCM byte sent to the
   audio backend (diagnostic; useful for verifying digital output).
+- `IAR_SHOTS`: directory `make screenshots` writes the phone-remote
+  pictures into (development only).
 
 ## Data layout
 
@@ -307,6 +330,10 @@ Inside the data directory:
 - `sessions/` - one JSON file per saved session, plus `deleted-presets`
   (the list of presets hidden with `iar sessions delete`)
 - `library/` - banked tracks for instant starts (size-capped)
+- `buffer/` - phased generation's disk buffer: `plans/` (small JSON song
+  plans), `tracks/` (rendered MP3s, each with a JSON metadata sidecar),
+  and the stored steering context. The largest directory after `engine/`
+  and `library/`, sized by the `buffer` settings above
 - `snippets/<tag>/` - tracks captured with the save command, one
   directory per tag (`untagged/` when none was given)
 - `remote/` - the phone remote's accounts and login sessions

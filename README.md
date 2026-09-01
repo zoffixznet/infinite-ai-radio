@@ -39,13 +39,16 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
 
 - Linux with PipeWire or PulseAudio (the player uses `pw-play` or `pacat`).
   Other platforms are not supported yet.
-- An NVIDIA GPU with 8 GB+ VRAM and a driver capable of CUDA 12.8 is
-  strongly recommended for music generation. Without a GPU the music engine
+- An NVIDIA GPU with 8 GB+ VRAM and a reasonably current driver is
+  strongly recommended for music generation (the engine installs its own
+  CUDA build of PyTorch; `iar doctor` prints the card and driver it finds). Without a GPU the music engine
   is impractically slow, but the noise modes (pink/white/brown) still work.
 - About 20 GB of disk space for the engine and model weights.
 - `ffmpeg` (with libmp3lame), `git`, and a C compiler for the engine's
-  Python dependencies. `make deps` checks these and prints the exact
-  install command for anything missing.
+  Python dependencies. On Debian and Ubuntu, `make deps` checks these
+  and installs anything missing with `sudo apt-get install -y` (sudo
+  will ask for your password). On other distributions, install
+  `ffmpeg`, `git` and a C toolchain with your own package manager.
 - Go 1.26+ to build.
 - Optional: a local [Ollama](https://ollama.com) daemon. When present, the player
   uses it to refine steering and write lyrics; without it, a built-in
@@ -53,15 +56,37 @@ music, ambient, sleep sounds, and an energetic vocal mode for workouts.
 
 ## Install
 
+### From a release
+
+The quickest way in: a static binary, no Go toolchain, nothing to
+compile. Builds are published for `linux/amd64` and `linux/arm64` on the
+[releases page](https://github.com/OWNER/REPO/releases), with a
+`SHA256SUMS` file beside them.
+
 ```sh
-make deps    # check system tools; prints sudo apt-get line if anything is missing
+tar xzf iar_1.0.0_linux_amd64.tar.gz
+cd iar_1.0.0_linux_amd64
+./iar setup   # one-time: install the music engine and download models (~18 GB)
+./iar
+```
+
+You still need `ffmpeg`, `git` and a C compiler on the machine for the
+engine's Python dependencies; `./iar doctor` says what is missing.
+
+### From source
+
+```sh
+make deps    # check system tools (Debian/Ubuntu: installs missing ones via sudo apt-get)
 make build   # build the ./iar binary
 make setup   # one-time: install the music engine and download models (~18 GB)
 ```
 
 `make setup` is resumable: if the download is interrupted, run it again and
-it continues where it stopped. It never uses sudo; everything lands in your
+it continues where it stopped. `make setup` never uses sudo (unlike `make deps`); everything lands in your
 user directories. `make install` copies the binary to `~/.local/bin`.
+
+The examples below use `./iar` from the build directory; once the binary
+is on your `PATH` it is just `iar`.
 
 ## Running
 
@@ -69,7 +94,9 @@ user directories. `make install` copies the binary to `~/.local/bin`.
 ./iar
 ```
 
-That is all. Setup pre-generates a small library of starter tracks, so a
+That is all. A bare `./iar` starts on the `nu-metal` preset;
+`default_preset` in the [configuration](docs/configuration.md) picks a
+different one. Setup pre-generates a small library of starter tracks, so a
 launch begins playing one within a few seconds and crossfades to freshly
 generated music as soon as it is ready (each generation is independent,
 so playing a banked track never changes what gets generated). While anything loads, Infinite AI Radio shows
@@ -107,7 +134,7 @@ on-disk track buffer is comfortably ahead - which is most of the time -
 and wakes for the next batch on its own. A relaunch with a healthy
 buffer plays immediately without touching the graphics card at all.
 Only one interactive Infinite AI Radio player runs at a time; a second
-one tells you where the first is.
+one refuses to start and says so.
 
 ### Watching the machine
 
@@ -297,7 +324,7 @@ presets:
     nu-metal               Heavy nu-metal: down-tuned riffs, rap-sun...
   ...
 auto-saved sessions:
-  session-20260821-220425  lofi chill beats, mellow, warm analog... +2 tweaks  3d ago
+  session-20260101-120000  lofi chill beats, mellow, warm analog... +2 tweaks  3d ago
 ```
 
 Sessions you never named are removed automatically two days after they
@@ -399,7 +426,8 @@ save prev late night
 
 Tags become folder names (`snippets/gym/`, `snippets/late_night/`;
 anything that is not a letter, digit or underscore turns into an
-underscore) and are also written to the MP3's album tag. Saves without
+underscore, and the whole tag is lowercased, so `Gym` and `gym` are the
+same folder) and are also written to the MP3's album tag. Saves without
 a tag go to `snippets/untagged/`, and tracks saved before tags existed
 are moved there the next time the player starts. The phone remote's saved-songs player
 loops these folders by tag (see [Saved songs and tags](#saved-songs-and-tags)).
@@ -533,10 +561,12 @@ and remembered per device:
   listening also picks playback straight back up.
 
 <p>
-<img src="assets/remote-login.png" alt="the login page" width="190">
-<img src="assets/remote-player.png" alt="the live stream page" width="190">
-<img src="assets/remote-saved.png" alt="the saved songs player" width="190">
-<img src="assets/remote-users.png" alt="the users page with a fresh invite link" width="190">
+<img src="assets/remote-login.png" alt="the login page" width="180">
+<img src="assets/remote-player.png" alt="the live stream page" width="180">
+<img src="assets/remote-lyrics.png" alt="the words of the playing song" width="180">
+<img src="assets/remote-saved.png" alt="the saved songs player" width="180">
+<img src="assets/remote-settings.png" alt="the settings sheet" width="180">
+<img src="assets/remote-users.png" alt="the users page with a fresh invite link" width="180">
 </p>
 
 For safety the remote binds only to localhost and, when the machine has
@@ -554,7 +584,7 @@ your computer and phone:
 4. Open the printed `http://100.x.y.z:8246` URL in the phone's browser,
    log in and tap play.
 
-To also reach the remote on your home LAN (say your laptop is
+To also reach the remote on your home LAN (say the machine is
 192.168.1.20), add that address to `remote.bind`; the player keeps
 listening on localhost and the tailnet as well, and addresses you bind
 are automatically accepted in URLs:
@@ -571,7 +601,7 @@ Security notes, plainly:
 
 - Logins happen over plain HTTP. Tailscale encrypts everything between
   the devices, so that is fine on the tailnet. On your home LAN a
-  password travels in clear text to the laptop; that is your call for
+  password travels in clear text across your LAN; that is your call for
   a network you trust. Never expose the port to the public internet
   without TLS in front of it (a reverse proxy with a certificate);
   behind such a proxy the login cookie is marked secure automatically.
@@ -602,9 +632,11 @@ remote's **Users** page (visible to admins):
 - **Pending links** are listed with Regenerate (which invalidates the
   old link) and Revoke.
 - **Permissions** are four independent switches per account: *admin*
-  (manage users and links, delete sessions), *can steer*, *new prompts*
-  (start a prompt, and load a session or preset, since both change what
-  everyone hears), *can save* (save tracks, and save the current session
+  (manage users and links, delete sessions, delete saved songs, edit the
+  vocal-language list), *can steer* (steer, skip, and switch a configured
+  language on or off), *new prompts* (start a prompt, and load a session
+  or preset, since both change what everyone hears), *can save* (save
+  tracks, rename and regroup saved songs, and save the current session
   under a name). Listening needs none of them. Admin does not imply the
   other three; an admin can tick them for themselves. The page only
   shows the controls an account may use, and the server refuses the
@@ -673,7 +705,7 @@ email is a convenience on top.
 
 The remote's **Saved** mode plays the songs you have saved, entirely on
 the phone: it never touches the live stream, other listeners, or the
-laptop's speakers.
+machine's speakers.
 
 - Tick the tags and the languages you want (every tag and every sung
   language with at least one saved song is listed - songs from before
@@ -702,7 +734,7 @@ Saving from the phone works like the terminal `save`: an optional tag
 in the box next to the button, the song appears in the list a moment
 later. On disk, a saved song's file is named after its title - in the
 title's own script - with the sung language's tag before the extension
-(`20260831-120000-tumutunaw-ang-selyo.tl.mp3`), and the full lyrics sit
+(`20260101-120000-tumutunaw-ang-selyo.tl.mp3`), and the full lyrics sit
 next to the MP3 in a `.txt` with the same base name, so what you see in
 the interface is what you can find in the folder.
 
@@ -743,7 +775,7 @@ Honestly, by style:
   piano track" than "microphone in a quiet room".
 - **Vocals** are genuinely supported: tracks come with sung lyrics in a
   pop/rock delivery, and the singing follows the written lyrics closely
-  enough that speech recognition can transcribe most lines back. The
+  enough to follow along with the printed lyrics. The
   occasional garbled word or artifact happens, especially on fast verses.
   The `grind` preset gives a fair picture of vocal quality. With Ollama
   installed the lyrics follow your theme closely; without it the engine's
@@ -751,14 +783,17 @@ Honestly, by style:
   track length while doing so).
 - Every generation has some luck involved; a weak track is usually
   followed by a better one, and `skip` is always there.
-- Tracks are loudness-normalized to a consistent level, and the whole
-  pipeline is lossless (48 kHz WAV from the engine, raw PCM to your
-  speakers); only exports and snippets are encoded, at top MP3 quality.
+- Tracks are loudness-normalized to a consistent level. The engine
+  renders 48 kHz WAV and your speakers get raw PCM; in between, phased
+  generation (on by default) stores each song in the on-disk buffer at
+  top MP3 quality - the same `mp3_quality` setting exports and snippets
+  use. Setting `buffer.phased` to false gives an end-to-end uncompressed
+  path, at the cost of keeping the model resident between tracks.
   The remaining quality ceiling is the model itself: `inference_steps`
-  defaults to 12 (measurably more spectral detail than the model's
-  quick-start 8, at no meaningful speed cost on a strong GPU) and can
-  be raised to 20 for a little more brightness, but no setting turns
-  the model into a mastering studio.
+  defaults to 12, which holds more spectral detail than the model's
+  quick-start 8 at no meaningful speed cost, and can be raised to 20 for
+  a little more brightness - but no setting turns the model into a
+  mastering studio.
 
 If you run [Ollama](https://ollama.com), the player uses it in the background to
 refine steering (as structured, validated updates to the sound, never
@@ -791,23 +826,31 @@ usually `~/.config/iar/config.json`) with these defaults:
   "library_max_mb": 600,
   "lyrics_generator": "scribe",
   "vocal_languages": [],
+  "default_preset": "nu-metal",
   "remote": {
     "enabled": false, "port": 8246, "bind": [], "allowed_hosts": [],
     "smtp": { "host": "", "port": 0, "username": "", "password": "", "from": "", "tls": "starttls" }
   },
   "sessions": { "auto_retention_days": 2 },
+  "buffer": {
+    "phased": true,
+    "plan_ahead_minutes": 360, "render_ahead_minutes": 120, "render_low_minutes": 45
+  },
   "acestep": {
     "port": 0,
     "idle_minutes": 15,
     "lm_model_path": "",
     "lm_backend": "auto",
     "inference_steps": 12,
-    "thinking": true
+    "thinking": true,
+    "offload_dit": false,
+    "max_track_seconds": 300
   },
   "ollama": {
     "enabled": true,
     "url": "http://127.0.0.1:11434",
-    "model": ""
+    "model": "",
+    "gpu_layers": 0
   }
 }
 ```
@@ -827,7 +870,7 @@ requires no account, token, or license click-through.
 | Model | Used for | Weights license |
 | --- | --- | --- |
 | [ACE-Step 1.5](https://huggingface.co/ACE-Step/Ace-Step1.5) (default) | music generation | MIT |
-| [ACE-Step 5Hz LM 0.6B](https://huggingface.co/ACE-Step/acestep-5Hz-lm-0.6B) (optional, auto-selected on smaller GPUs) | planning/lyrics inside the engine | MIT |
+| [ACE-Step 5Hz LM 0.6B](https://huggingface.co/ACE-Step/acestep-5Hz-lm-0.6B) (downloaded by default; used automatically on smaller GPUs) | planning/lyrics inside the engine | MIT |
 
 The ACE-Step model card states that generated music may be used
 commercially. If you point the optional Ollama integration at a model of
@@ -864,9 +907,9 @@ Common cases:
   data. Check the underrun counter in the interface header and in
   `iar doctor`: if it stays at zero while you hear the noise, the audio
   stream itself is clean and the interference is happening after the
-  digital output. Mitigations that work: cap the GPU's power draw
+  digital output. Things to try: cap the GPU's power draw
   (`sudo nvidia-smi -pl <watts>`), use shielded or shorter audio
-  cables, ground the laptop's power supply, or switch to a digital
+  cables, ground the machine's power supply, or switch to a digital
   output (USB DAC/interface, HDMI audio).
 
 ## Known limitations
@@ -900,8 +943,10 @@ make help          # list targets
 make test          # unit tests (silent; no audio devices touched)
 make smoke         # end-to-end test of the built binary (sandboxed, silent)
 make browser-test  # the phone remote in headless Firefox (needs geckodriver, firefox, pactl)
-make screenshots   # re-shoot the README's remote screenshots into assets/
+make screenshots   # re-shoot the README's remote screenshots into assets/ (needs Pillow)
 make lint          # go vet + gofmt check
+make release       # build the release tarballs and checksums into dist/
+make clean         # remove build outputs
 ```
 
 The test suite, smoke test and browser test never emit audible sound:
