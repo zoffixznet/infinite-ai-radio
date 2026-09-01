@@ -27,11 +27,11 @@ func bufferReady(st player.Status) string {
 		st.BufferedTracks, fmtSpan(st.BufferedSeconds))
 }
 
-// nowLine names what is playing. Songs have had their own names since
-// the writer started reading their lyrics, but the panel had always
-// shown the source label - the first sixty characters of the steering
-// prompt - so every track read as "An Aggressive And High-Energy...".
-// The name is the interesting part; the genre line follows it.
+// nowLine names what is playing. A track carries its own name, derived
+// from its lyrics; the source label is only the first sixty characters
+// of the steering prompt, which reads as "An Aggressive And
+// High-Energy...". The name is the interesting part; the genre line
+// follows it.
 func nowLine(st player.Status) string {
 	if st.TrackTitle == "" {
 		return st.Source

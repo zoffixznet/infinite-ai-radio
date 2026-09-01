@@ -42,11 +42,9 @@ func NewOllama(url, model string, gpuLayers int) *Ollama {
 		model:     model,
 		gpuLayers: gpuLayers,
 		// A backstop only: every call site passes a context with its
-		// own deadline, and those deadlines are the real budgets. This
-		// used to be 90 seconds, which silently overrode the lyric
-		// pipeline's advertised 5-minute budget the moment the model
-		// ran on the CPU - each call died at 90s no matter how patient
-		// the caller was trying to be.
+		// own deadline, and those deadlines are the real budgets. Keep
+		// it far above any of them, or it silently caps a caller that
+		// is patiently waiting out a CPU-bound model.
 		http: &http.Client{Timeout: 10 * time.Minute},
 	}
 }
@@ -163,8 +161,7 @@ type ChatOpts struct {
 	Think *bool
 	// KeepAliveSeconds keeps the model loaded after the call, so a
 	// pipeline of calls avoids a reload each time. Zero unloads
-	// immediately (the historical behaviour, kind to the music
-	// engine's VRAM).
+	// immediately, which is kindest to the music engine's VRAM.
 	KeepAliveSeconds int
 }
 

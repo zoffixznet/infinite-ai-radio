@@ -101,6 +101,7 @@ release: ## Build release tarballs and checksums for every platform into dist/
 		cp README.md LICENSE dist/$$name/; \
 		cp internal/prosody/data/LICENSE dist/$$name/LICENSE.third-party; \
 		cp -r docs dist/$$name/docs; \
+		cp -r assets dist/$$name/assets; \
 		tar -C dist -czf dist/$$name.tar.gz $$name; \
 		rm -rf dist/$$name; \
 	done

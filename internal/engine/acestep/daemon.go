@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"iar/internal/config"
 	"iar/internal/state"
 )
 
@@ -202,7 +203,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig, log *slog.Logger) error {
 	// and the sidecar's own restart backoff copes if memory is still
 	// short when we proceed.
 	waitForPredecessors(ctx, 2*time.Minute, time.Second, log, func() []int {
-		return StrayDaemons(os.Getpid(), os.Getenv("IAR_DATA_DIR"))
+		return StrayDaemons(os.Getpid(), os.Getenv(config.EnvDataDir))
 	})
 
 	runCtx, cancel := context.WithCancel(ctx)

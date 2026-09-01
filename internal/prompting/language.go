@@ -8,8 +8,7 @@ import (
 // This file implements the vocal-language catalogue: the languages a
 // listener configured for sung vocals, and the per-track choice made
 // from the ones currently switched on. With nothing configured the
-// music engine keeps picking whatever language it likes, which is the
-// behaviour every earlier version had.
+// music engine keeps picking whatever language it likes.
 
 // Language is one configured vocal language.
 type Language struct {

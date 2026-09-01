@@ -46,12 +46,6 @@ func ResolvePaths() (Paths, error) {
 		}
 		p.ConfigDir = filepath.Join(base, "iar")
 	}
-	// A previous install under the old name is migrated into place (or
-	// used as-is while it is still running). Explicit env overrides are
-	// exempt: they point exactly where the caller wants.
-	if os.Getenv(EnvDataDir) == "" && os.Getenv(EnvConfigDir) == "" {
-		p = migrateOld(p)
-	}
 	return p, nil
 }
 

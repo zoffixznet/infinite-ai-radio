@@ -417,8 +417,8 @@ var memoryPressureNeedles = []struct{ needle, event, msg string }{
 
 // noteMemoryPressure lifts the two lines that matter out of the
 // sidecar's very chatty output into the app's own log. Both mean the
-// graphics card is short, and both were previously findable only by
-// grepping tens of megabytes of engine output.
+// graphics card is short, and both are otherwise buried in tens of
+// megabytes of engine output.
 func (s *Sidecar) noteMemoryPressure(line string) {
 	for _, n := range memoryPressureNeedles {
 		if strings.Contains(line, n.needle) {

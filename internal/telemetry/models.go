@@ -100,7 +100,7 @@ func (t *modelTracker) consume() {
 		n = maxRead
 	}
 	buf := make([]byte, n)
-	read, err := f.ReadAt(buf, t.offset)
+	read, _ := f.ReadAt(buf, t.offset)
 	if read <= 0 {
 		return
 	}

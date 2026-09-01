@@ -877,11 +877,13 @@ func TestSavingTheSameLanguagesKeepsTheQueue(t *testing.T) {
 	epoch, queued := o.epoch, len(o.queue)
 	o.mu.Unlock()
 	// Saving an unchanged list must not throw away minutes of audio
-	// that is already generated and still correct.
+	// that is already generated and still correct. The prefetch loop is
+	// running, so the queue may legitimately have grown in the meantime:
+	// what must not happen is it getting shorter, or the epoch moving.
 	ack := o.SetLanguages([]string{"English", "Russian"})
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.epoch != epoch || len(o.queue) != queued {
+	if o.epoch != epoch || len(o.queue) < queued {
 		t.Fatalf("an unchanged list dropped the queue: epoch %d->%d, queued %d->%d",
 			epoch, o.epoch, queued, len(o.queue))
 	}

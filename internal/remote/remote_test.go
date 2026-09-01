@@ -89,7 +89,7 @@ func withFakeInterfaces(t *testing.T, addrs []net.Addr) {
 
 func TestResolveBindingAdditive(t *testing.T) {
 	withFakeInterfaces(t, []net.Addr{
-		addr("127.0.0.1/8"), addr("192.168.8.187/24"), addr("100.101.102.103/32"),
+		addr("127.0.0.1/8"), addr("192.168.1.42/24"), addr("100.101.102.103/32"),
 	})
 
 	// Default: localhost plus the detected tailnet address.
@@ -103,8 +103,8 @@ func TestResolveBindingAdditive(t *testing.T) {
 
 	// An extra LAN entry is ADDITIVE: localhost and tailnet stay bound,
 	// the entry is exposed and auto-allowed.
-	b = ResolveBinding([]string{"192.168.8.187"}, 9999)
-	want := []string{"127.0.0.1:9999", "100.101.102.103:9999", "192.168.8.187:9999"}
+	b = ResolveBinding([]string{"192.168.1.42"}, 9999)
+	want := []string{"127.0.0.1:9999", "100.101.102.103:9999", "192.168.1.42:9999"}
 	if strings.Join(b.Addrs, " ") != strings.Join(want, " ") {
 		t.Fatalf("additive binding = %v; want %v", b.Addrs, want)
 	}
@@ -113,7 +113,7 @@ func TestResolveBindingAdditive(t *testing.T) {
 	}
 	found := false
 	for _, h := range b.ExtraHosts {
-		if h == "192.168.8.187" {
+		if h == "192.168.1.42" {
 			found = true
 		}
 	}
@@ -128,7 +128,7 @@ func TestResolveBindingAdditive(t *testing.T) {
 		t.Fatalf("wildcard binding = %+v", b)
 	}
 	allowed := strings.Join(b.ExtraHosts, " ")
-	if !strings.Contains(allowed, "192.168.8.187") || !strings.Contains(allowed, "100.101.102.103") {
+	if !strings.Contains(allowed, "192.168.1.42") || !strings.Contains(allowed, "100.101.102.103") {
 		t.Fatalf("wildcard must auto-allow machine addresses: %v", b.ExtraHosts)
 	}
 	if b.TailnetIP != "100.101.102.103" {

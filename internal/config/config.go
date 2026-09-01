@@ -42,7 +42,8 @@ type Config struct {
 	// NormalizeLoudness levels each generated track to a consistent
 	// loudness before playback.
 	NormalizeLoudness bool `json:"normalize_loudness"`
-	// MP3Quality is the libmp3lame VBR quality for exports and snippets
+	// MP3Quality is the libmp3lame VBR quality for exports, snippets and
+	// the on-disk track buffer phased generation plays from
 	// (0 = best, 9 = smallest).
 	MP3Quality int `json:"mp3_quality"`
 	// SnippetsDir is where the in-app save command puts captured tracks.
