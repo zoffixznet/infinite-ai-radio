@@ -48,6 +48,12 @@ everything else keeps its default.
     "repo_url": "https://github.com/ace-step/ACE-Step-1.5",
     "tag": "v0.1.8"
   },
+  "buffer": {
+    "phased": true,
+    "plan_ahead_minutes": 360,
+    "render_ahead_minutes": 120,
+    "render_low_minutes": 45
+  },
   "ollama": {
     "enabled": true,
     "gpu_layers": 0,
@@ -217,6 +223,36 @@ settings (playback rides out the restart from its buffered tracks).
   `track_seconds` exactly and never consult this.
 - `repo_url`, `tag`: which engine version `iar setup` installs. Change
   only if you know you want a different release.
+
+## buffer
+
+Phased generation, the default way music is produced: the planner model
+and the audio model never share the graphics card. A cycle wakes the
+engine, plans a batch of songs (planner alone on the card, the audio
+model dropped entirely), renders the batch from the planned audio codes
+(audio model alone, streamed from disk), stores the songs on disk under
+the data directory, and shuts the engine down completely - between
+cycles it holds no video memory and no system memory at all. Playback
+feeds from the disk buffer.
+
+Batch sizes ramp with how settled the steering context is: the first
+song of a fresh context goes through both phases alone (playing about
+as fast as before), the next batch is ten songs, and only after five
+songs play without a steer does the cycle fill to the configured
+depths. A steer drops every stored plan and song and restarts the
+ramp, so trying prompts never wastes deep work.
+
+- `phased`: turns the split pipeline on (the default). false restores
+  the fused path: each track generated in one engine job with the audio
+  model resident the whole time.
+- `plan_ahead_minutes`: how much audio the planner writes ahead at full
+  depth. Plans are small text files; planning is the cheap-memory
+  phase, so this is deep by default (6 hours).
+- `render_ahead_minutes`: how much rendered audio is kept on disk ahead
+  of playback (2 hours by default, roughly 250 MB of MP3). Rendering is
+  what a steer throws away, so it stays shallower than the plans.
+- `render_low_minutes`: the refill trigger; when the rendered buffer
+  drops below this, the engine wakes for another cycle.
 
 ## ollama
 
