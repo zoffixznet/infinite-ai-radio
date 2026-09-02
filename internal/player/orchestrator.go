@@ -258,6 +258,13 @@ type Orchestrator struct {
 	lastFailure    string
 	curTrack       *engine.Track
 	prevTrack      *engine.Track
+	// engineBusy mirrors whether a generation cycle currently holds
+	// the graphics card; the retitle loop asks for more names at once
+	// while it is free.
+	engineBusy atomic.Bool
+	// retitleKick wakes the retitle loop out of turn (engine just
+	// hibernated: the card is free for the helper).
+	retitleKick chan struct{}
 	// bankRefs remembers where a still-provisional track's banked
 	// library copy lives (track ID -> key and library id), so a late
 	// name reaches the banked sidecar too. Pruned as tracks retire.
@@ -291,17 +298,18 @@ type Orchestrator struct {
 // engine (noise only, with clear messaging).
 func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store *session.Store, sess *session.Session, pl audio.Player, log *slog.Logger) *Orchestrator {
 	o := &Orchestrator{
-		cfg:      cfg,
-		eng:      eng,
-		builder:  builder,
-		store:    store,
-		log:      log,
-		player:   pl,
-		ring:     audio.NewRing(2 * audio.BytesPerSecond),
-		sess:     sess,
-		events:   make(chan Event, 16),
-		wake:     make(chan struct{}, 1),
-		bankRefs: map[string]bankRef{},
+		cfg:         cfg,
+		eng:         eng,
+		builder:     builder,
+		store:       store,
+		log:         log,
+		player:      pl,
+		ring:        audio.NewRing(2 * audio.BytesPerSecond),
+		sess:        sess,
+		events:      make(chan Event, 16),
+		wake:        make(chan struct{}, 1),
+		bankRefs:    map[string]bankRef{},
+		retitleKick: make(chan struct{}, 1),
 	}
 	o.volume.Store(int32(cfg.Volume))
 	return o

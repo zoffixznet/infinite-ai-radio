@@ -27,8 +27,12 @@ const retitleInterval = 20 * time.Second
 // unnamed songs, and asking for them all at once buries a slow helper
 // in concurrent calls that then time out together; a few per pass, in
 // play order, names what is about to play first and drains the backlog
-// at a rate the helper can actually answer.
-const retitleRequestsPerPass = 2
+// at a rate the helper can actually answer. With the engine hibernated
+// the helper has the whole graphics card, so the ration rises.
+const (
+	retitleRequestsPerPass     = 2
+	retitleRequestsPerPassIdle = 6
+)
 
 // bankRef locates a track's banked library copy so a late name can be
 // written into its sidecar as well.
@@ -46,7 +50,17 @@ func (o *Orchestrator) retitleLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			o.retitlePass()
+		case <-o.retitleKick:
+			o.retitlePass()
 		}
+	}
+}
+
+// kickRetitle wakes the retitle loop out of turn.
+func (o *Orchestrator) kickRetitle() {
+	select {
+	case o.retitleKick <- struct{}{}:
+	default:
 	}
 }
 
@@ -111,6 +125,10 @@ func (o *Orchestrator) retitlePass() {
 	epoch := o.epoch
 	o.mu.Unlock()
 	requested := 0
+	ration := retitleRequestsPerPass
+	if !o.engineBusy.Load() {
+		ration = retitleRequestsPerPassIdle
+	}
 	for _, e := range o.Buffer.List(epoch) {
 		if e.Title != "" || e.TitleKey == "" {
 			continue
@@ -127,7 +145,7 @@ func (o *Orchestrator) retitlePass() {
 		// Only calls that actually start consume a ration slot, so a
 		// key whose cached answer failed validation cannot starve the
 		// entries behind it.
-		if requested < retitleRequestsPerPass &&
+		if requested < ration &&
 			e.Lyrics != "" && e.Lyrics != engine.InstrumentalLyrics &&
 			o.builder.TitleSongAsync(e.TitleKey, e.Prompt, e.Lyrics) {
 			requested++

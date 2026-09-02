@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,10 +22,18 @@ type Ollama struct {
 	url   string
 	model string
 	http  *http.Client
-	// gpuLayers is sent as num_gpu on every call: 0 pins the helper
-	// model to the CPU, -1 lets the daemon place it, positive values
-	// put that many layers on the graphics card.
+	// gpuLayers governs the num_gpu sent with every call: positive
+	// values put that many layers on the graphics card, -1 lets the
+	// daemon place the model, and 0 - the default - is phase-aware:
+	// the helper stays entirely on the CPU while the music engine
+	// holds the card (a helper load grabbing leftover video memory
+	// mid-generation is what pushes the card into out-of-memory), and
+	// the daemon places it freely the moment the engine hibernates
+	// and the card empties.
 	gpuLayers int
+	// engineBusy mirrors whether the music engine currently occupies
+	// the graphics card (see gpuLayers).
+	engineBusy atomic.Bool
 	// thinkOK records whether the resolved model advertises the
 	// thinking capability (set by Available).
 	thinkOK bool
@@ -36,6 +45,50 @@ type Ollama struct {
 // graphics card, which the music engine and the speech-to-text model
 // already fill - a helper load grabbing leftover VRAM between generation
 // peaks is exactly what pushes the card into out-of-memory.
+// SetEngineBusy tells the client whether the music engine currently
+// holds the graphics card, which is what the default gpuLayers setting
+// keys the helper's placement off. Going busy also asks the daemon to
+// unload the helper model right away: its keep-alive is short, but a
+// generation cycle spawning against a still-resident helper is exactly
+// the out-of-memory the placement rules exist to prevent.
+func (o *Ollama) SetEngineBusy(busy bool) {
+	if o == nil {
+		return
+	}
+	was := o.engineBusy.Swap(busy)
+	if busy && !was && o.gpuLayers == 0 {
+		go o.unload()
+	}
+}
+
+// unload asks the daemon to drop the helper model from memory now,
+// best-effort: a keep-alive of zero with no messages is Ollama's
+// unload request.
+func (o *Ollama) unload() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	model := o.model
+	if model == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"model": model, "messages": []any{}, "keep_alive": 0,
+	})
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.url+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := o.http.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
+}
+
 func NewOllama(url, model string, gpuLayers int) *Ollama {
 	return &Ollama{
 		url:       strings.TrimRight(url, "/"),
@@ -183,8 +236,13 @@ func (o *Ollama) ChatWith(ctx context.Context, system, user string, opts ChatOpt
 	}
 	stream := false
 	options := map[string]any{"temperature": 0.7}
-	if o.gpuLayers >= 0 {
+	switch {
+	case o.gpuLayers > 0:
 		options["num_gpu"] = o.gpuLayers
+	case o.gpuLayers == 0 && o.engineBusy.Load():
+		options["num_gpu"] = 0
+		// gpuLayers 0 with the engine hibernated, and -1 always: no
+		// num_gpu at all, the daemon places the model itself.
 	}
 	if opts.Temperature != 0 {
 		options["temperature"] = opts.Temperature

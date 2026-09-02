@@ -203,7 +203,10 @@ func TestOllamaSkipsSpecialPurposeModels(t *testing.T) {
 	}
 }
 
-func TestChatWithPinsHelperOffTheGPU(t *testing.T) {
+// The default placement pins the helper off the card only while the
+// music engine is using it; TestHelperPlacementFollowsTheEngine covers
+// the idle half of the contract.
+func TestChatWithPinsHelperOffTheGPUWhileEngineBusy(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/chat" {
@@ -216,12 +219,13 @@ func TestChatWithPinsHelperOffTheGPU(t *testing.T) {
 	defer srv.Close()
 
 	o := NewOllama(srv.URL, "m", 0)
+	o.SetEngineBusy(true)
 	if _, err := o.Chat(context.Background(), "s", "u"); err != nil {
 		t.Fatal(err)
 	}
 	opts, _ := got["options"].(map[string]any)
 	if v, ok := opts["num_gpu"]; !ok || v != float64(0) {
-		t.Fatalf("num_gpu = %v (present=%v); want 0 on every call", v, ok)
+		t.Fatalf("num_gpu = %v (present=%v); want 0 while the engine is busy", v, ok)
 	}
 
 	got = nil

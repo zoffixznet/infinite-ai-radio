@@ -710,6 +710,13 @@ func (o *Orchestrator) setEngineActive(active bool) {
 	if a, ok := o.eng.(interface{ SetEngineActive(bool) }); ok {
 		a.SetEngineActive(active)
 	}
+	o.engineBusy.Store(active)
+	o.builder.SetEngineBusy(active)
+	if !active {
+		// The card just emptied: this is the helper's window. Name
+		// what is waiting now rather than on the next tick.
+		o.kickRetitle()
+	}
 }
 
 // hibernateEngine stops heartbeating and shuts the engine daemon down,

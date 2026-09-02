@@ -211,13 +211,14 @@ type Ollama struct {
 	// Model names the model to use; empty picks the first installed model.
 	Model string `json:"model"`
 	// GPULayers pins how much of the helper model goes onto the
-	// graphics card: 0 (the default) keeps it entirely on the CPU,
-	// because the music engine and anything else sharing the card need
-	// the memory more than the helper needs speed - a helper load
-	// grabbing leftover video memory between generation peaks is what
-	// pushes the card into out-of-memory. -1 lets the Ollama daemon
-	// place the model itself; a positive value puts that many layers on
-	// the card.
+	// graphics card. 0 (the default) follows the music engine: while a
+	// generation cycle holds the card the helper stays entirely on the
+	// CPU - a helper load grabbing leftover video memory mid-generation
+	// is what pushes the card into out-of-memory - and the moment the
+	// engine hibernates, the Ollama daemon places the model on the
+	// freed card, where a song name takes seconds instead of minutes.
+	// -1 always lets the daemon place the model; a positive value
+	// always puts that many layers on the card.
 	GPULayers int `json:"gpu_layers"`
 }
 

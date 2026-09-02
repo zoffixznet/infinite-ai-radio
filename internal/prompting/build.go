@@ -509,6 +509,22 @@ func (b *Builder) store(key, v string) {
 	}
 }
 
+// SetEngineBusy tells the helper whether the music engine currently
+// holds the graphics card. Going idle also ends any rest the helper
+// was serving: its timeouts were the crowded card's fault, and the
+// card is free now.
+func (b *Builder) SetEngineBusy(busy bool) {
+	if b.ollama == nil {
+		return
+	}
+	b.ollama.SetEngineBusy(busy)
+	if !busy {
+		b.mu.Lock()
+		b.restAfter = time.Time{}
+		b.mu.Unlock()
+	}
+}
+
 // PrimeTitle records a name for a song key as if the helper had
 // answered, so a name from another source enters the same cache the
 // late-title pass reads.

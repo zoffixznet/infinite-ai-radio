@@ -290,13 +290,15 @@ ramp, so trying prompts never wastes deep work.
   Pin a small, fast instruction-following model here; it is plenty for
   this job and keeps the refinements timely.
 - `gpu_layers`: how much of the helper model may go onto the graphics
-  card. The default 0 keeps it entirely on the CPU: the music engine
-  (and anything else sharing the card) needs the video memory more than
-  the helper needs speed, and a helper load grabbing leftover memory
-  between generation peaks is exactly what pushes the card into
-  out-of-memory. Set -1 to let the Ollama daemon place the model
-  itself (sensible on a machine with video memory to spare), or a
-  positive number to put that many layers on the card.
+  card. The default 0 follows the music engine: while a generation
+  cycle holds the card the helper stays entirely on the CPU - a helper
+  load grabbing leftover memory mid-generation is exactly what pushes
+  the card into out-of-memory - and the moment the engine hibernates,
+  the Ollama daemon places the model on the freed card, where lyric
+  and naming calls take seconds instead of minutes. Set -1 to always
+  let the daemon place the model (sensible on a machine with video
+  memory to spare), or a positive number to always put that many
+  layers on the card.
 
 ## sessions
 
