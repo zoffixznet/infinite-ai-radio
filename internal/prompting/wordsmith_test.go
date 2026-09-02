@@ -155,3 +155,50 @@ func TestASheetIsSungAtMostTwice(t *testing.T) {
 		t.Fatal("past the reuse cap the engine invents the words (sample mode)")
 	}
 }
+
+// Each stocked song carries its own rich caption, and the spec is
+// conditioned on it. One terse tag list shared by every render is a
+// large part of why a day of radio blurred together; the caption is
+// what the music generator actually reads.
+func TestStockedSongCarriesItsOwnCaption(t *testing.T) {
+	f := &fakeOllama{replies: []string{
+		"[Verse]\nsteel in the water",
+		"An aggressive, high-energy nu-metal track driven by down-tuned guitars and a taut, punchy groove.",
+	}}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	s := wordsmithSession()
+
+	if wrote := b.StockLyrics(context.Background(), s, 1, nil); wrote != 1 {
+		t.Fatalf("wrote %d", wrote)
+	}
+	spec := b.BuildSpec(context.Background(), s, 150)
+	if spec.Lyrics != "[Verse]\nsteel in the water" {
+		t.Fatalf("lyrics = %q", spec.Lyrics)
+	}
+	if spec.Prompt != "An aggressive, high-energy nu-metal track driven by down-tuned guitars and a taut, punchy groove." {
+		t.Fatalf("the spec was not conditioned on the song's own caption: %q", spec.Prompt)
+	}
+}
+
+// A failed caption call falls back to the steering caption and never
+// blocks the sheet.
+func TestCaptionFailureFallsBackToSteeringCaption(t *testing.T) {
+	f := &fakeOllama{replies: []string{"[Verse]\nsteel in the water"}, maxFills: 1}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	s := wordsmithSession()
+
+	if wrote := b.StockLyrics(context.Background(), s, 1, nil); wrote != 1 {
+		t.Fatalf("wrote %d", wrote)
+	}
+	spec := b.BuildSpec(context.Background(), s, 150)
+	if spec.Lyrics == "" || spec.Prompt == "" {
+		t.Fatalf("sheet or caption lost: %+v", spec)
+	}
+	if spec.Prompt != Render(s).Caption {
+		t.Fatalf("caption fallback should be the steering caption, got %q", spec.Prompt)
+	}
+}

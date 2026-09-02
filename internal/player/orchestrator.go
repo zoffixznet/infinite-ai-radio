@@ -349,6 +349,10 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	}
 	o.wg.Add(4)
 	if o.phasedEnabled() {
+		// A backlog from before sheet reuse was capped can hold dozens
+		// of plans and songs singing identical words; sweep it once so
+		// the cap holds for what is already on disk too.
+		o.Buffer.DedupeSheets(2)
 		// Phased generation: a producer cycle (plan batch, render
 		// batch, hibernate) and a feeder that decodes rendered songs
 		// from disk into the playback prefetch.

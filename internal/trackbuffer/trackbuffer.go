@@ -9,6 +9,7 @@ package trackbuffer
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,6 +198,80 @@ func (s *Store) DropAll() (dropped int) {
 		}
 	}
 	return dropped
+}
+
+// DedupeSheets removes plans and rendered songs beyond maxPerSheet
+// copies of any one lyric sheet, keeping the oldest few of each. A
+// backlog written before sheet reuse was capped can hold dozens of
+// plans singing identical words - hours of the same song in different
+// clothes - and nothing else ever revisits stored plans. Instrumentals
+// and sheetless entries are left alone. Returns how many files were
+// removed (a plan counts one, a rendered pair counts one).
+func (s *Store) DedupeSheets(maxPerSheet int) int {
+	removed := 0
+	seen := map[string]int{}
+	sheet := func(lyrics string) string {
+		if lyrics == "" || lyrics == engine.InstrumentalLyrics {
+			return ""
+		}
+		sum := sha256.Sum256([]byte(lyrics))
+		return string(sum[:])
+	}
+	// Plans first, oldest first, so what survives is what plays first.
+	for _, dir := range []string{s.plansDir(), s.tracksDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") && !strings.HasSuffix(e.Name(), ".tmp") {
+				names = append(names, e.Name())
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			path := filepath.Join(dir, name)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			var lyrics string
+			if dir == s.plansDir() {
+				var p struct {
+					Plan struct{ Lyrics string } `json:"plan"`
+				}
+				if json.Unmarshal(raw, &p) != nil {
+					continue
+				}
+				lyrics = p.Plan.Lyrics
+			} else {
+				var m trackMeta
+				if json.Unmarshal(raw, &m) != nil {
+					continue
+				}
+				lyrics = m.Lyrics
+			}
+			key := sheet(lyrics)
+			if key == "" {
+				continue
+			}
+			seen[key]++
+			if seen[key] <= maxPerSheet {
+				continue
+			}
+			os.Remove(path)
+			if dir == s.tracksDir() {
+				os.Remove(strings.TrimSuffix(path, ".json") + ".mp3")
+			}
+			removed++
+		}
+	}
+	if removed > 0 {
+		s.log.Info("duplicate lyric sheets swept from the buffer",
+			"event", "buffer_sheets_deduped", "removed", removed)
+	}
+	return removed
 }
 
 func (s *Store) plansDir() string  { return filepath.Join(s.dir, "plans") }

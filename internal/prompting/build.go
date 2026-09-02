@@ -190,6 +190,9 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 		spec.Lyrics = st.Text
 		spec.VocalLanguage = st.Lang.Code
 		spec.VocalLanguageName = st.Lang.Name
+		if st.Caption != "" {
+			spec.Prompt = st.Caption
+		}
 		return spec
 	}
 	lang := b.chooseLanguage(s, r)
@@ -227,6 +230,34 @@ const maxAvoidHooks = 4
 
 // maxLyricsBytes caps a generator's output defensively.
 const maxLyricsBytes = 4000
+
+// captionSystem instructs the helper to describe one specific song for
+// the music generator's conditioning. The description must stay inside
+// the style the listener steered - it rephrases and enriches, never
+// contradicts.
+const captionSystem = `You describe songs for a music generator. Given
+a STYLE tag list and the song's LYRICS, reply with one vivid sentence
+(25-45 words) describing this specific track: its instruments, energy,
+texture and mood, echoing the song's imagery. Stay strictly inside the
+STYLE - every tag holds; add color, never contradictions. Plain prose,
+no quotes, no artist names, no mention of prompts or AI.`
+
+// captionSong asks the helper to describe one song, synchronously; the
+// caller owns the timing. Empty on any failure - the terse steering
+// caption is the fallback, never a blocker.
+func (b *Builder) captionSong(ctx context.Context, style, lyrics string) string {
+	if !b.helperUsable() {
+		return ""
+	}
+	user := "STYLE: " + style + "\nLYRICS:\n" + lyricExcerpt(lyrics, 10)
+	out, err := b.ollama.ChatWith(ctx, captionSystem, user, ChatOpts{
+		KeepAliveSeconds: scribeKeepAlive,
+	})
+	if err != nil {
+		return ""
+	}
+	return sanitizeLine(out, 400)
+}
 
 // StockLyrics writes lyric sheets ahead for the session's steering
 // context until `want` sit ready or the context ends, returning how
@@ -305,6 +336,11 @@ func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int,
 		}
 		b.noteSuccess()
 		st := StockedLyrics{Lang: lang, Text: out}
+		// The model is warm from the lyric write: describe the song
+		// and name it in the same breath.
+		capCtx, capCancel := context.WithTimeout(ctx, 45*time.Second)
+		st.Caption = b.captionSong(capCtx, r.Caption, out)
+		capCancel()
 		b.mu.Lock()
 		b.lyrReady[key] = append(b.lyrReady[key], st)
 		b.recordHookLocked(key, st)
@@ -387,6 +423,14 @@ func (b *Builder) GeneratorName(s *session.Session) string {
 type StockedLyrics struct {
 	Lang Language
 	Text string
+	// Caption is a rich one-line description of this specific song,
+	// written by the helper from the style and the song's own words.
+	// The music generator is conditioned on the caption text, so a
+	// unique caption per song is a large share of what makes tracks
+	// from one station sound different from each other; every song
+	// sharing one terse tag list is a large share of what makes them
+	// blur together. Empty falls back to the steering caption.
+	Caption string
 }
 
 // lyricsKey names a steering context's lyric queue. The language is
@@ -557,6 +601,12 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Se
 		// One critical section clears pending AND stores the result, so
 		// no buildLyrics call can slip between them and start a
 		// duplicate write for the same context.
+		var caption string
+		if err == nil && out != "" {
+			capCtx, capCancel := context.WithTimeout(runCtx, 45*time.Second)
+			caption = b.captionSong(capCtx, r.Caption, out)
+			capCancel()
+		}
 		b.mu.Lock()
 		delete(b.pending, key)
 		if err == nil && out != "" {
@@ -568,7 +618,7 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Se
 				b.lyrLastUses = map[string]int{}
 				b.lyrHooks = map[string][]string{}
 			}
-			st := StockedLyrics{Lang: lang, Text: out}
+			st := StockedLyrics{Lang: lang, Text: out, Caption: caption}
 			b.lyrReady[key] = append(b.lyrReady[key], st)
 			b.recordHookLocked(key, st)
 		}

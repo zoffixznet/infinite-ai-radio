@@ -86,8 +86,7 @@ func (e *Engine) Plan(ctx context.Context, spec engine.Spec) (*engine.Plan, erro
 	if !e.Ready() {
 		return nil, fmt.Errorf("engine not ready")
 	}
-	req := e.request(spec)
-	req.Thinking = true
+	req := e.planRequest(spec)
 	res, err := e.be.Client().Plan(ctx, req)
 	if err != nil {
 		return nil, err
@@ -126,6 +125,9 @@ func (e *Engine) Render(ctx context.Context, plan *engine.Plan) (*engine.Track, 
 		BatchSize:       1,
 		UseRandomSeed:   plan.Spec.Seed < 0,
 		Seed:            plan.Spec.Seed,
+		UseCotCaption:   ptrFalse(),
+		UseCotLanguage:  ptrFalse(),
+		UseCotMetas:     ptrFalse(),
 	}
 	res, err := e.be.Client().Generate(ctx, req)
 	if err != nil {
@@ -141,6 +143,25 @@ func (e *Engine) Render(ctx context.Context, plan *engine.Plan) (*engine.Track, 
 		GenTime: res.Elapsed,
 	}, nil
 }
+
+// planRequest is the request a planning job sends. Planning always
+// thinks, whatever the config says for fused jobs - and the negative
+// conditioning rides the thinking flag, so it is re-attached under the
+// forced value rather than silently dropped when the config turned
+// thinking off.
+func (e *Engine) planRequest(spec engine.Spec) GenerateRequest {
+	req := e.request(spec)
+	req.Thinking = true
+	if spec.NegativePrompt != "" {
+		req.LMNegativePrompt = spec.NegativePrompt
+		req.LMCfgScale = spec.LMCfgScale
+	}
+	return req
+}
+
+// ptrFalse is an explicit false for the server's default-true CoT
+// switches (absent means true, so omitempty needs a pointer).
+func ptrFalse() *bool { f := false; return &f }
 
 // request builds the shared request shape for a spec (used by both the
 // fused Generate path and the planning half of phased generation).

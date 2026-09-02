@@ -105,6 +105,14 @@ type GenerateRequest struct {
 	// on the CFG-distilled turbo model.
 	LMNegativePrompt string  `json:"lm_negative_prompt,omitempty"`
 	LMCfgScale       float64 `json:"lm_cfg_scale,omitempty"`
+
+	// The server's CoT switches default to true when absent. A render
+	// job carries complete planned metadata and must never have the
+	// planner LM second-guess it, so Render pins them off; every other
+	// path leaves them to the server's defaults.
+	UseCotCaption  *bool `json:"use_cot_caption,omitempty"`
+	UseCotLanguage *bool `json:"use_cot_language,omitempty"`
+	UseCotMetas    *bool `json:"use_cot_metas,omitempty"`
 }
 
 // GenerateResult is one finished track as reported by the server, before
@@ -128,6 +136,13 @@ type planMetas struct {
 	Duration      any    `json:"duration"`
 	Keyscale      string `json:"keyscale"`
 	Timesignature string `json:"timesignature"`
+	// Caption is the planner's elaborated prose description of the
+	// song it planned - richer and different for every plan, and what
+	// the fused path conditioned the music generator on via the
+	// engine's own CoT-caption step. A render conditioned on it
+	// instead of the terse steering tag list is a large share of what
+	// keeps one station's songs from blurring together.
+	Caption string `json:"caption"`
 }
 
 // metaFloat coerces a metadata value that may be a number or "N/A".
@@ -426,7 +441,7 @@ func (c *Client) Plan(ctx context.Context, req GenerateRequest) (*PlanResult, er
 		return nil, fmt.Errorf("plan task %s returned no audio codes", taskID)
 	}
 	return &PlanResult{
-		Caption:       res.Prompt,
+		Caption:       elaboratedCaption(res),
 		Lyrics:        res.Lyrics,
 		AudioCodes:    res.AudioCodes,
 		Seconds:       metaFloat(res.Metas.Duration),
@@ -435,6 +450,15 @@ func (c *Client) Plan(ctx context.Context, req GenerateRequest) (*PlanResult, er
 		TimeSignature: res.Metas.Timesignature,
 		Elapsed:       time.Since(start),
 	}, nil
+}
+
+// elaboratedCaption prefers the planner's own prose description of the
+// planned song over the echo of the request prompt.
+func elaboratedCaption(res *GenerateResult) string {
+	if c := strings.TrimSpace(res.Metas.Caption); c != "" {
+		return c
+	}
+	return res.Prompt
 }
 
 // PlanResult is a completed planning job.

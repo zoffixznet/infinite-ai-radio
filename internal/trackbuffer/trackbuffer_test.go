@@ -192,3 +192,54 @@ func TestSweepRemovesCrashDebris(t *testing.T) {
 		t.Errorf("second sweep removed %d files, want 0", dropped)
 	}
 }
+
+// The broken-era backlog: dozens of plans and songs singing one
+// identical sheet. The sweep keeps at most two copies of any sheet and
+// leaves instrumentals alone.
+func TestDedupeSheetsSweepsTheMonoculture(t *testing.T) {
+	s := New(t.TempDir(), 0, nil)
+	same := "[Verse]\nsteel in the water"
+	for seq := 1; seq <= 5; seq++ {
+		track := &engine.Track{Lyrics: same, Samples: make([]int16, 9600)}
+		if err := s.PutTrack(context.Background(), 0, seq, "k", track); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inst := &engine.Track{Lyrics: engine.InstrumentalLyrics, Samples: make([]int16, 9600)}
+	if err := s.PutTrack(context.Background(), 0, 6, "", inst); err != nil {
+		t.Fatal(err)
+	}
+	other := &engine.Track{Lyrics: "[Verse]\ndifferent words", Samples: make([]int16, 9600)}
+	if err := s.PutTrack(context.Background(), 0, 7, "k2", other); err != nil {
+		t.Fatal(err)
+	}
+	for seq := 8; seq <= 10; seq++ {
+		if err := s.PutPlan(0, seq, &engine.Plan{Lyrics: same, AudioCodes: "c"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed := s.DedupeSheets(2)
+	// Plans swept first (2 kept of 3 -> 1 removed)... the shared cap
+	// spans plans and tracks: 8 copies of one sheet total, 2 survive.
+	if removed != 6 {
+		t.Fatalf("removed %d, want 6", removed)
+	}
+	var sameLeft, instLeft, otherLeft int
+	for _, e := range s.List(0) {
+		switch e.Lyrics {
+		case same:
+			sameLeft++
+		case engine.InstrumentalLyrics:
+			instLeft++
+		default:
+			otherLeft++
+		}
+	}
+	if instLeft != 1 || otherLeft != 1 {
+		t.Fatalf("sweep touched the wrong entries: inst=%d other=%d", instLeft, otherLeft)
+	}
+	if sameLeft > 2 {
+		t.Fatalf("monoculture survived: %d tracks of one sheet", sameLeft)
+	}
+}
