@@ -67,6 +67,8 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return c.O.SaveSnippet(which, tag), false
 	case "skip", "next":
 		return c.O.Skip(), false
+	case "loop":
+		return c.O.ToggleLoop(), false
 	case "pause":
 		return c.O.TogglePause(), false
 	case "resume", "play":
@@ -297,7 +299,7 @@ commands (leading / optional):
   new <prompt>      fresh session        sessions         list saved + presets
   save [prev] [tag] track -> MP3         load <name>      resume a session
   mp3 <min> [file]  export MP3           preset <name>    switch preset
-  skip              next track           delete <name>    delete a session
+  skip | loop       next / repeat track  delete <name>    delete a session
   pause | resume    pause / continue     volume <0-100>   set volume
   lyrics [name]     pick lyric writer    status | engine  show status
   languages [list]  sung languages       help | quit      this list / exit`

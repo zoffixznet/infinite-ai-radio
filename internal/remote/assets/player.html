@@ -41,7 +41,7 @@
       <div id="srvline" class="srvline"></div>
       <div id="devrow" class="devrow" hidden>
         <span id="devbank"></span>
-        <button class="chip tap" id="jumplive" type="button">Skip to the live edge</button>
+        <button class="chip tap" id="jumplive" type="button">Go live</button>
       </div>
       <div id="phase"></div>
     </div>
@@ -98,7 +98,7 @@
 
     <section class="group" aria-label="Playing on this device">
       <div class="grouphead"><span class="grouplabel">On this device</span></div>
-      <div id="savednow" class="empty">Pick a song to play it on this device.</div>
+      <div id="savednow" class="empty">Pick a song, or press play.</div>
       <audio id="savedaudio" preload="none"></audio>
       <p class="hint">Plays here only. The stream and the speakers keep going.</p>
     </section>
@@ -129,6 +129,9 @@
         <span class="glyph" id="playglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="playlabel">Play</span>
       </button>
       <div class="tslot">
+        <button class="tbtn tap" id="loop" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Loop this track" aria-pressed="false">
+          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></span><span class="sr-only">Loop</span>
+        </button>
         <button class="tbtn tap" id="next" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Skip to the next track">
           <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Skip</span>
         </button>

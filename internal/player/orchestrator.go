@@ -167,6 +167,9 @@ type Status struct {
 	// Looping reports the mixer is replaying the last good track for
 	// want of anything newer.
 	Looping bool
+	// LoopOn reports a listener asked for the playing track to repeat
+	// until they turn the loop off.
+	LoopOn bool
 	// TrackLanguage is the language the playing track was sung in, in
 	// the listener's own wording; empty when the engine chose.
 	TrackLanguage string
@@ -239,6 +242,11 @@ type Orchestrator struct {
 	// start, so the same audio is not also listed as filler.
 	seededLib map[string]bool
 	cur       source
+	// loopOn marks a listener's request to repeat the playing track;
+	// it holds only while loopEpoch matches the steering epoch, so any
+	// context change breaks the loop without ceremony.
+	loopOn    bool
+	loopEpoch int
 	// switchReq forces the mixer to the next source; steerPending asks
 	// for the same switch, but only once a post-steer track is queued.
 	switchReq    bool

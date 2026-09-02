@@ -232,6 +232,7 @@ Commands work with or without a leading slash:
 | `delete <name>` | delete a session or hide a preset (asks first) |
 | `mp3 <minutes> [file]` | export minutes of the current vibe to MP3 |
 | `skip` | jump to the next track |
+| `loop` | repeat the playing track until toggled off |
 | `pause` / `resume` | pause or continue output |
 | `volume <0-100>` | set output volume |
 | `lyrics [name]` | show or switch the lyric writer |
@@ -347,7 +348,12 @@ under Settings, from one track ahead on metered connections to about 45
 minutes for flights. In buffered mode the Next button skips only on that
 device; other listeners and the machine keep their own position. A
 Settings switch selects the direct live stream instead - the one
-`/stream.mp3` serves - whose Next skips for everyone. If the
+`/stream.mp3` serves - whose Next skips for everyone. The Loop button
+works the same way: when a track is a keeper, tap it and the song
+repeats until you tap again - on this device alone in buffered mode,
+for the whole radio (speakers, stream and all) on the direct stream.
+Skipping, steering or changing the session turns the loop off, since
+each of those means "move on". If the
 stream drops or stalls, the page reconnects on its own and picks up the
 moment the stream is reachable again; only an expired login stops it.
 
@@ -383,9 +389,7 @@ phone; the live stream and the machine's speakers are untouched. Tick
 the tags and sung languages you want and it loops through the checked
 songs forever; uncheck a song to skip it without deleting anything, or
 loop just one. Tapping a row opens the song's panel: full lyrics,
-details, and buttons to download, rename, move or delete it. Switching
-between Live and Saved tabs is just looking - whatever is playing keeps
-playing until you actually start the other side.
+details, and buttons to download, rename, move or delete it.
 
 On disk, a saved song's file is named after its title with the sung
 language's tag before the extension

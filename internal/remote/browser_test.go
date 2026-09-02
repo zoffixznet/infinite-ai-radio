@@ -603,6 +603,20 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`return document.getElementById('savecard').hidden;`, &hidden)
 		return !hidden
 	})
+	// A field report of phantom "Copied" notifications during playback:
+	// wrap every clipboard write path and count. The page must never
+	// touch the clipboard unless a copy button is pressed.
+	w.exec(`window.__clipWrites = 0;
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			var orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+			navigator.clipboard.writeText = function (t) { window.__clipWrites++; return orig(t); };
+		}
+		var origExec = document.execCommand;
+		document.execCommand = function (cmd) {
+			if (String(cmd).toLowerCase() === 'copy') window.__clipWrites++;
+			return origExec.apply(document, arguments);
+		};
+		return true;`, nil)
 	w.click("#play")
 	live := assertPlays(t, w, "liveaudio", 3, 30*time.Second)
 	if !strings.HasPrefix(live.Pill, "playing") {
@@ -623,20 +637,13 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`return document.querySelectorAll('#chunks .chunk').length;`, &n)
 		return n == 1
 	})
-	// Switching tabs is just looking: the live stream keeps playing
-	// until a saved song is actually started.
-	var liveAlive bool
-	w.exec(`return document.getElementById('liveaudio') !== null && !document.getElementById('liveaudio').paused;`, &liveAlive)
-	if !liveAlive {
-		t.Fatal("switching to the saved tab must not stop the live stream")
-	}
-	w.click(`#chunks .chunk button[data-action="Play"]`)
-	saved := assertPlays(t, w, "savedaudio", 1.5, 20*time.Second)
 	var liveGone bool
 	w.exec(`return document.getElementById('liveaudio') === null;`, &liveGone)
 	if !liveGone {
-		t.Fatal("starting a saved song must stop the live stream element")
+		t.Fatal("switching to saved mode must stop the live stream element")
 	}
+	w.click(`#chunks .chunk button[data-action="Play"]`)
+	saved := assertPlays(t, w, "savedaudio", 1.5, 20*time.Second)
 	t.Logf("saved chunk: currentTime %.1fs readyState %d", saved.Time, saved.Ready)
 	w.click(`#chunks .chunk button[data-action="Loop"]`)
 	var loopText string
@@ -701,6 +708,14 @@ func TestRealBrowser(t *testing.T) {
 	})
 	if _, err := os.Stat(filepath.Join(sb.dir, "data", "sessions", "road-trip.json")); err == nil {
 		t.Fatal("deleted session file still on disk")
+	}
+
+	// The whole live/saved/session stretch above played, skipped,
+	// switched tabs and reloaded state - with zero clipboard writes.
+	var clipWrites int
+	w.exec(`return window.__clipWrites;`, &clipWrites)
+	if clipWrites != 0 {
+		t.Fatalf("the page wrote to the clipboard %d time(s) without a copy button being pressed", clipWrites)
 	}
 
 	// --- users page: invite a listener with no other permission ---
@@ -1050,12 +1065,67 @@ func TestRealBrowserResilience(t *testing.T) {
 	// --- direct stream + Next ---
 	w.click("#play")
 	assertPlays(t, w, "liveaudio", 2, 30*time.Second)
-	w.click("#next")
-	var status string
-	waitFor(t, 10*time.Second, "skip acknowledged", func() bool {
-		w.exec(`return document.getElementById('steerstatus').textContent;`, &status)
-		return strings.Contains(status, "skipping")
+
+	// --- the live loop button asks the radio itself ---
+	// A generated track is playing (the lyrics assertions above proved
+	// it), so the toggle must arm, light the button from /state, and
+	// release on the second tap. The earlier steer must have fully
+	// landed first: mid-switch the toggle honestly refuses, so wait
+	// for /state to stop reporting the switch.
+	waitFor(t, 30*time.Second, "a generated track in the now-playing line", func() bool {
+		var meta string
+		w.exec(`return document.getElementById('meta').textContent;`, &meta)
+		return strings.Contains(meta, "Track ")
 	})
+	waitFor(t, 30*time.Second, "the steer's switch to land", func() bool {
+		var st struct {
+			Switching bool `json:"switching"`
+		}
+		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/state').then(function(r){return r.json()}).then(cb);`, &st)
+		return !st.Switching
+	})
+	w.click("#loop")
+	waitFor(t, 10*time.Second, "loop-on ack", func() bool {
+		var ack string
+		w.exec(`return document.getElementById('steerstatus').textContent;`, &ack)
+		return strings.Contains(ack, "looping")
+	})
+	waitFor(t, 10*time.Second, "loop button lit from /state", func() bool {
+		var on bool
+		w.exec(`return document.getElementById('loop').classList.contains('on');`, &on)
+		return on
+	})
+	w.click("#loop")
+	waitFor(t, 10*time.Second, "loop-off ack", func() bool {
+		var ack string
+		w.exec(`return document.getElementById('steerstatus').textContent;`, &ack)
+		return strings.Contains(ack, "loop off")
+	})
+
+	// A marionette click occasionally evaporates mid-repaint (the
+	// element is present, unobscured and enabled - verified with
+	// elementFromPoint - yet the event never reaches the page), so the
+	// skip is clicked until its acknowledgement shows. A second skip
+	// landing is harmless here.
+	var status string
+	skipDeadline := time.Now().Add(15 * time.Second)
+	for {
+		w.click("#next")
+		settle := time.Now().Add(2 * time.Second)
+		for time.Now().Before(settle) {
+			w.exec(`return document.getElementById('steerstatus').textContent;`, &status)
+			if strings.Contains(status, "skipping") {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		if strings.Contains(status, "skipping") {
+			break
+		}
+		if time.Now().After(skipDeadline) {
+			t.Fatalf("skip never acknowledged; steerstatus: %q", status)
+		}
+	}
 
 	// --- the server dies: the stream recovers with no interaction ---
 	sb.killPlayer()
@@ -1156,6 +1226,32 @@ func TestRealBrowserResilience(t *testing.T) {
 			strings.Contains(pill, "3 ahead") || strings.Contains(pill, "4 ahead") ||
 			strings.Contains(pill, "5 ahead")
 	})
+	// The loop button in buffered mode loops this device's own track:
+	// the playing element's loop flag flips with the button, no server
+	// round trip involved.
+	w.click("#loop")
+	waitFor(t, 5*time.Second, "buffered loop engaged", func() bool {
+		var st struct {
+			Loop bool `json:"loop"`
+			On   bool `json:"on"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var el=null; a.forEach(function(x){ if (x && !x.paused) el = x; });
+			return {loop: el ? el.loop : false, on: document.getElementById('loop').classList.contains('on')};`, &st)
+		return st.Loop && st.On
+	})
+	w.click("#loop")
+	waitFor(t, 5*time.Second, "buffered loop released", func() bool {
+		var st struct {
+			Loop bool `json:"loop"`
+			On   bool `json:"on"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var el=null; a.forEach(function(x){ if (x && !x.paused) el = x; });
+			return {loop: el ? el.loop : true, on: document.getElementById('loop').classList.contains('on')};`, &st)
+		return !st.Loop && !st.On
+	})
+
 	// The media session stays honest in buffered mode: the title is
 	// this device's playing track's SHORT name (never the raw prompt),
 	// the artist carries the device-local track number and the
@@ -1262,6 +1358,13 @@ func TestRealBrowserResilience(t *testing.T) {
 		return '';`, &srcBefore)
 	sb.killPlayer()
 	// Playback must continue and cross into the next prefetched track.
+	// The banked tracks run minutes long, so a natural boundary cannot
+	// arrive inside a test budget: jump the playing track to just
+	// before its end. The boundary logic - onended advancing into the
+	// staged element with the server gone - is what is under test.
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		for (var i=0;i<2;i++) { if (a[i] && !a[i].paused && isFinite(a[i].duration) && a[i].duration > 3) { a[i].currentTime = a[i].duration - 2; break; } }
+		return true;`, nil)
 	waitFor(t, 45*time.Second, "playback continues across a boundary offline", func() bool {
 		var cur struct {
 			Src  string  `json:"src"`

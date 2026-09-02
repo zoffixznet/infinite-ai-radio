@@ -192,6 +192,10 @@ func (o *Orchestrator) Skip() string {
 	queued := len(o.queue)
 	stale := o.lastGoodStaleLocked()
 	looping := o.lastGood != nil && !stale
+	// Skipping means "move on": a requested loop would turn the skip
+	// into a replay of the same track, so it is turned off first.
+	wasLoop := o.loopOn && o.loopEpoch == o.epoch
+	o.loopOn = false
 	// A switch is only armed when there is somewhere to go. With an
 	// empty queue the mixer's next stop is the last good track, so
 	// skipping would restart the recording already playing and crossfade
@@ -202,11 +206,15 @@ func (o *Orchestrator) Skip() string {
 	}
 	o.mu.Unlock()
 	o.log.Info("skip requested", "event", "skip", "queued", queued)
+	loopNote := ""
+	if wasLoop {
+		loopNote = " (loop turned off)"
+	}
 	switch {
 	case noise:
 		return "noise mode: nothing to skip"
 	case queued > 0:
-		return "skipping to the next track"
+		return "skipping to the next track" + loopNote
 	case stale:
 		return "nothing new to skip to yet - still on the previous sound while the first track in the new setting generates" + o.switchEstimateNote("sound")
 	case looping:
@@ -214,6 +222,44 @@ func (o *Orchestrator) Skip() string {
 	default:
 		return "nothing new to skip to yet - the next track is still generating" + o.switchEstimateNote("sound")
 	}
+}
+
+// ToggleLoop flags the playing track for repetition: when it ends, the
+// same recording plays again (crossfaded like any track change) until
+// the loop is toggled off, skipped past, or the steering context
+// changes. The flag is tied to the steering epoch, so a new prompt,
+// preset, session or language change breaks the loop on its own.
+func (o *Orchestrator) ToggleLoop() string {
+	o.mu.Lock()
+	if o.loopOn && o.loopEpoch == o.epoch {
+		o.loopOn = false
+		o.mu.Unlock()
+		o.log.Info("loop request off", "event", "loop_request", "on", false)
+		return "loop off - the radio moves on when this track ends"
+	}
+	ts, ok := o.cur.(*trackSource)
+	if !ok {
+		o.mu.Unlock()
+		return "nothing loopable is playing right now"
+	}
+	// Mid-switch the playing track is from the setting the listener just
+	// left. Arming a loop here would stamp it with the NEW epoch, pin
+	// the old sound in the new context and swallow the pending switch -
+	// so the toggle refuses until the switch lands.
+	if o.steerPending || o.switchReq {
+		o.mu.Unlock()
+		return "the radio is switching to a new setting - loop the next track once it starts playing"
+	}
+	o.loopOn = true
+	o.loopEpoch = o.epoch
+	title := ts.track.Title
+	o.mu.Unlock()
+	o.log.Info("loop request on", "event", "loop_request", "on", true, "track", title)
+	name := "this track"
+	if title != "" {
+		name = "\"" + title + "\""
+	}
+	return "looping " + name + " until the loop is turned off"
 }
 
 // Pause silences output without stopping generation.
@@ -483,6 +529,7 @@ func (o *Orchestrator) Status() Status {
 	st.SavedTrackIDs = append([]string(nil), o.savedOrder...)
 	st.Languages = o.languageStatesLocked()
 	st.Switching = o.steerPending
+	st.LoopOn = o.loopOn && o.loopEpoch == o.epoch
 	st.State = o.stateLocked()
 	o.mu.Unlock()
 	st.Phase, st.PhaseElapsed, st.PhaseExpected, st.PhaseSlow = o.PhaseInfo()

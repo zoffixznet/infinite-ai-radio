@@ -1471,3 +1471,114 @@ func TestVocalLanguagesSurviveAFailedWrite(t *testing.T) {
 		t.Fatalf("the catalogue should still be live: %+v", got)
 	}
 }
+
+func TestRequestedLoopRepeatsTheTrackUntilTurnedOff(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	o := New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), store, session.New(), &capturePlayer{}, testLogger())
+
+	// Nothing playable yet: the toggle refuses honestly.
+	if got := o.ToggleLoop(); !strings.Contains(got, "nothing loopable") {
+		t.Fatalf("toggle with nothing playing = %q", got)
+	}
+
+	banger := mkTrack("banger", 2)
+	banger.Title = "Banger"
+	// A library warm-up is exactly the track fallbackShouldYield wants
+	// to interrupt; the loop guard must hold it in place regardless.
+	banger.FromLibrary = true
+	cur := newTrackSource(banger, "t1")
+	o.mu.Lock()
+	o.cur = cur
+	o.queue = append(o.queue, mkTrack("other", 1))
+	o.mu.Unlock()
+
+	if got := o.ToggleLoop(); !strings.Contains(got, "Banger") {
+		t.Fatalf("toggle-on ack = %q", got)
+	}
+	if !o.Status().LoopOn {
+		t.Fatal("status does not report the requested loop")
+	}
+
+	// The track's end brings the same recording back; the queue is
+	// untouched and the replay does not count as a play.
+	next := o.chooseNext(cur)
+	ts, ok := next.(*trackSource)
+	if !ok || ts.track != banger {
+		t.Fatalf("chooseNext under loop = %#v, want the same track back", next)
+	}
+	if !strings.Contains(ts.label(), "looping on request") {
+		t.Fatalf("replay label = %q", ts.label())
+	}
+	o.mu.Lock()
+	qlen, played := len(o.queue), o.playedInEpoch
+	o.mu.Unlock()
+	if qlen != 1 {
+		t.Fatalf("the loop consumed the queue: %d left", qlen)
+	}
+	if played != 0 {
+		t.Fatal("a replay counted toward the batch ladder's play count")
+	}
+	// The replay must not be interrupted as a warm-up either.
+	if o.fallbackShouldYield(ts) {
+		t.Fatal("a requested loop yielded to the queue")
+	}
+
+	// Toggling off moves on: the queued track plays next.
+	if got := o.ToggleLoop(); !strings.Contains(got, "loop off") {
+		t.Fatalf("toggle-off ack = %q", got)
+	}
+	after := o.chooseNext(ts)
+	ts2, ok := after.(*trackSource)
+	if !ok || ts2.track.Prompt != "other" {
+		t.Fatalf("after loop off chooseNext = %#v, want the queued track", after)
+	}
+}
+
+func TestSkipAndSteeringBreakARequestedLoop(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	o := New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), store, session.New(), &capturePlayer{}, testLogger())
+
+	cur := newTrackSource(mkTrack("banger", 2), "t1")
+	o.mu.Lock()
+	o.cur = cur
+	o.queue = append(o.queue, mkTrack("other", 1))
+	o.mu.Unlock()
+
+	// Skip means "move on", so it turns the loop off and says so.
+	o.ToggleLoop()
+	if got := o.Skip(); !strings.Contains(got, "loop turned off") {
+		t.Fatalf("skip-under-loop ack = %q", got)
+	}
+	if next := o.chooseNext(cur); next.(*trackSource).track.Prompt != "other" {
+		t.Fatal("skip left the loop armed: the same track came back")
+	}
+
+	// Mid-switch the playing track belongs to the setting the listener
+	// just left: arming a loop then would pin the old sound inside the
+	// new context, so the toggle refuses until the switch lands.
+	o.mu.Lock()
+	o.steerPending = true
+	o.mu.Unlock()
+	if got := o.ToggleLoop(); !strings.Contains(got, "switching") {
+		t.Fatalf("toggle during a pending steer = %q", got)
+	}
+	o.mu.Lock()
+	o.steerPending = false
+	o.mu.Unlock()
+
+	// A context change breaks the loop on its own: the flag is tied to
+	// the steering epoch it was set in.
+	o.mu.Lock()
+	o.queue = append([]*engine.Track{}, mkTrack("fresh", 1))
+	o.mu.Unlock()
+	o.ToggleLoop()
+	o.mu.Lock()
+	o.epoch++
+	o.mu.Unlock()
+	if o.Status().LoopOn {
+		t.Fatal("the loop survived a steering epoch change")
+	}
+	if next := o.chooseNext(cur); next.(*trackSource).track.Prompt != "fresh" {
+		t.Fatal("a stale loop replayed across a context change")
+	}
+}

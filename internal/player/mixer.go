@@ -145,6 +145,13 @@ func (o *Orchestrator) fallbackShouldYield(cur source) bool {
 	if isStopgap(cur) {
 		return len(o.queue) > 0
 	}
+	// A track the listener flagged for looping is wanted as-is: it
+	// neither yields to the queue nor gets treated as a warm-up.
+	if o.loopOn && o.loopEpoch == o.epoch {
+		if _, ok := cur.(*trackSource); ok {
+			return false
+		}
+	}
 	// A library track is a warm-up: hand over as soon as a freshly
 	// generated track is waiting.
 	if ts, ok := cur.(*trackSource); ok && ts.track.FromLibrary {
@@ -172,6 +179,16 @@ func (o *Orchestrator) chooseNext(cur source) source {
 			return nil
 		}
 		return newNoiseSource(color, noiseAmp, name)
+	}
+
+	// A requested loop replays the track the listener flagged: the
+	// same recording comes back (with the usual crossfade) until the
+	// loop is toggled off, skipped past, or steering changes the
+	// context. The queue is untouched and nothing counts as played.
+	if o.loopOn && o.loopEpoch == o.epoch {
+		if ts, ok := cur.(*trackSource); ok {
+			return newTrackSource(ts.track, summarize(ts.track)+" (looping on request)")
+		}
 	}
 
 	if len(o.queue) > 0 {

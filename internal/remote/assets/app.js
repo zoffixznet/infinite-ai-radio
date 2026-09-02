@@ -76,6 +76,14 @@
   // line updates every couple of seconds with an elapsed count, which
   // is not something anyone wants read aloud.
   var lastSaid = "";
+  // setText writes only when the text actually changed: a same-text
+  // rewrite still replaces the node, which collapses any selection the
+  // reader has made and makes clipboard watchers that follow the
+  // selection chatter. Everything painted on a timer goes through here.
+  function setText(el, text) {
+    if (el && el.textContent !== text) el.textContent = text;
+  }
+
   function say(text) {
     var el = $("say");
     if (!el || (text || "") === lastSaid) return;
@@ -172,28 +180,7 @@
   }
 
   // ---- mode switch -------------------------------------------------
-  // The visible tab and the playing audio are independent: switching
-  // tabs is just looking, and whatever was playing keeps playing. The
-  // bottom transport follows the PLAYING source, not the tab - it only
-  // hands over when the listener actually starts the other side.
   var mode = store.get("iar.mode", "live");
-  var audioSource = "live"; // which player the transport controls
-  function syncSourceTransport() {
-    var live = audioSource === "live";
-    $("livetransport").hidden = !live;
-    $("savedtransport").hidden = live;
-  }
-  function setAudioSource(src) {
-    if (audioSource === src) return;
-    audioSource = src;
-    if (src === "saved") {
-      stopListening("stopped (playing a saved song)");
-    } else {
-      savedAudio.pause();
-    }
-    syncSourceTransport();
-    syncPrevAction();
-  }
   function setMode(m) {
     mode = m;
     store.set("iar.mode", m);
@@ -204,9 +191,15 @@
     $("mode-saved").classList.toggle("on", !live);
     $("mode-live").setAttribute("aria-selected", live ? "true" : "false");
     $("mode-saved").setAttribute("aria-selected", live ? "false" : "true");
+    $("livetransport").hidden = !live;
+    $("savedtransport").hidden = live;
     $("scroll").scrollTop = 0;
-    if (!live) loadChunks();
-    syncSourceTransport();
+    if (live) {
+      savedAudio.pause();
+    } else {
+      stopListening("stopped (switched to saved chunks)");
+      loadChunks();
+    }
     syncPrevAction();
   }
   $("mode-live").addEventListener("click", function () { setMode("live"); });
@@ -243,7 +236,7 @@
   function streamState(text, cls) {
     if (cls !== "bad" && Date.now() < ackUntil) return;
     ackUntil = 0;
-    stateEl.textContent = text;
+    setText(stateEl, text);
     stateEl.className = cls || "";
     signalFor(cls);
   }
@@ -533,7 +526,8 @@
     offline: false,
     seen: {},        // ids already heard in this context, so Next moves on
     wrapped: false,  // the last pick came back round to something heard
-    wantPlay: false  // start playback as soon as anything is stored
+    wantPlay: false, // start playback as soon as anything is stored
+    loop: false      // repeat the playing track on this device
   };
 
   // Buffering level (per device): how far ahead to download and how
@@ -585,15 +579,14 @@
 
   function pfShowMinutes() {
     var n = Object.keys(pf.have).length;
-    var el = $("bufmins");
-    if (el) el.textContent = n ? "~" + pfMinutes() + " min banked on this device" : "";
+    setText($("bufmins"), n ? "~" + pfMinutes() + " min banked on this device" : "");
     var row = $("devrow");
     if (!row) return;
     row.hidden = !pf.active;
     if (!pf.active) return;
     var note = n + " song" + (n === 1 ? "" : "s") + " on this device (~" + pfMinutes() + " min)";
     if (pf.wrapped) note += " · replaying earlier songs, nothing new yet";
-    $("devbank").textContent = note;
+    setText($("devbank"), note);
   }
 
   function pfState(text, cls) { if (pf.active) streamState(text, cls); }
@@ -775,6 +768,10 @@
     });
     pf.switchOnDownload = true;
     pf.seen = {};
+    // The listener asked for a new setting; a held loop would transplant
+    // onto the first new-context track and repeat it forever. The server
+    // breaks its loop on any context change - the device does the same.
+    if (pf.loop) pfSetLoop(false, true);
   }
 
   // pfEnsureDownloads keeps the store filled to the level's depth,
@@ -923,14 +920,14 @@
       var dur = el.duration;
       if (!isFinite(dur) || dur <= 0) return;
       if (!seekDragging) $("seek").value = Math.round(el.currentTime / dur * 1000);
-      $("seeknow").textContent = fmtClock(el.currentTime);
-      $("seekdur").textContent = fmtClock(dur);
+      setText($("seeknow"), fmtClock(el.currentTime));
+      setText($("seekdur"), fmtClock(dur));
       return;
     }
     row.classList.add("disabled");
     $("seek").value = 0;
-    $("seeknow").textContent = elapsedText || "0:00";
-    $("seekdur").textContent = durationText || "–:––";
+    setText($("seeknow"), elapsedText || "0:00");
+    setText($("seekdur"), durationText || "–:––");
   }
   $("seek").addEventListener("input", function () { seekDragging = true; });
   $("seek").addEventListener("change", function () {
@@ -968,6 +965,7 @@
       // Replaying a staged or finished element needs a rewind.
       try { el.currentTime = 0; } catch (e) {}
     }
+    el.loop = pf.loop;
     el.onended = function () { pfAdvance(); };
     el.ontimeupdate = function () { if (pf.playingId === id) updateSeek(el); };
     el.play().then(function () {
@@ -1046,6 +1044,7 @@
     });
     pf.seen = {};
     pf.wrapped = false;
+    if (pf.loop) pfSetLoop(false, true);
     pf.prevId = null;
     pf.playingId = null;
     pf.wantPlay = true;
@@ -1062,6 +1061,7 @@
     var now = Date.now();
     if (now - lastManualSkip < 700 || !pf.active) return;
     lastManualSkip = now;
+    if (pf.loop) pfSetLoop(false, true);
     if (!pfNextId(pf.playingId, true)) {
       setStatus([stateEl, $("steerstatus")],
         "nothing new to skip to yet - still downloading the next track", "warn");
@@ -1075,6 +1075,7 @@
   function pfStatus() {
     var extra = pf.offline ? " · offline, playing banked tracks" : "";
     if (!pf.offline && pf.wrapped) extra = " · replaying stored tracks, nothing new yet";
+    if (pf.loop) extra += " · looping this track";
     pfState("playing (buffered) · " + pfAhead() + " ahead" + extra, pf.offline ? "bad" : "good");
     pfShowMinutes();
   }
@@ -1106,7 +1107,6 @@
   });
 
   function startListening() {
-    setAudioSource("live");
     store.set("iar.wasplaying", true);
     if (transport === "buffered" && idbSupported) startBuffered(); else startStream();
   }
@@ -1126,6 +1126,29 @@
     startListening();
   });
 
+  // The loop button repeats what this listener is hearing. Buffered
+  // playback loops the local track on this device alone; on the direct
+  // stream it asks the radio itself, which loops the room for everyone.
+  function paintLoop(on) {
+    var btn = $("loop");
+    if (!btn) return;
+    btn.classList.toggle("on", !!on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  function pfSetLoop(on, quietly) {
+    pf.loop = !!on;
+    var el = pf.els && pf.els[pf.cur];
+    if (el) el.loop = pf.loop;
+    paintLoop(pf.loop);
+    if (quietly) return;
+    setStatus([stateEl, $("steerstatus")],
+      pf.loop ? "looping this track on this device" : "loop off - moving on when this track ends", "ok");
+  }
+  $("loop").addEventListener("click", function () {
+    buzz();
+    if (pf.active) { pfSetLoop(!pf.loop); return; }
+    act($("loop"), [stateEl, $("steerstatus")], "/loop", "", "toggling the loop…");
+  });
   $("next").addEventListener("click", function () {
     buzz();
     if (pf.active) {
@@ -1202,16 +1225,16 @@
   function msAction(action) {
     switch (action) {
       case "play":
-        if (audioSource === "live") { if (!tryResume()) startListening(); } else savedAudio.play();
+        if (mode === "live") { if (!tryResume()) startListening(); } else savedAudio.play();
         break;
       case "pause":
-        if (audioSource === "live") stopListening("stopped"); else savedAudio.pause();
+        if (mode === "live") stopListening("stopped"); else savedAudio.pause();
         break;
       case "stop":
-        if (audioSource === "live") stopListening("stopped"); else savedAudio.pause();
+        if (mode === "live") stopListening("stopped"); else savedAudio.pause();
         break;
       case "nexttrack":
-        if (audioSource === "live") {
+        if (mode === "live") {
           // Same debounce/double-fire guards as the on-page controls.
           if (pf.active) { pfSkip(); return; }
           if (me && me.steer) act($("next"), [stateEl, $("steerstatus")], "/next", "", "skipping…");
@@ -1220,7 +1243,7 @@
         }
         break;
       case "previoustrack":
-        if (audioSource === "live") { if (carSave) carSaveAction(); } else { repeatOne = null; updateLoopState(); step(-1); }
+        if (mode === "live") { if (carSave) carSaveAction(); } else { repeatOne = null; updateLoopState(); step(-1); }
         break;
     }
   }
@@ -1235,7 +1258,7 @@
   // mode, or live mode with the car-save toggle on), so a switched-off
   // toggle removes the dead ⏮ from the car instead of ignoring it.
   function syncPrevAction() {
-    var active = audioSource === "saved" || carSave;
+    var active = mode === "saved" || carSave;
     msHandler("previoustrack", active ? function () { msAction("previoustrack"); } : null);
   }
   syncPrevAction();
@@ -1292,7 +1315,9 @@
       var rec = pf.have[pf.playingId];
       return (rec && rec.lyrics) || "";
     }
-    if (!wantStream && mode === "live") return "";
+    // Not playing this device's own bank: the panel follows the radio
+    // itself. The room's speakers are singing these words right now,
+    // so they show whether or not this device also streams the audio.
     return (s.track && s.track.lyrics) || "";
   }
   function renderLyrics(s) {
@@ -1305,8 +1330,7 @@
     if (!text) {
       var none = document.createElement("span");
       none.className = "empty";
-      none.textContent = !(pf.active || wantStream) ? "press play to follow the words"
-        : s.vocals ? "no words for this track" : "this track has no vocals";
+      none.textContent = s.vocals ? "no words for this track" : "this track has no vocals";
       box.appendChild(none);
       return;
     }
@@ -1733,17 +1757,17 @@
     }).then(function (s) {
       if (!s) return;
       pollFails = 0;
-      $("conn").textContent = "connected";
+      setText($("conn"), "connected");
       var t = s.track;
-      $("now").textContent = (t && (t.title || t.prompt)) || s.source || s.state || "...";
-      $("nowprompt").textContent = (t && t.title && t.prompt) || "";
+      setText($("now"), (t && (t.title || t.prompt)) || s.source || s.state || "...");
+      setText($("nowprompt"), (t && t.title && t.prompt) || "");
       var meta = t && t.number ? "Track " + t.number : "";
       if (t && t.subtitle) meta += (meta ? "  ·  " : "") + t.subtitle;
       if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
-      $("meta").textContent = meta;
+      setText($("meta"), meta);
       var srv = s.session || "";
       srv += (srv ? "  ·  " : "") + (s.ready || s.queued + " ready") + (s.generating ? " · generating" : "");
-      $("srvline").textContent = srv;
+      setText($("srvline"), srv);
       if (!pf.active) updateSeek(null, s.elapsed, s.duration);
       // A pause at the machine is a fact about a room this listener is
       // not in and cannot act on, so it is not mentioned. What is worth
@@ -1751,8 +1775,12 @@
       var phaseText = "";
       if (s.phase) phaseText = s.phase + " (" + s.phase_info + ")";
       else if (s.switching) phaseText = "New setting saved - the first track in it is generating.";
+      else if (s.loop_on) phaseText = pf.active
+        ? "The radio itself is looping its playing track; this device plays its own bank."
+        : "Looping this track until the loop is turned off.";
       else if (s.looping) phaseText = "Replaying the last track while the next one generates.";
-      $("phase").textContent = phaseText;
+      setText($("phase"), phaseText);
+      paintLoop(pf.active ? pf.loop : !!s.loop_on);
       renderSound(s);
       renderLyrics(s);
       renderLyricsGen(s);
@@ -1768,7 +1796,7 @@
       // here; buffered mode plays this device's own track and sets its
       // metadata in pfPlay.
       var changed = false;
-      if (audioSource === "live" && !pf.active) {
+      if (mode === "live" && !pf.active) {
         var artist = t && t.number
           ? "Track " + t.number + (t.subtitle ? " · " + t.subtitle : "")
           : (s.session_desc || s.session || "");
@@ -1787,7 +1815,7 @@
       // One missed poll on mobile data is normal. Saying "disconnected"
       // on the first one and taking it back on the next just strobes.
       pollFails++;
-      if (pollFails >= 3) $("conn").textContent = "disconnected";
+      if (pollFails >= 3) setText($("conn"), "disconnected");
     });
   }
   var pollFails = 0;
@@ -2096,7 +2124,6 @@
   }
 
   function playChunk(c) {
-    setAudioSource("saved");
     current = c;
     savedAudio.src = c.url;
     savedAudio.play().catch(function (e) { $("savednow").textContent = "could not play: " + e.message; });

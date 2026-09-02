@@ -40,6 +40,7 @@ type Controls interface {
 	SetLanguages(names []string) string
 	NewSession(prompt string) string
 	Skip() string
+	ToggleLoop() string
 	SaveSnippet(which, tag string) string
 	NameSession(name string) string
 	LoadByName(name string) string
@@ -263,6 +264,7 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /language", s.apiPerm("steer", permSteer, s.handleLanguage))
 	mux.HandleFunc("POST /languages", s.apiPerm("languages", permAdmin, s.handleLanguages))
 	mux.HandleFunc("POST /next", s.apiPerm("steer", permSteer, s.handleNext))
+	mux.HandleFunc("POST /loop", s.apiPerm("steer", permSteer, s.handleLoop))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
 	// Sessions: listing for everyone; loading changes what everyone
@@ -542,6 +544,9 @@ type stateJSON struct {
 	// anything newer, so the page can say so instead of presenting it
 	// as a fresh track.
 	Looping bool `json:"looping,omitempty"`
+	// LoopOn reports a listener asked the radio to repeat the playing
+	// track, so every client's loop button shows the same state.
+	LoopOn bool `json:"loop_on,omitempty"`
 	// Switching reports a steering or language change whose first fresh
 	// track is still generating.
 	Switching bool `json:"switching,omitempty"`
@@ -652,6 +657,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 		out.Languages = append(out.Languages, langJSON{Name: l.Name, Engine: l.Engine, On: l.On})
 	}
 	out.Looping = st.Looping
+	out.LoopOn = st.LoopOn
 	out.Switching = st.Switching
 	if st.Phase != "" && st.Phase != "playing" {
 		out.Phase = st.Phase
@@ -777,6 +783,12 @@ func (s *Server) handleLanguages(w http.ResponseWriter, r *http.Request, u accou
 func (s *Server) handleNext(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.Skip()
 	s.ctl.Announce("remote skip by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+func (s *Server) handleLoop(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	ack := s.ctl.ToggleLoop()
+	s.ctl.Announce("remote loop by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 
