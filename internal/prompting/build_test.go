@@ -326,8 +326,10 @@ func TestPresetSpecReachesEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := b.BuildSpec(context.Background(), session.FromPreset(drive), 120)
-	if spec.BPM != 108 {
-		t.Fatalf("night-drive bpm = %d; want 108", spec.BPM)
+	// Presets pin no tempo - the model chooses per track, part of what
+	// keeps a station varied - so bpm stays unset here.
+	if spec.BPM != 0 {
+		t.Fatalf("night-drive bpm = %d; want the model's own choice", spec.BPM)
 	}
 	if !strings.Contains(spec.Prompt, "synthwave") {
 		t.Fatalf("night-drive prompt = %q", spec.Prompt)
@@ -338,7 +340,7 @@ func TestPresetSpecReachesEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec = b.BuildSpec(context.Background(), session.FromPreset(nu), 120)
-	if spec.BPM != 100 || spec.VocalLanguage != "en" {
+	if spec.BPM != 0 || spec.VocalLanguage != "en" {
 		t.Fatalf("nu-metal fields: bpm=%d lang=%q", spec.BPM, spec.VocalLanguage)
 	}
 	if !strings.Contains(spec.NegativePrompt, "acoustic guitar") {

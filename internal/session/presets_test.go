@@ -83,15 +83,17 @@ func TestFromPresetCarriesSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Spec == nil || p.Spec.BPM != 100 || p.Spec.VocalLanguage != "en" || len(p.Spec.Negatives) != 2 {
+	// Presets deliberately pin no tempo: the model chooses per track,
+	// which is a large part of what keeps a station's songs varied.
+	if p.Spec == nil || p.Spec.BPM != 0 || p.Spec.VocalLanguage != "en" || len(p.Spec.Negatives) != 2 {
 		t.Fatalf("nu-metal spec = %+v", p.Spec)
 	}
 	s := FromPreset(p)
-	if s.Spec == nil || s.Spec.BPM != 100 {
+	if s.Spec == nil || s.Spec.VocalLanguage != "en" {
 		t.Fatalf("session spec not seeded: %+v", s.Spec)
 	}
 	s.Spec.BPM = 60
-	if p.Spec.BPM != 100 {
+	if p.Spec.BPM != 0 {
 		t.Fatal("mutating the session spec changed the preset (missing clone)")
 	}
 	// A preset without a spec seeds a session with a nil spec.

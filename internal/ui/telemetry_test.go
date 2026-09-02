@@ -80,7 +80,7 @@ func TestTelemetryRowsNamesResidentModels(t *testing.T) {
 	}
 	rows := telemetryRows(s)
 	models := rowText(t, rows, "models")
-	for _, want := range []string{"audio VAE", "644 MiB", "diffusion DiT", "streamed from disk", "engine total 6.00 GiB"} {
+	for _, want := range []string{"audio decoder", "644 MiB", "music generator", "streamed from disk", "engine total 6.00 GiB"} {
 		if !strings.Contains(models, want) {
 			t.Errorf("models row %q is missing %q", models, want)
 		}
