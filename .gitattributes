@@ -6,3 +6,8 @@
 *.md   text
 *.json text
 *.sh   text eol=lf
+
+# git archive (and GitHub's source tarballs) expands this to the
+# version at export time, so tarball builds know what they are without
+# a .git directory.
+.version export-subst

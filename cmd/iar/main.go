@@ -5,14 +5,47 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 
 	"iar/internal/session"
 )
 
-// version is stamped at build time via -ldflags.
+// version is stamped at build time via -ldflags (the Makefile and the
+// release workflow do this). Builds that skip make - go install, a
+// bare go build - fall back to what the Go toolchain recorded.
 var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		version = v
+		return
+	}
+	var rev string
+	dirty := false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if len(rev) >= 12 {
+		version = rev[:12]
+		if dirty {
+			version += "-dirty"
+		}
+	}
+}
 
 // playFlags are shared by the root (play) command.
 type playFlags struct {

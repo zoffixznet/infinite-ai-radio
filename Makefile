@@ -3,7 +3,15 @@
 BINARY  := iar
 GO      ?= go
 PREFIX  ?= $(HOME)/.local
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Version resolution, in order: git (a checkout), the .version file (a
+# source tarball - git archive expands it via export-subst), then dev.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+ifeq ($(VERSION),)
+VERSION := $(shell grep -v '^\$$Format' .version 2>/dev/null)
+endif
+ifeq ($(VERSION),)
+VERSION := dev
+endif
 
 # -trimpath keeps the building machine's paths out of the binary; the
 # version is stamped into the variable cmd/iar/main.go declares for it.
