@@ -42,6 +42,12 @@ type Sample struct {
 	SwapTotal    uint64
 	SwapUsed     uint64
 
+	// CPUUtil is whole-machine processor use over the last sampling
+	// interval, 0-100; -1 until two samples exist to compare. Load1 is
+	// the one-minute load average.
+	CPUUtil int
+	Load1   float64
+
 	// GPUPresent reports whether a graphics card was found. GPUError
 	// carries why not, when something went wrong rather than there
 	// simply being no card.
@@ -97,6 +103,9 @@ type Sampler struct {
 
 	mu  sync.Mutex
 	cur Sample
+	// prevIdle/prevTotal are the last /proc/stat readings, so CPU use
+	// can be computed as a delta between samples.
+	prevIdle, prevTotal uint64
 }
 
 // New returns an unstarted sampler. daemonLog is the engine daemon's
@@ -141,6 +150,7 @@ func (s *Sampler) refresh() {
 	var next Sample
 	next.Taken = time.Now()
 	readMeminfo(&next)
+	s.readCPU(&next)
 	pid := s.enginePID()
 	next.EnginePID = pid
 	readGPU(&next, pid)
@@ -155,6 +165,65 @@ func (s *Sampler) refresh() {
 	s.mu.Lock()
 	s.cur = next
 	s.mu.Unlock()
+}
+
+// readCPU fills in whole-machine processor use from /proc/stat as a
+// delta against the previous sample, and the one-minute load average
+// from /proc/loadavg.
+func (s *Sampler) readCPU(out *Sample) {
+	out.CPUUtil = -1
+	if raw, err := os.ReadFile("/proc/loadavg"); err == nil {
+		if f := strings.Fields(string(raw)); len(f) > 0 {
+			out.Load1, _ = strconv.ParseFloat(f[0], 64)
+		}
+	}
+	raw, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return
+	}
+	line, _, _ := strings.Cut(string(raw), "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return
+	}
+	// Only the first eight value columns (user..steal) are summed:
+	// guest and guest_nice are already counted inside user and nice,
+	// so including them would dilute the busy fraction on a machine
+	// running virtual machines.
+	vals := fields[1:]
+	if len(vals) > 8 {
+		vals = vals[:8]
+	}
+	var idle, total uint64
+	for i, f := range vals {
+		v, err := strconv.ParseUint(f, 10, 64)
+		if err != nil {
+			return
+		}
+		total += v
+		// idle is the 4th column, iowait the 5th; both count as the
+		// machine not working.
+		if i == 3 || i == 4 {
+			idle += v
+		}
+	}
+	prevIdle, prevTotal := s.prevIdle, s.prevTotal
+	s.prevIdle, s.prevTotal = idle, total
+	if prevTotal == 0 || total <= prevTotal {
+		return
+	}
+	// Signed math: iowait can tick backwards, and an unsigned wrap
+	// would read as astronomically busy.
+	totalDelta := int64(total) - int64(prevTotal)
+	idleDelta := int64(idle) - int64(prevIdle)
+	busy := float64(totalDelta-idleDelta) / float64(totalDelta)
+	if busy < 0 {
+		busy = 0
+	}
+	if busy > 1 {
+		busy = 1
+	}
+	out.CPUUtil = int(busy*100 + 0.5)
 }
 
 // readMeminfo fills in the system memory figures from /proc/meminfo.

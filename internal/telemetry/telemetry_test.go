@@ -62,16 +62,16 @@ func TestModelTrackerFollowsLoadsAndOffloads(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want vae and text encoder resident, got %v", names(got))
 	}
-	if got[0].Name != "audio VAE" || got[0].Bytes != 644*1024*1024 {
+	if got[0].Name != "audio decoder" || got[0].Bytes != 644*1024*1024 {
 		t.Errorf("vae recorded as %q %d bytes", got[0].Name, got[0].Bytes)
 	}
-	if got[1].Name != "text encoder" || got[1].Bytes != 1137*1024*1024 {
+	if got[1].Name != "prompt reader" || got[1].Bytes != 1137*1024*1024 {
 		t.Errorf("text encoder recorded as %q %d bytes", got[1].Name, got[1].Bytes)
 	}
 
 	appendLog(`[_load_model_context] Offloading vae to CPU (RSS: 3484 MB)`)
 	got = tr.resident()
-	if len(got) != 1 || got[0].Name != "text encoder" {
+	if len(got) != 1 || got[0].Name != "prompt reader" {
 		t.Fatalf("offloaded vae should be gone, got %v", names(got))
 	}
 }
@@ -88,9 +88,9 @@ func TestModelTrackerDiskDiTAndPlannerLM(t *testing.T) {
 	var dit, lm *Model
 	for i := range got {
 		switch got[i].Name {
-		case "diffusion DiT":
+		case "music generator":
 			dit = &got[i]
-		case "planner LM":
+		case "song planner":
 			lm = &got[i]
 		}
 	}

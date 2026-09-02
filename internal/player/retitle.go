@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"iar/internal/engine"
+	"iar/internal/prompting"
 )
 
 // The helper that names songs can run minutes behind the music on a
@@ -130,15 +131,23 @@ func (o *Orchestrator) retitlePass() {
 		ration = retitleRequestsPerPassIdle
 	}
 	for _, e := range o.Buffer.List(epoch) {
-		if e.Title != "" || e.TitleKey == "" {
+		// Prefer the key the sidecar stored (computed from the words
+		// as submitted); derive from its lyrics otherwise. Either way
+		// requests and lookups use the same key, so old sidecars keep
+		// working.
+		key := e.TitleKey
+		if key == "" {
+			key = prompting.SongKey(e.Lyrics)
+		}
+		if e.Title != "" || key == "" {
 			continue
 		}
 		// Answers are applied without limit; only NEW requests are
 		// rationed.
-		if title, subtitle, ok := o.builder.TitleForKey(e.TitleKey); ok {
+		if title, subtitle, ok := o.builder.TitleForKey(key); ok {
 			if o.Buffer.SetTitle(epoch, e.Base, title, subtitle) {
 				o.log.Info("late title persisted", "event", "title_persisted",
-					"key", e.TitleKey, "title", title)
+					"key", key, "title", title)
 			}
 			continue
 		}
@@ -146,8 +155,7 @@ func (o *Orchestrator) retitlePass() {
 		// key whose cached answer failed validation cannot starve the
 		// entries behind it.
 		if requested < ration &&
-			e.Lyrics != "" && e.Lyrics != engine.InstrumentalLyrics &&
-			o.builder.TitleSongAsync(e.TitleKey, e.Prompt, e.Lyrics) {
+			o.builder.TitleSongAsync(key, e.Prompt, e.Lyrics) {
 			requested++
 		}
 	}

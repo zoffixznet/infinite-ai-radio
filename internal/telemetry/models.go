@@ -126,13 +126,13 @@ func (t *modelTracker) apply(line string) {
 		delete(t.live, "dit")
 		return
 	case strings.Contains(line, "Loaded LLM to cuda"):
-		t.load("llm", "planner LM", 0, false)
+		t.load("llm", "song planner", 0, false)
 		return
 	case strings.Contains(line, "Offloading LLM to"), strings.Contains(line, "Offloaded LLM to"):
 		delete(t.live, "llm")
 		return
 	case strings.Contains(line, "Loaded model from disk to cuda"):
-		t.load("dit", "diffusion DiT", 0, true)
+		t.load("dit", "music generator", 0, true)
 		return
 	}
 
@@ -187,11 +187,14 @@ func (t *modelTracker) load(key, label string, bytes uint64, fromDisk bool) {
 func modelLabel(name string) (key, label string) {
 	switch name {
 	case "vae":
-		return "vae", "audio VAE"
+		// Turns the generator's output codes into listenable audio.
+		return "vae", "audio decoder"
 	case "text_encoder":
-		return "text_encoder", "text encoder"
+		// Reads the style prompt for the generator.
+		return "text_encoder", "prompt reader"
 	case "model":
-		return "dit", "diffusion DiT"
+		// The diffusion transformer that actually makes the music.
+		return "dit", "music generator"
 	}
 	return "", ""
 }

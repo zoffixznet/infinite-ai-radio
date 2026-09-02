@@ -74,8 +74,8 @@ func TestTelemetryRowsNamesResidentModels(t *testing.T) {
 			{PID: 42, Name: "python (src.main)", VRAM: 4 << 30},
 		},
 		Models: []telemetry.Model{
-			{Name: "audio VAE", Bytes: 644 << 20, Since: time.Now()},
-			{Name: "diffusion DiT", Since: time.Now(), FromDisk: true},
+			{Name: "audio decoder", Bytes: 644 << 20, Since: time.Now()},
+			{Name: "music generator", Since: time.Now(), FromDisk: true},
 		},
 	}
 	rows := telemetryRows(s)

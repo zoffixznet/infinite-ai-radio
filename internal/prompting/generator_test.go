@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"iar/internal/session"
@@ -207,10 +208,20 @@ func TestOllamaSkipsSpecialPurposeModels(t *testing.T) {
 // music engine is using it; TestHelperPlacementFollowsTheEngine covers
 // the idle half of the contract.
 func TestChatWithPinsHelperOffTheGPUWhileEngineBusy(t *testing.T) {
+	// The handler runs on server goroutines - SetEngineBusy(true) also
+	// fires an async eviction request - so access is locked and the
+	// message-less eviction request is not recorded.
+	var mu sync.Mutex
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/chat" {
-			json.NewDecoder(r.Body).Decode(&got)
+			var req map[string]any
+			json.NewDecoder(r.Body).Decode(&req)
+			if msgs, _ := req["messages"].([]any); len(msgs) > 0 {
+				mu.Lock()
+				got = req
+				mu.Unlock()
+			}
 			json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": "ok"}})
 			return
 		}
@@ -223,17 +234,23 @@ func TestChatWithPinsHelperOffTheGPUWhileEngineBusy(t *testing.T) {
 	if _, err := o.Chat(context.Background(), "s", "u"); err != nil {
 		t.Fatal(err)
 	}
+	mu.Lock()
 	opts, _ := got["options"].(map[string]any)
+	mu.Unlock()
 	if v, ok := opts["num_gpu"]; !ok || v != float64(0) {
 		t.Fatalf("num_gpu = %v (present=%v); want 0 while the engine is busy", v, ok)
 	}
 
+	mu.Lock()
 	got = nil
+	mu.Unlock()
 	free := NewOllama(srv.URL, "m", -1)
 	if _, err := free.Chat(context.Background(), "s", "u"); err != nil {
 		t.Fatal(err)
 	}
+	mu.Lock()
 	opts, _ = got["options"].(map[string]any)
+	mu.Unlock()
 	if _, ok := opts["num_gpu"]; ok {
 		t.Fatal("num_gpu sent despite gpu_layers=-1; want the daemon left to decide")
 	}

@@ -874,18 +874,18 @@ func TestSavingTheSameLanguagesKeepsTheQueue(t *testing.T) {
 		return len(o.queue) > 0
 	})
 	o.mu.Lock()
-	epoch, queued := o.epoch, len(o.queue)
+	epoch := o.epoch
 	o.mu.Unlock()
 	// Saving an unchanged list must not throw away minutes of audio
-	// that is already generated and still correct. The prefetch loop is
-	// running, so the queue may legitimately have grown in the meantime:
-	// what must not happen is it getting shorter, or the epoch moving.
+	// that is already generated and still correct. Dropping the queue
+	// IS the epoch bump, so an unchanged epoch proves no drop; the
+	// queue's length itself is no signal - the generator grows it and
+	// the mixer consumes from it concurrently throughout.
 	ack := o.SetLanguages([]string{"English", "Russian"})
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.epoch != epoch || len(o.queue) < queued {
-		t.Fatalf("an unchanged list dropped the queue: epoch %d->%d, queued %d->%d",
-			epoch, o.epoch, queued, len(o.queue))
+	if o.epoch != epoch {
+		t.Fatalf("an unchanged list dropped the queue: epoch %d->%d", epoch, o.epoch)
 	}
 	if !strings.Contains(ack, "unchanged") {
 		t.Fatalf("ack = %q", ack)

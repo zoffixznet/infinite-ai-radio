@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -13,6 +14,7 @@ import (
 // num_gpu option of every chat call: the value, and whether it was sent
 // at all.
 type gpuCapture struct {
+	mu   sync.Mutex
 	got  []int
 	sent []bool
 }
@@ -24,16 +26,25 @@ func (g *gpuCapture) server() *httptest.Server {
 	})
 	mux.HandleFunc("/api/chat", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Options map[string]any `json:"options"`
+			Messages []any          `json:"messages"`
+			Options  map[string]any `json:"options"`
 		}
 		json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) == 0 {
+			// The eviction request SetEngineBusy(true) fires; not a
+			// chat call, so not part of what the tests assert on.
+			json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": ""}})
+			return
+		}
 		v, ok := req.Options["num_gpu"]
 		n := -999
 		if ok {
 			n = int(v.(float64))
 		}
+		g.mu.Lock()
 		g.got = append(g.got, n)
 		g.sent = append(g.sent, ok)
+		g.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{
 			"message": map[string]string{"role": "assistant", "content": "OK"},
 		})

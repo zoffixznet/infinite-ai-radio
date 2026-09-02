@@ -67,8 +67,14 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 		// consumes them in the same order.
 		for _, e := range o.Buffer.List(epoch) {
 			title, subtitle := e.Title, e.Subtitle
-			if title == "" && e.TitleKey != "" {
-				title, subtitle, _ = o.builder.TitleForKey(e.TitleKey)
+			if title == "" {
+				key := e.TitleKey
+				if key == "" {
+					key = prompting.SongKey(e.Lyrics)
+				}
+				if key != "" {
+					title, subtitle, _ = o.builder.TitleForKey(key)
+				}
 			}
 			if title == "" {
 				title, subtitle = prompting.TrackTitle(e.Prompt)

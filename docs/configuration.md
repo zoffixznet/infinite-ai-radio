@@ -246,21 +246,27 @@ disk-backing mode).
 
 ## buffer
 
-Phased generation, the default way music is produced: the planner model
-and the audio model never share the graphics card. A cycle wakes the
-engine, plans a batch of songs (planner alone on the card, the audio
-model dropped entirely), renders the batch from the planned audio codes
-(audio model alone, streamed from disk), stores the songs on disk under
-the data directory, and shuts the engine down completely - between
-cycles it holds no video memory and no system memory at all. Playback
-feeds from the disk buffer.
+Phased generation, the default way music is produced: every model gets
+the graphics card in turn, and none of them ever fights another for
+it. A cycle begins before the engine wakes, with the card still free:
+the lyric helper writes the batch's words there and names each song
+from them in the same breath (the wordsmith phase - a few sheets at
+most, one when the buffer is low, and skipped entirely when the engine
+was left warm). Then the engine wakes and plans the batch (planner
+alone on the card, the audio model dropped entirely, the pre-written
+words consumed as-is), renders it from the planned audio codes (audio
+model alone, streamed from disk), stores the songs on disk under the
+data directory, and shuts down completely - between cycles the engine
+holds no video memory and no system memory at all. Playback feeds from
+the disk buffer.
 
 Batch sizes ramp with how settled the steering context is: the first
-song of a fresh context goes through both phases alone (playing about
-as fast as before), the next batch is ten songs, and only after five
-songs play without a steer does the cycle fill to the configured
-depths. A steer drops every stored plan and song and restarts the
-ramp, so trying prompts never wastes deep work.
+song of a fresh context goes through every phase alone - one lyric
+sheet, one plan, one render - so the new sound plays quickly, the next
+batch is ten songs, and only after five songs play without a steer
+does the cycle fill to the configured depths. A steer drops every
+stored plan and song and restarts the ramp, so trying prompts never
+wastes deep work.
 
 - `phased`: turns the split pipeline on (the default). false restores
   the fused path: each track generated in one engine job with the audio

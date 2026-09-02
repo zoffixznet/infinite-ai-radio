@@ -45,8 +45,8 @@ type Builder struct {
 	// when no fresh write finished in time: stale beats
 	// machine-invented). lyrHooks remembers recent hook lines per
 	// context so follow-up writes avoid repeating a chorus.
-	lyrReady map[string][]string
-	lyrLast  map[string]string
+	lyrReady map[string][]StockedLyrics
+	lyrLast  map[string]StockedLyrics
 	lyrHooks map[string][]string
 	usable   bool // set after a successful background probe
 	failures int  // consecutive helper failures
@@ -101,8 +101,8 @@ func NewBuilder(ollama *Ollama, log *slog.Logger) *Builder {
 		log:      log,
 		cache:    map[string]string{},
 		pending:  map[string]bool{},
-		lyrReady: map[string][]string{},
-		lyrLast:  map[string]string{},
+		lyrReady: map[string][]StockedLyrics{},
+		lyrLast:  map[string]StockedLyrics{},
 		lyrHooks: map[string][]string{},
 		runCtx:   context.Background(),
 	}
@@ -182,24 +182,15 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 	// it loses to a configured catalogue, or the list the listener is
 	// editing would quietly do nothing. With neither, the engine sings
 	// in whatever language it likes.
-	lang := Language{Code: r.VocalLanguage, Name: LanguageName(r.VocalLanguage)}
-	if !r.LanguagePinned {
-		switch drawn, ok, configured := b.nextLanguage(s.Languages); {
-		case ok:
-			lang = drawn
-		case configured:
-			// A list exists and every language in it is switched off:
-			// the listener asked for the engine's own choice, not for
-			// whatever language a preset happened to carry.
-			lang = Language{}
-		}
-	}
-	spec.VocalLanguage = lang.Code
-	spec.VocalLanguageName = lang.Name
-	if lyrics := b.buildLyrics(s, r, lang); lyrics != "" {
-		spec.Lyrics = lyrics
+	if st, ok := b.buildLyrics(s, r); ok {
+		spec.Lyrics = st.Text
+		spec.VocalLanguage = st.Lang.Code
+		spec.VocalLanguageName = st.Lang.Name
 		return spec
 	}
+	lang := b.chooseLanguage(s, r)
+	spec.VocalLanguage = lang.Code
+	spec.VocalLanguageName = lang.Name
 	// No lyrics ready: the engine's own planner invents caption and
 	// lyrics from the rendered description (sample mode). The
 	// structured constraints above still apply as user metadata, so
@@ -227,6 +218,95 @@ const maxAvoidHooks = 4
 
 // maxLyricsBytes caps a generator's output defensively.
 const maxLyricsBytes = 4000
+
+// StockLyrics writes lyric sheets ahead for the session's steering
+// context until `want` sit ready or the context ends, returning how
+// many it wrote. It runs synchronously - the caller owns the timing -
+// and is meant for the window when the music engine is hibernated and
+// the helper has the whole graphics card: each sheet is written there
+// in seconds, and its song is named in the same breath. Languages are
+// drawn per sheet exactly as they would be at consumption time.
+func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int, stop func() bool) int {
+	if s == nil || !s.Vocal || !b.helperUsable() {
+		return 0
+	}
+	gen := b.generatorFor(s)
+	r := Render(s)
+	key := b.lyricsKey(gen, s, r)
+	acceptable := b.langAcceptable(s, r)
+	// Sheets in languages no longer wanted are stale steering context:
+	// drop them up front, so they neither count toward the target nor
+	// get sung.
+	b.mu.Lock()
+	kept := b.lyrReady[key][:0]
+	for _, st := range b.lyrReady[key] {
+		if acceptable(st.Lang) {
+			kept = append(kept, st)
+		}
+	}
+	b.lyrReady[key] = kept
+	b.mu.Unlock()
+	wrote := 0
+	for ctx.Err() == nil && b.helperUsable() && (stop == nil || !stop()) {
+		lang := b.chooseLanguage(s, r)
+		b.mu.Lock()
+		have := len(b.lyrReady[key])
+		inFlight := b.pending[key]
+		hooks := append([]string(nil), b.lyrHooks[hooksKey(key, lang)]...)
+		b.mu.Unlock()
+		if have >= want {
+			break
+		}
+		if inFlight {
+			// A background fill from the previous cycle is mid-write;
+			// running a second call against the same helper buys
+			// nothing. Let it land and count it.
+			select {
+			case <-ctx.Done():
+				return wrote
+			case <-time.After(500 * time.Millisecond):
+			}
+			continue
+		}
+		req := LyricsRequest{
+			Style:        r.Caption,
+			Theme:        s.LyricsTheme,
+			Language:     lang.Code,
+			LanguageName: lang.Name,
+			AvoidHooks:   hooks,
+		}
+		callCtx, cancel := context.WithTimeout(ctx, gen.Timeout())
+		out, err := gen.Generate(callCtx, b.ollama, req)
+		cancel()
+		out = strings.TrimSpace(out)
+		if len(out) > maxLyricsBytes {
+			out = out[:maxLyricsBytes]
+		}
+		if err != nil || out == "" {
+			if ctx.Err() != nil {
+				// The phase's own budget ended mid-call; that is the
+				// caller's clock running out, not the helper failing.
+				return wrote
+			}
+			if err == nil {
+				err = fmt.Errorf("%s wrote empty lyrics", gen.Name())
+			}
+			b.noteFailure(err)
+			return wrote
+		}
+		b.noteSuccess()
+		st := StockedLyrics{Lang: lang, Text: out}
+		b.mu.Lock()
+		b.lyrReady[key] = append(b.lyrReady[key], st)
+		b.recordHookLocked(key, st)
+		b.mu.Unlock()
+		b.TitleSongAsync(SongKey(out), r.Caption, out)
+		wrote++
+		b.log.Info("lyrics stocked ahead", "event", "lyrics_stocked",
+			"language", lang.Name, "ready", have+1)
+	}
+	return wrote
+}
 
 // SetLanguages installs the configured vocal-language catalogue. An
 // empty list leaves every track's language to the music engine.
@@ -292,46 +372,146 @@ func (b *Builder) GeneratorName(s *session.Session) string {
 // falls back to the engine's own planner while the first write runs,
 // and when a later write has not finished in time the previous lyrics
 // are reused once more.
-func (b *Builder) buildLyrics(s *session.Session, r Rendered, lang Language) string {
+// StockedLyrics is one written-ahead lyric sheet together with the
+// language it was written in - the language is chosen when the words
+// are written, so a stocked sheet is always usable as-is.
+type StockedLyrics struct {
+	Lang Language
+	Text string
+}
+
+// lyricsKey names a steering context's lyric queue. The language is
+// not part of the key: it travels with each stocked sheet instead.
+func (b *Builder) lyricsKey(gen LyricsGenerator, s *session.Session, r Rendered) string {
+	return "l|" + gen.Name() + "|" + r.Caption + "|" + s.LyricsTheme
+}
+
+// chooseLanguage picks the language the next song is sung in: a
+// steered-in language pins the session, otherwise one of the
+// switched-on languages is drawn at random. A language a preset
+// happens to carry is only a default: it loses to a configured
+// catalogue, or the list the listener is editing would quietly do
+// nothing. With neither, the engine sings in whatever language it
+// likes.
+func (b *Builder) chooseLanguage(s *session.Session, r Rendered) Language {
+	lang := Language{Code: r.VocalLanguage, Name: LanguageName(r.VocalLanguage)}
+	if !r.LanguagePinned {
+		switch drawn, ok, configured := b.nextLanguage(s.Languages); {
+		case ok:
+			lang = drawn
+		case configured:
+			lang = Language{}
+		}
+	}
+	return lang
+}
+
+// langAcceptable returns a predicate for whether a stocked sheet's
+// language is still wanted: a pinned language must match, a configured
+// catalogue must have it switched on, and with neither anything goes.
+func (b *Builder) langAcceptable(s *session.Session, r Rendered) func(Language) bool {
+	if r.LanguagePinned {
+		return func(l Language) bool { return l.Code == r.VocalLanguage }
+	}
+	b.mu.Lock()
+	configured := len(b.languages) > 0
+	enabled := EnabledLanguages(b.languages, s.Languages)
+	b.mu.Unlock()
+	if !configured {
+		return func(Language) bool { return true }
+	}
+	if len(enabled) == 0 {
+		// Every language is switched off: the listener asked for the
+		// engine's own choice, and sheets written under that choice
+		// (an empty language) are exactly what fits.
+		return func(l Language) bool { return l == Language{} }
+	}
+	return func(lang Language) bool {
+		for _, l := range enabled {
+			if l.Code != "" && lang.Code != "" {
+				if l.Code == lang.Code {
+					return true
+				}
+				continue
+			}
+			if l.Name == lang.Name {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func (b *Builder) buildLyrics(s *session.Session, r Rendered) (StockedLyrics, bool) {
 	if !b.helperUsable() {
-		return ""
+		return StockedLyrics{}, false
 	}
 	gen := b.generatorFor(s)
-	key := "l|" + gen.Name() + "|" + r.Caption + "|" + s.LyricsTheme + "|" + lang.Name + "|" + lang.Code
+	key := b.lyricsKey(gen, s, r)
+	acceptable := b.langAcceptable(s, r)
+	var out StockedLyrics
+	got := false
 	b.mu.Lock()
-	var out string
-	if q := b.lyrReady[key]; len(q) > 0 {
-		out = q[0]
-		b.lyrReady[key] = q[1:]
-		b.lyrLast[key] = out
-		if h := hookLine(out); h != "" {
-			hooks := append(b.lyrHooks[key], h)
-			if len(hooks) > maxAvoidHooks {
-				hooks = hooks[len(hooks)-maxAvoidHooks:]
-			}
-			b.lyrHooks[key] = hooks
+	for len(b.lyrReady[key]) > 0 && !got {
+		cand := b.lyrReady[key][0]
+		b.lyrReady[key] = b.lyrReady[key][1:]
+		if acceptable(cand.Lang) {
+			out, got = cand, true
 		}
-	} else {
-		out = b.lyrLast[key]
+		// A sheet in a language no longer wanted is stale steering
+		// context; drop it.
+	}
+	if got {
+		b.lyrLast[key] = out
+		b.recordHookLocked(key, out)
+	} else if last := b.lyrLast[key]; last.Text != "" && acceptable(last.Lang) {
+		// The reused sheet passes the same language rules a fresh one
+		// would; a stale-language leftover falls through to sample
+		// mode instead.
+		out, got = last, true
 	}
 	needFill := len(b.lyrReady[key]) < lyricsReadyTarget
-	req := LyricsRequest{
-		Style:        r.Caption,
-		Theme:        s.LyricsTheme,
-		Language:     lang.Code,
-		LanguageName: lang.Name,
-		AvoidHooks:   append([]string(nil), b.lyrHooks[key]...),
-	}
 	b.mu.Unlock()
 	if needFill {
-		b.fillLyricsAsync(key, gen, req)
+		b.fillLyricsAsync(key, gen, s, r)
 	}
-	return out
+	return out, got
+}
+
+// hooksKey buckets remembered hook lines per language within a
+// steering context, so one language's chorus does not evict another's
+// and a lyric prompt only ever sees its own language's lines.
+func hooksKey(key string, lang Language) string {
+	return key + "|" + lang.Code + "|" + lang.Name
+}
+
+// recordHookLocked remembers a sheet's hook line (b.mu held). Already
+// remembered lines are not re-added, so recording at write time and at
+// consumption time cannot double up.
+func (b *Builder) recordHookLocked(key string, st StockedLyrics) {
+	h := hookLine(st.Text)
+	if h == "" {
+		return
+	}
+	hk := hooksKey(key, st.Lang)
+	for _, have := range b.lyrHooks[hk] {
+		if have == h {
+			return
+		}
+	}
+	hooks := append(b.lyrHooks[hk], h)
+	if len(hooks) > maxAvoidHooks {
+		hooks = hooks[len(hooks)-maxAvoidHooks:]
+	}
+	b.lyrHooks[hk] = hooks
 }
 
 // fillLyricsAsync runs one lyric generator call in the background and
-// queues its result. At most one write per context is in flight.
-func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, req LyricsRequest) {
+// queues its result. At most one write per context is in flight. The
+// language is chosen here, at write time, and the finished words are
+// handed straight to the namer - the helper model is already loaded,
+// so the song's title costs one more short call on the same card.
+func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Session, r Rendered) {
 	b.mu.Lock()
 	if b.pending[key] {
 		b.mu.Unlock()
@@ -340,6 +520,17 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, req LyricsReq
 	b.pending[key] = true
 	runCtx := b.runCtx
 	b.mu.Unlock()
+	lang := b.chooseLanguage(s, r)
+	b.mu.Lock()
+	hooks := append([]string(nil), b.lyrHooks[hooksKey(key, lang)]...)
+	b.mu.Unlock()
+	req := LyricsRequest{
+		Style:        r.Caption,
+		Theme:        s.LyricsTheme,
+		Language:     lang.Code,
+		LanguageName: lang.Name,
+		AvoidHooks:   hooks,
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(runCtx, gen.Timeout())
 		defer cancel()
@@ -357,13 +548,18 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, req LyricsReq
 			if len(b.lyrReady) > 64 {
 				// The steering context changed many times; drop stale
 				// queues wholesale, like the generic cache does.
-				b.lyrReady = map[string][]string{}
-				b.lyrLast = map[string]string{}
+				b.lyrReady = map[string][]StockedLyrics{}
+				b.lyrLast = map[string]StockedLyrics{}
 				b.lyrHooks = map[string][]string{}
 			}
-			b.lyrReady[key] = append(b.lyrReady[key], out)
+			st := StockedLyrics{Lang: lang, Text: out}
+			b.lyrReady[key] = append(b.lyrReady[key], st)
+			b.recordHookLocked(key, st)
 		}
 		b.mu.Unlock()
+		if err == nil && out != "" {
+			b.TitleSongAsync(SongKey(out), r.Caption, out)
+		}
 		if err == nil && out == "" {
 			err = fmt.Errorf("%s wrote empty lyrics", gen.Name())
 		}

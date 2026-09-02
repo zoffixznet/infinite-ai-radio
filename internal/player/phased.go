@@ -8,6 +8,7 @@ import (
 	"iar/internal/audio"
 	"iar/internal/engine"
 	"iar/internal/library"
+	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/trackbuffer"
 )
@@ -262,6 +263,7 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 // warm only when more work is already due.
 func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	pe := o.eng.(phasedEngine)
+	o.wordsmithPhase(ctx)
 	o.setEngineActive(true)
 	defer func() {
 		if ctx.Err() == nil && o.wantCycle(o.syncPhasedState()) {
@@ -330,7 +332,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		if plan.Lyrics != "" && plan.Lyrics != engine.InstrumentalLyrics {
 			// Name the song from its own words, keyed per song - two
 			// songs from the same context must never share a name.
-			o.builder.TitleSongAsync(songTitleKey(epoch, seq), plan.Caption, plan.Lyrics)
+			o.builder.TitleSongAsync(planTitleKey(plan), plan.Caption, plan.Lyrics)
 		}
 		o.log.Info("plan finished", "event", "plan_finished",
 			"elapsed_seconds", time.Since(start).Seconds(), "plan_seconds", plan.Seconds,
@@ -373,12 +375,12 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		if o.cfg.NormalizeLoudness {
 			audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
 		}
-		key := songTitleKey(epoch, seq)
-		// The name was asked for when this song was planned, which can
+		key := planTitleKey(plan)
+		// The name was asked for when the words were written, which can
 		// be hours and a restart ago - the helper's answers live in
-		// memory only. Ask again from the plan's own words; the call is
-		// cached and idempotent, and feed time picks up the answer.
-		if plan.Lyrics != "" && plan.Lyrics != engine.InstrumentalLyrics {
+		// memory only. Ask again; the call is cached and idempotent,
+		// and feed time picks up the answer.
+		if key != "" {
 			o.builder.TitleSongAsync(key, plan.Caption, plan.Lyrics)
 		}
 		o.applySongTitle(track, key)
@@ -492,11 +494,6 @@ func nextCycleStep(s cycleState) cycleStep {
 	return stepDone
 }
 
-// songTitleKey names the helper's title slot for one planned song.
-func songTitleKey(epoch, seq int) string {
-	return fmt.Sprintf("song:%d-%d", epoch, seq)
-}
-
 // applySongTitle sets the song-keyed helper name when it is ready;
 // otherwise the track keeps an empty title for a later resolution
 // attempt (feed time), with the deterministic fallback as last resort.
@@ -553,6 +550,12 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			continue
 		}
 		track.ID = newTrackID()
+		// The sidecar's stored key was computed from the words as
+		// submitted; deriving from the track's lyrics (the engine's
+		// echo) is the fallback for sidecars without one.
+		if titleKey == "" {
+			titleKey = prompting.SongKey(track.Lyrics)
+		}
 		track.TitleKey = titleKey
 		if track.Title == "" && titleKey != "" {
 			// The helper may have finished naming the song after it was
@@ -613,6 +616,77 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		}()
 	}
 }
+
+// planTitleKey names a planned song by its words - the words as
+// submitted when the plan sang our sheet (the wordsmith named that
+// exact text, and an engine that normalizes its echo must not orphan
+// the name), falling back to the engine's echo when the engine invented
+// the words itself.
+func planTitleKey(plan *engine.Plan) string {
+	if l := plan.Spec.Lyrics; l != "" && l != engine.InstrumentalLyrics {
+		return prompting.SongKey(l)
+	}
+	return prompting.SongKey(plan.Lyrics)
+}
+
+// wordsmithMax is how many lyric sheets a cycle writes ahead before
+// waking the engine.
+const wordsmithMax = 4
+
+// wordsmithPhase writes the coming batch's lyrics - and names their
+// songs - while the engine is still hibernated and the helper has the
+// whole graphics card. This is the point of phased generation: every
+// model gets the card in turn, none of them fights another for it. The
+// engine wakes only after the words are on the shelf, so the plan step
+// consumes them instead of falling back to mid-cycle CPU calls. A
+// buffer already near starvation skips the phase: audio first.
+func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
+	if o.engineBusy.Load() {
+		// A stay-warm cycle never gave the card back; writing lyrics
+		// now would fight the engine for it. The next hibernated
+		// wake-up gets the phase.
+		return
+	}
+	epoch, sess := o.snapshotSession()
+	if sess == nil || !sess.Vocal {
+		return
+	}
+	// A fresh context plans a single song first so the listener hears
+	// the new sound quickly; stock exactly what that batch will sing.
+	want := wordsmithMax
+	if _, _, batchCap := o.cycleTargets(epoch); batchCap > 0 && batchCap < want {
+		want = batchCap
+	}
+	o.mu.Lock()
+	buffered := o.bufSeconds
+	o.mu.Unlock()
+	if buffered < float64(starveMinutes)*60 {
+		// Audio first: with the buffer starved - or empty, the most
+		// starved of all - the phase writes a single sheet, so the
+		// first song still gets real words without keeping the engine
+		// waiting for the rest.
+		want = 1
+	}
+	// A steer mid-phase makes the remaining sheets a stale context's;
+	// stop writing them.
+	stale := func() bool {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		return o.epoch != epoch
+	}
+	phaseCtx, cancel := context.WithTimeout(ctx, wordsmithBudget)
+	defer cancel()
+	start := time.Now()
+	if wrote := o.builder.StockLyrics(phaseCtx, sess, want, stale); wrote > 0 {
+		o.log.Info("wordsmith phase wrote the batch's lyrics",
+			"event", "wordsmith_done", "sheets", wrote,
+			"elapsed_seconds", time.Since(start).Seconds())
+	}
+}
+
+// wordsmithBudget bounds the whole wordsmith phase, so a struggling
+// helper can only ever delay the engine's wake-up briefly.
+const wordsmithBudget = 3 * time.Minute
 
 // setGenBusy flips the status flag around one engine job.
 func (o *Orchestrator) setGenBusy(busy bool) {

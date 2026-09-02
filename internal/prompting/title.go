@@ -2,9 +2,13 @@ package prompting
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"unicode"
+
+	"iar/internal/engine"
 )
 
 // This file names tracks for display on lock screens and car displays:
@@ -164,6 +168,20 @@ func lyricExcerpt(lyrics string, n int) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// SongKey names the helper's title slot for one song by its own words:
+// the words exist before the song is planned, rendered, or even
+// sequenced, so the name can be asked for the moment the lyrics are
+// written and found again by anyone who holds the lyrics - the plan,
+// the rendered file, the feeder, or a listing, across restarts and
+// replans alike. Instrumentals have no words and no key.
+func SongKey(lyrics string) string {
+	if lyrics == "" || lyrics == engine.InstrumentalLyrics {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(lyrics))
+	return "song:" + hex.EncodeToString(sum[:8])
 }
 
 // TitleForKey returns the song-keyed name when ready (see

@@ -122,7 +122,7 @@ in the [configuration](docs/configuration.md) picks a different one.
 ./iar --session gym-grind    # resume a saved session
 ./iar --engine noise         # noise only, no GPU needed
 ./iar --remote               # run as a station: remote on, local speakers muted
-./iar --telemetry            # add a memory and graphics-card readout
+./iar --telemetry            # add a CPU, memory and graphics-card readout
 ./iar --plain                # line-based interface (used automatically in pipes)
 ./iar presets                # list the built-in presets
 ./iar doctor                 # check your environment

@@ -23,12 +23,23 @@ func telemetryRows(s *telemetry.Sample) []telemetryRow {
 	if s == nil || s.Taken.IsZero() {
 		return nil
 	}
-	rows := []telemetryRow{ramRow(s), vramRow(s)}
+	rows := []telemetryRow{cpuRow(s), ramRow(s), vramRow(s)}
 	if r, ok := cardRow(s); ok {
 		rows = append(rows, r)
 	}
 	rows = append(rows, modelRow(s))
 	return rows
+}
+
+func cpuRow(s *telemetry.Sample) telemetryRow {
+	r := telemetryRow{Label: "cpu", Frac: -1}
+	if s.CPUUtil < 0 {
+		r.Text = fmt.Sprintf("measuring… · load %.2f", s.Load1)
+		return r
+	}
+	r.Frac = float64(s.CPUUtil) / 100
+	r.Text = fmt.Sprintf("%d%% busy · load %.2f", s.CPUUtil, s.Load1)
+	return r
 }
 
 func ramRow(s *telemetry.Sample) telemetryRow {
