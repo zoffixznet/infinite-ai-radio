@@ -193,6 +193,11 @@ type Orchestrator struct {
 	// render, rendered songs awaiting play). Set before Start; nil (or
 	// buffer.phased=false in the config) selects the fused path.
 	Buffer *trackbuffer.Store
+	// BuildStamp identifies the running binary (its version string).
+	// A disk buffer stamped by a different build is cleared at start:
+	// commits change how songs are made, and a buffer of a fixed bug's
+	// output should not outlive the fix.
+	BuildStamp string
 	// SnippetsDir is where the save command writes captured tracks.
 	SnippetsDir string
 	// Tap, when set before Start, receives the mastered stream at the
@@ -373,6 +378,17 @@ func (o *Orchestrator) Start(ctx context.Context) {
 		o.builder.SetEngineBusy(true)
 	}
 	if o.phasedEnabled() {
+		// A different commit built this buffer: newer builds fix bugs
+		// and change how songs are made, so yesterday's output does
+		// not get to speak for today's binary.
+		if o.BuildStamp != "" && o.Buffer.Build() != o.BuildStamp {
+			if dropped := o.Buffer.DropAll(); dropped > 0 {
+				o.log.Info("buffer from another build cleared",
+					"event", "buffer_build_dropped", "files", dropped,
+					"was", o.Buffer.Build(), "now", o.BuildStamp)
+			}
+			o.Buffer.SetBuild(o.BuildStamp)
+		}
 		// A restart is not a steer. The buffer a previous run left for
 		// this same steering context is hours of finished work; adopt
 		// its epoch (the in-memory counter starts at zero every run)

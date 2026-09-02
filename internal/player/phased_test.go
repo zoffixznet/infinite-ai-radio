@@ -224,13 +224,60 @@ func TestDeepBatchWaitsForProperSongs(t *testing.T) {
 	o.playedInEpoch = 8 // eight songs heard...
 	o.properPlayedInEpoch = 2
 	o.mu.Unlock()
-	if _, _, cap := o.cycleTargets(0); cap != rampSmallBatch {
-		t.Fatalf("batchCap = %d; two proper plays must not unlock the deep batch", cap)
+	if _, _, c := o.cycleTargets(0); c != rampSmallBatch {
+		t.Fatalf("batchCap = %d; two proper plays must not unlock the ladder", c)
 	}
 	o.mu.Lock()
 	o.properPlayedInEpoch = rampStableTracks
 	o.mu.Unlock()
-	if _, _, cap := o.cycleTargets(0); cap != 0 {
-		t.Fatalf("batchCap = %d; five proper plays unlock full depth", cap)
+	if _, _, c := o.cycleTargets(0); c != 20 {
+		t.Fatalf("batchCap = %d; five proper plays unlock the 20-batch", c)
+	}
+}
+
+// The full ladder, rung by rung.
+func TestBatchLadder(t *testing.T) {
+	for _, tc := range []struct{ played, proper, want int }{
+		{0, 0, 1},      // the opener: sound as fast as possible
+		{1, 0, 10},     // audition: written words only
+		{8, 4, 10},     // engine-worded plays do not advance it
+		{9, 5, 20},     // five proper songs unlock the 20-batch
+		{20, 19, 20},   // fifteen songs into the 20-batch...
+		{21, 20, 40},   // ...unlock the 40
+		{50, 54, 40},   // thirty-five into the 40-batch...
+		{56, 55, 80},   // ...unlock the 80
+		{300, 299, 80}, // and 80 is the ceiling, refill after refill
+	} {
+		if got := rampBatchFor(tc.played, tc.proper); got != tc.want {
+			t.Errorf("rampBatchFor(%d, %d) = %d, want %d", tc.played, tc.proper, got, tc.want)
+		}
+	}
+}
+
+// A buffer stamped by another build is cleared wholesale on start: a
+// newer commit may have fixed the very bugs those songs carry.
+func TestAnotherBuildsBufferIsCleared(t *testing.T) {
+	dir := t.TempDir()
+	prev := trackbuffer.New(dir, 0, testLogger())
+	prev.SetBuild("old-commit")
+	prev.SetContext(library.Key(session.New()))
+	track := &engine.Track{Lyrics: "[Verse]\nx", Samples: make([]int16, 9600)}
+	if err := prev.PutTrack(context.Background(), 0, 1, "", track); err != nil {
+		t.Fatal(err)
+	}
+
+	cur := trackbuffer.New(dir, 0, testLogger())
+	if cur.Build() != "old-commit" {
+		t.Fatalf("stored build = %q", cur.Build())
+	}
+	if cur.Build() != "new-commit" {
+		cur.DropAll()
+		cur.SetBuild("new-commit")
+	}
+	if got := len(cur.List(0)); got != 0 {
+		t.Fatalf("%d songs survived a build change", got)
+	}
+	if cur.Build() != "new-commit" {
+		t.Fatalf("build stamp not updated: %q", cur.Build())
 	}
 }

@@ -443,17 +443,12 @@ func (o *Orchestrator) Status() Status {
 		st.BufferedTracks = o.bufTracks
 		st.WordsmithWant = o.wordsmithWantNow
 		st.WordsmithWrote = o.wordsmithWroteNow
-		// Mirror cycleTargets' ramp tiers (inlined: it takes o.mu).
-		switch {
-		case o.playedInEpoch == 0:
-			st.RampBatch = 1
-		case o.properPlayedInEpoch < rampStableTracks:
-			st.RampBatch = rampSmallBatch
-		}
+		st.RampBatch = rampBatchFor(o.playedInEpoch, o.properPlayedInEpoch)
 		st.BufferedSeconds = o.bufSeconds
 		st.PlannedTracks = o.bufPlans
 		st.PlannedSeconds = o.bufPlanSeconds
-		st.BufferTargetSeconds = float64(o.cfg.Buffer.RenderAheadMinutes) * 60
+		// Under the batch ladder the gauge always tracks the batch;
+		// the retired time target is left unset.
 		st.BufferLowSeconds = float64(o.cfg.Buffer.RenderLowMinutes) * 60
 	}
 	if o.Telemetry != nil {

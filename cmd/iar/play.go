@@ -101,6 +101,7 @@ func runPlay(pf playFlags) error {
 	orch.Library = a.library()
 	if a.cfg.Buffer.Phased {
 		orch.Buffer = trackbuffer.New(filepath.Join(a.paths.DataDir, "buffer"), a.cfg.MP3Quality, a.log)
+		orch.BuildStamp = version
 	}
 	if pf.telemetry {
 		// Phased generation's whole point is an empty card between

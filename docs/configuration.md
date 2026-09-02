@@ -266,28 +266,31 @@ data directory, and shuts down completely - between cycles the engine
 holds no video memory and no system memory at all. Playback feeds from
 the disk buffer.
 
-Batch sizes ramp with how settled the steering context is: the first
-song of a fresh context goes through every phase alone - one lyric
-sheet, one plan, one render - so the new sound plays quickly, the next
-batch is ten songs, and only after five songs play without a steer
-does the cycle fill to the configured depths. A steer drops every
-stored plan and song and restarts the ramp, so trying prompts never
-wastes deep work.
+Batch sizes climb a ladder as un-steered listening proves the context
+settled: one opener as fast as possible (engine-invented words
+allowed), a ten-song audition of songs with the writer's own words,
+then batches of 20, 40 and 80 - the ceiling; each refill from there is
+another 80-song batch. The rungs unlock on played songs that carried
+written words, so the audition is of the quality the deep batches will
+have. A cycle renders everything it plans and hibernates; the next
+batch starts when the rendered buffer runs down to `render_low_minutes`
+of audio left. A steer drops every stored plan and song and restarts
+the ladder, so trying prompts never wastes deep work - but a restart
+of the player does not: the buffer carries a context and a build
+stamp, continues across restarts of the same binary, and is cleared
+when a different build takes over (a newer commit may have fixed the
+very bugs its songs were rendered with). `iar buffer clear` resets it
+by hand.
 
 - `phased`: turns the split pipeline on (the default). false restores
   the fused path: each track generated in one engine job with the audio
   model resident the whole time.
-- `plan_ahead_minutes` (10 or more): how much audio the planner writes ahead at full
-  depth. Plans are small text files; planning is the cheap-memory
-  phase, so this is deep by default (6 hours).
-- `render_ahead_minutes` (10 or more, never deeper than
-  `plan_ahead_minutes`): how much rendered audio is kept on disk ahead
-  of playback (2 hours by default, roughly 250 MB of MP3). Rendering is
-  what a steer throws away, so it stays shallower than the plans.
-- `render_low_minutes` (5 or more, and at least 5 below
-  `render_ahead_minutes`): the refill trigger; when the rendered buffer
-  drops below this, the engine wakes for another cycle. Values outside
-  these ranges are clamped to them at load.
+- `plan_ahead_minutes`, `render_ahead_minutes`: retired. The batch
+  ladder decides how much is planned and rendered; the keys are
+  accepted for compatibility and ignored.
+- `render_low_minutes` (5 or more): the refill trigger; when the
+  rendered buffer runs down to this much audio left, the next batch
+  starts. Out-of-range values are clamped at load.
 
 ## ollama
 

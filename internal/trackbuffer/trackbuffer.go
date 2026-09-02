@@ -447,6 +447,29 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string
 	}
 }
 
+// Build reads the build stamp of the binary that last owned the
+// buffer; SetBuild records this binary's. A buffer made by another
+// commit is treated as suspect wholesale - a newer build may have
+// fixed the very bugs its songs were rendered with.
+func (s *Store) Build() string {
+	raw, err := os.ReadFile(filepath.Join(s.dir, "build"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// SetBuild records the running binary's build stamp.
+func (s *Store) SetBuild(v string) {
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return
+	}
+	tmp := filepath.Join(s.dir, ".build.tmp")
+	if os.WriteFile(tmp, []byte(v+"\n"), 0o644) == nil {
+		os.Rename(tmp, filepath.Join(s.dir, "build"))
+	}
+}
+
 // DiskEpoch reports the highest epoch present among stored plans and
 // songs, so a fresh process - whose in-memory epoch starts at zero -
 // can adopt the buffer a previous run left behind instead of treating

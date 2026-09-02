@@ -91,6 +91,9 @@ type Buffer struct {
 	// generates each track in one fused engine job, holding the audio
 	// model resident the whole time (the pre-buffer behavior).
 	Phased bool `json:"phased"`
+	// PlanAheadMinutes and RenderAheadMinutes are retired: the batch
+	// ladder decides how much is planned and rendered. The fields are
+	// kept so existing configuration files still load.
 	// PlanAheadMinutes is how much audio the planner writes ahead once
 	// the steering context is stable. Plans are small JSON files;
 	// planning is the cheap-memory phase, so this can be deep.
