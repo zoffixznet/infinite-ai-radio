@@ -447,6 +447,30 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string
 	}
 }
 
+// DiskEpoch reports the highest epoch present among stored plans and
+// songs, so a fresh process - whose in-memory epoch starts at zero -
+// can adopt the buffer a previous run left behind instead of treating
+// it as another context's.
+func (s *Store) DiskEpoch() (int, bool) {
+	best, found := 0, false
+	for _, dir := range []string{s.plansDir(), s.tracksDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			base := strings.TrimSuffix(name, filepath.Ext(name))
+			if epoch, _, ok := parseName(base); ok {
+				if !found || epoch > best {
+					best, found = epoch, true
+				}
+			}
+		}
+	}
+	return best, found
+}
+
 // SetTitle writes a late-resolved name into a rendered song's metadata,
 // so listings and later runs show it, reporting whether it wrote. A
 // song fed or dropped since it was listed is not an error: the write is

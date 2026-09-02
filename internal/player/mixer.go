@@ -178,8 +178,15 @@ func (o *Orchestrator) chooseNext(cur source) source {
 		t := o.queue[0]
 		o.queue = o.queue[1:]
 		// The ramp's stability count means songs the listener actually
-		// started hearing, not songs staged into the prefetch.
+		// started hearing, not songs staged into the prefetch - and
+		// the deep batch unlocks on songs with the writer's own words
+		// (or instrumentals, which have none to write): the audition
+		// must be of the songs the deep batch will actually sound
+		// like, not of the quick engine-worded openers.
 		o.playedInEpoch++
+		if t.Spec.Lyrics != "" {
+			o.properPlayedInEpoch++
+		}
 		defer o.kickGen()
 		return newTrackSource(t, summarize(t))
 	}

@@ -278,6 +278,10 @@ type Orchestrator struct {
 	// library copy lives (track ID -> key and library id), so a late
 	// name reaches the banked sidecar too. Pruned as tracks retire.
 	bankRefs map[string]bankRef
+	// properPlayedInEpoch counts played songs that carried written
+	// words (or were instrumental); the deep batch unlocks on these,
+	// not on the engine-worded openers a cold start may serve first.
+	properPlayedInEpoch int
 	// wordsmithWantNow/wordsmithWroteNow mirror the running wordsmith
 	// round for the status display.
 	wordsmithWantNow, wordsmithWroteNow int
@@ -369,6 +373,13 @@ func (o *Orchestrator) Start(ctx context.Context) {
 		o.builder.SetEngineBusy(true)
 	}
 	if o.phasedEnabled() {
+		// A restart is not a steer. The buffer a previous run left for
+		// this same steering context is hours of finished work; adopt
+		// its epoch (the in-memory counter starts at zero every run)
+		// so playback continues from it instead of planning the world
+		// again. Only a prompt, a steer or a language change resets
+		// generation.
+		o.adoptDiskBuffer()
 		// A backlog from before sheet reuse was capped can hold dozens
 		// of plans and songs singing identical words; sweep it once so
 		// the cap holds for what is already on disk too.

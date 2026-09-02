@@ -87,6 +87,7 @@ Built-in presets (start with --preset, list with 'iar presets'):
 		presetsCommand(),
 		doctorCommand(),
 		engineCommand(),
+		bufferCommand(),
 		remoteCommand(),
 		versionCommand(),
 	)

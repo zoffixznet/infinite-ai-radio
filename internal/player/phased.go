@@ -34,6 +34,9 @@ const (
 	phasedPrefetch = 2
 	// rampSmallBatch is the batch size after the first track lands.
 	rampSmallBatch = 10
+	// lyricEmergencySeconds is the buffer level below which keeping
+	// sound coming outranks waiting for the writer.
+	lyricEmergencySeconds = 180
 	// rampStableTracks is how many tracks must play in a context before
 	// the cycle goes to the full configured depth.
 	rampStableTracks = 5
@@ -66,6 +69,33 @@ func (o *Orchestrator) phasedEnabled() bool {
 	return ok
 }
 
+// adoptDiskBuffer continues from the buffer a previous run left
+// behind: when the stored context matches the session's, the highest
+// epoch on disk becomes this run's, and stray older epochs are
+// dropped. Run before the loops start, so the first sync sees a
+// matching world.
+func (o *Orchestrator) adoptDiskBuffer() {
+	_, sess := o.snapshotSession()
+	if sess == nil || o.Buffer.Context() != library.Key(sess) {
+		return
+	}
+	de, ok := o.Buffer.DiskEpoch()
+	if !ok {
+		return
+	}
+	o.mu.Lock()
+	o.epoch = de
+	o.phasedEpoch = de
+	o.mu.Unlock()
+	if dropped := o.Buffer.DropOtherEpochs(de); dropped > 0 {
+		o.log.Info("older epochs cleared while adopting the buffer",
+			"event", "buffer_adopt_cleared", "files", dropped)
+	}
+	tracks, secs := o.Buffer.TrackStats(de)
+	o.log.Info("buffer adopted from the previous run", "event", "buffer_adopted",
+		"epoch", de, "songs", tracks, "seconds", secs)
+}
+
 // syncPhasedState aligns the on-disk buffer with what the radio is
 // actually playing. Two identities are checked: the steering-context
 // key (which survives restarts - a buffer written for another session
@@ -82,6 +112,7 @@ func (o *Orchestrator) syncPhasedState() int {
 	if changed {
 		o.phasedEpoch = epoch
 		o.playedInEpoch = 0
+		o.properPlayedInEpoch = 0
 		o.phasedSeq = 0
 	}
 	o.mu.Unlock()
@@ -173,6 +204,7 @@ func (o *Orchestrator) bufferedSeconds(epoch int) float64 {
 func (o *Orchestrator) cycleTargets(epoch int) (planSecs, renderSecs float64, batchCap int) {
 	o.mu.Lock()
 	played := o.playedInEpoch
+	proper := o.properPlayedInEpoch
 	o.mu.Unlock()
 	full := float64(o.cfg.Buffer.PlanAheadMinutes) * 60
 	render := float64(o.cfg.Buffer.RenderAheadMinutes) * 60
@@ -181,7 +213,11 @@ func (o *Orchestrator) cycleTargets(epoch int) (planSecs, renderSecs float64, ba
 		// A fresh context: one song through both phases, playing as
 		// soon as possible; the listener may be about to steer again.
 		return 0, 0, 1
-	case played < rampStableTracks:
+	case proper < rampStableTracks:
+		// The audition batch: written words only. The deep batch
+		// unlocks on the listener sitting through five songs of the
+		// quality the deep batch will have - engine-worded openers
+		// prove nothing about that.
 		return 0, 0, rampSmallBatch
 	default:
 		return full, render, 0
@@ -445,10 +481,15 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			ok = renderOne()
 		case stepPlan:
 			_, sess := o.snapshotSession()
-			// Below the starve floor, audio beats authorship: the next
-			// song may take engine-invented words rather than keep the
-			// speakers waiting on the writer.
-			if buffered >= starve && o.builder.AwaitingLyrics(sess) {
+			// Engine-invented words are allowed only for the opener
+			// (nothing has played yet and the speakers want sound) or
+			// in a true emergency; past that, every song waits for the
+			// writer - the audition batch especially.
+			o.mu.Lock()
+			playedNow := o.playedInEpoch
+			o.mu.Unlock()
+			fallbackOK := playedNow == 0 || buffered < lyricEmergencySeconds
+			if !fallbackOK && o.builder.AwaitingLyrics(sess) {
 				// The writer has no words ready for the next song, and
 				// planning past the writer is what turns a station
 				// into one song in a hundred costumes. Planning stops
@@ -712,12 +753,14 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 		return
 	}
 	want := o.wordsmithWant(epoch)
+	o.mu.Lock()
+	playedNow := o.playedInEpoch
+	o.mu.Unlock()
 	buffered := o.bufferedSeconds(epoch)
-	if buffered < float64(starveMinutes)*60 {
-		// Audio first: with the buffer starved - or empty, the most
-		// starved of all - the phase writes a single sheet, so the
-		// first song still gets real words without keeping the engine
-		// waiting for the rest.
+	if playedNow == 0 || buffered < lyricEmergencySeconds {
+		// The opener, or a true emergency: write a single sheet so the
+		// next song still gets real words without keeping the
+		// speakers waiting on a whole shelf.
 		want = 1
 	}
 	if want <= 0 {
@@ -732,7 +775,7 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 	// planning nothing, forever. The writer resumes on the next
 	// hibernation, so a deep batch is covered across rounds, all of
 	// them on the card.
-	floor := float64(starveMinutes) * 60
+	floor := float64(lyricEmergencySeconds)
 	var lastBuffered float64
 	var lastCheck time.Time
 	stop := func(wrote int) bool {

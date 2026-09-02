@@ -447,7 +447,7 @@ func (o *Orchestrator) Status() Status {
 		switch {
 		case o.playedInEpoch == 0:
 			st.RampBatch = 1
-		case o.playedInEpoch < rampStableTracks:
+		case o.properPlayedInEpoch < rampStableTracks:
 			st.RampBatch = rampSmallBatch
 		}
 		st.BufferedSeconds = o.bufSeconds
