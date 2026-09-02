@@ -631,7 +631,7 @@ func planTitleKey(plan *engine.Plan) string {
 
 // wordsmithMax is how many lyric sheets a cycle writes ahead before
 // waking the engine.
-const wordsmithMax = 4
+const wordsmithMax = 8
 
 // wordsmithPhase writes the coming batch's lyrics - and names their
 // songs - while the engine is still hibernated and the helper has the

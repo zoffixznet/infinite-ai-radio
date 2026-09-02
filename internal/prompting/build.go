@@ -47,9 +47,12 @@ type Builder struct {
 	// context so follow-up writes avoid repeating a chorus.
 	lyrReady map[string][]StockedLyrics
 	lyrLast  map[string]StockedLyrics
-	lyrHooks map[string][]string
-	usable   bool // set after a successful background probe
-	failures int  // consecutive helper failures
+	// lyrLastUses counts how many songs the lyrLast sheet has been
+	// given to, so reuse stays a hiccup-bridge and never a habit.
+	lyrLastUses map[string]int
+	lyrHooks    map[string][]string
+	usable      bool // set after a successful background probe
+	failures    int  // consecutive helper failures
 	// restAfter is when the helper may be consulted again. A run of
 	// failures rests the helper rather than retiring it: the graphics
 	// card is shared, and a model that timed out while something else
@@ -97,14 +100,15 @@ func NewBuilder(ollama *Ollama, log *slog.Logger) *Builder {
 		log = slog.Default()
 	}
 	return &Builder{
-		ollama:   ollama,
-		log:      log,
-		cache:    map[string]string{},
-		pending:  map[string]bool{},
-		lyrReady: map[string][]StockedLyrics{},
-		lyrLast:  map[string]StockedLyrics{},
-		lyrHooks: map[string][]string{},
-		runCtx:   context.Background(),
+		ollama:      ollama,
+		log:         log,
+		cache:       map[string]string{},
+		pending:     map[string]bool{},
+		lyrReady:    map[string][]StockedLyrics{},
+		lyrLast:     map[string]StockedLyrics{},
+		lyrLastUses: map[string]int{},
+		lyrHooks:    map[string][]string{},
+		runCtx:      context.Background(),
 	}
 }
 
@@ -212,6 +216,11 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 // lyricsReadyTarget is how many unused lyric sheets the builder keeps
 // written ahead per steering context.
 const lyricsReadyTarget = 1
+
+// maxSheetReuse is how many extra songs the last consumed sheet may be
+// given to when no fresh sheet is ready: each sheet is sung at most
+// twice in total.
+const maxSheetReuse = 1
 
 // maxAvoidHooks caps the remembered hook lines per steering context.
 const maxAvoidHooks = 4
@@ -463,11 +472,17 @@ func (b *Builder) buildLyrics(s *session.Session, r Rendered) (StockedLyrics, bo
 	}
 	if got {
 		b.lyrLast[key] = out
+		b.lyrLastUses[key] = 1
 		b.recordHookLocked(key, out)
-	} else if last := b.lyrLast[key]; last.Text != "" && acceptable(last.Lang) {
-		// The reused sheet passes the same language rules a fresh one
-		// would; a stale-language leftover falls through to sample
-		// mode instead.
+	} else if last := b.lyrLast[key]; last.Text != "" && acceptable(last.Lang) &&
+		b.lyrLastUses[key] <= maxSheetReuse {
+		// Reuse bridges a helper hiccup - once. A batch that outruns
+		// the supply of fresh sheets falls through to sample mode,
+		// where the engine invents different words for every song;
+		// endless re-renders of one sheet is what made a whole day of
+		// radio sound like the same song. The reused sheet also obeys
+		// the same language rules a fresh one would.
+		b.lyrLastUses[key]++
 		out, got = last, true
 	}
 	needFill := len(b.lyrReady[key]) < lyricsReadyTarget
@@ -550,6 +565,7 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Se
 				// queues wholesale, like the generic cache does.
 				b.lyrReady = map[string][]StockedLyrics{}
 				b.lyrLast = map[string]StockedLyrics{}
+				b.lyrLastUses = map[string]int{}
 				b.lyrHooks = map[string][]string{}
 			}
 			st := StockedLyrics{Lang: lang, Text: out}

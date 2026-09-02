@@ -119,3 +119,39 @@ func TestSongKeyProperties(t *testing.T) {
 		t.Fatal("instrumentals must have no key")
 	}
 }
+
+// The regression this guards against, measured on a live machine: 16 of
+// 16 rendered songs singing one identical sheet, because deep planning
+// outran a slow helper and the reuse fallback had no limit. A sheet may
+// bridge one hiccup; after that the batch falls to sample mode, where
+// the engine invents different words for every song.
+func TestASheetIsSungAtMostTwice(t *testing.T) {
+	f := &fakeOllama{
+		reply:    "[Verse]\nsteel in the water\n\n[Chorus]\nhold the line",
+		maxFills: 1, // the helper writes exactly one sheet, then drought
+	}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	s := wordsmithSession()
+
+	if wrote := b.StockLyrics(context.Background(), s, 1, nil); wrote != 1 {
+		t.Fatalf("wrote %d", wrote)
+	}
+
+	first := b.BuildSpec(context.Background(), s, 150)
+	if first.Lyrics != f.reply {
+		t.Fatalf("first song should sing the stocked sheet")
+	}
+	second := b.BuildSpec(context.Background(), s, 150)
+	if second.Lyrics != f.reply {
+		t.Fatalf("one reuse bridges the hiccup: %q", second.Lyrics)
+	}
+	third := b.BuildSpec(context.Background(), s, 150)
+	if third.Lyrics == f.reply {
+		t.Fatal("a third song must not sing the same sheet again")
+	}
+	if third.SampleQuery == "" {
+		t.Fatal("past the reuse cap the engine invents the words (sample mode)")
+	}
+}
