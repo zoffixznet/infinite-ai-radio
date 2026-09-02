@@ -33,6 +33,16 @@
     <div class="nowblock">
       <div id="now">&hellip;</div>
       <div id="meta"></div>
+      <div class="seekrow" id="seekrow">
+        <span class="seektime" id="seeknow">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Song position">
+        <span class="seektime" id="seekdur">0:00</span>
+      </div>
+      <div id="srvline" class="srvline"></div>
+      <div id="devrow" class="devrow" hidden>
+        <span id="devbank"></span>
+        <button class="chip tap" id="jumplive" type="button">Skip to the live edge</button>
+      </div>
       <div id="phase"></div>
     </div>
 
@@ -153,9 +163,10 @@
       <p class="settingnote">Downloads whole tracks ahead of time, so a dead zone does not interrupt the music.</p>
       <div class="row" id="bufopts" hidden>
         <select id="buflevel" aria-label="How much to buffer">
-          <option value="eco">Economical (least data)</option>
-          <option value="auto">Automatic</option>
-          <option value="max">Maximum (~45 min banked)</option>
+          <option value="eco">Economical &mdash; one song ahead (~3 min), least data</option>
+          <option value="auto">Automatic &mdash; a couple ahead on cellular, ~15&ndash;20 min on Wi&#8209;Fi</option>
+          <option value="steady">Steady &mdash; about 20 min banked</option>
+          <option value="max">Maximum &mdash; about 45 min banked</option>
         </select>
       </div>
       <p class="settingnote" id="bufmins"></p>

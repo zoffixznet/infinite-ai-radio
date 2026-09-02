@@ -444,6 +444,7 @@ func (o *Orchestrator) Status() Status {
 		st.WordsmithWant = o.wordsmithWantNow
 		st.WordsmithWrote = o.wordsmithWroteNow
 		st.RampBatch = rampBatchFor(o.playedInEpoch, o.properPlayedInEpoch)
+		st.BatchRendered = o.batchRenderedNow
 		st.BufferedSeconds = o.bufSeconds
 		st.PlannedTracks = o.bufPlans
 		st.PlannedSeconds = o.bufPlanSeconds

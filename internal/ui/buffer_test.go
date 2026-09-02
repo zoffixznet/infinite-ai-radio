@@ -32,7 +32,7 @@ func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 		t.Errorf("ready line still reports the prefetch: %q", ready)
 	}
 
-	frac, text, ok := bufferGauge(st)
+	frac, _, text, ok := bufferGauge(st)
 	if !ok {
 		t.Fatal("phased status produced no gauge")
 	}
@@ -66,12 +66,12 @@ func TestBufferFusedPathUnchanged(t *testing.T) {
 	if got := bufferReady(st); got != "3 track(s) ready" {
 		t.Errorf("ready line reads %q", got)
 	}
-	frac, text, ok := bufferGauge(st)
+	frac, _, text, ok := bufferGauge(st)
 	if !ok || text != "3/6 buffered" || frac != 0.5 {
 		t.Errorf("gauge = %.2f, %q, %v", frac, text, ok)
 	}
 	// No target means nothing to draw.
-	if _, _, ok := bufferGauge(player.Status{}); ok {
+	if _, _, _, ok := bufferGauge(player.Status{}); ok {
 		t.Error("a zero target should produce no gauge")
 	}
 }

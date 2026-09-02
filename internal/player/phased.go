@@ -310,6 +310,10 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	// defer hands the card back to the wordsmith instead of staying
 	// warm.
 	lyricStarved := false
+	// A fresh batch cycle: the gauge's rendered-count starts over.
+	o.mu.Lock()
+	o.batchRenderedNow = 0
+	o.mu.Unlock()
 	o.setEngineActive(true)
 	defer func() {
 		if o.exportingNow() {
@@ -450,6 +454,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		elapsed := time.Since(start)
 		o.mu.Lock()
 		o.genCount++
+		o.batchRenderedNow++
 		o.lastGen = elapsed
 		delete(o.renderFails, seq)
 		o.mu.Unlock()

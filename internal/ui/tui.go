@@ -378,9 +378,9 @@ func (m *tuiModel) renderChrome() string {
 		genLine += m.bar(0, barWidth) + " " + s.muted.Render(clip(genIdle(st), m.textRoom()))
 	}
 	b.WriteString(genLine + "\n")
-	if frac, text, ok := bufferGauge(st); ok {
+	if frac, consumed, text, ok := bufferGauge(st); ok {
 		b.WriteString(s.label.Render(fmt.Sprintf("%-8s", "buffer")) +
-			m.bar(frac, barWidth) + " " + s.value.Render(clip(text, m.textRoom())) + "\n")
+			m.splitBar(consumed, frac, barWidth) + " " + s.value.Render(clip(text, m.textRoom())) + "\n")
 	}
 
 	// Resource telemetry, when the radio was started with --telemetry:

@@ -60,15 +60,16 @@ func genIdle(st player.Status) string {
 	return "idle"
 }
 
-// bufferGauge describes the buffer for the status bar: how full it is
-// against the depth the cycle aims for, and the line beside the bar.
-// ok is false when there is nothing meaningful to draw.
-func bufferGauge(st player.Status) (frac float64, text string, ok bool) {
+// bufferGauge describes the buffer for the status bar: how much of the
+// batch is rendered (the bar), how much of that is already played (the
+// bar's leading own-color share), and the line beside it. ok is false
+// when there is nothing meaningful to draw.
+func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool) {
 	if !st.Phased {
 		if st.BufferTarget <= 0 {
-			return 0, "", false
+			return 0, 0, "", false
 		}
-		return float64(st.Queued) / float64(st.BufferTarget),
+		return float64(st.Queued) / float64(st.BufferTarget), 0,
 			fmt.Sprintf("%d/%d buffered", st.Queued, st.BufferTarget), true
 	}
 	// Songs are the exact number; spans of time are how long those
@@ -76,16 +77,18 @@ func bufferGauge(st player.Status) (frac float64, text string, ok bool) {
 	// ramp stage is filling: a batch of N songs early on, the
 	// configured depth of audio once steering settles.
 	if st.RampBatch > 0 {
-		done := st.BufferedTracks
-		if done > st.RampBatch {
-			done = st.RampBatch
-		}
-		frac = float64(done) / float64(st.RampBatch)
-		text = fmt.Sprintf("%d of %d songs this batch", done, st.RampBatch)
+		toPlay := st.BufferedTracks + st.Queued
+		rendered := st.BatchRendered
+		text = fmt.Sprintf("%d of %d songs rendered · %d to play",
+			rendered, st.RampBatch, toPlay)
 		if st.PlannedTracks > 0 {
 			text += fmt.Sprintf(" · %d planned", st.PlannedTracks)
 		}
-		return frac, text, true
+		frac = float64(rendered) / float64(st.RampBatch)
+		if eaten := rendered - toPlay; eaten > 0 {
+			consumed = float64(eaten) / float64(st.RampBatch)
+		}
+		return frac, consumed, text, true
 	}
 	if st.BufferTargetSeconds > 0 {
 		frac = st.BufferedSeconds / st.BufferTargetSeconds
@@ -104,7 +107,7 @@ func bufferGauge(st player.Status) (frac float64, text string, ok bool) {
 	if st.BufferLowSeconds > 0 {
 		text += fmt.Sprintf(" · next batch when %s left", fmtSpan(st.BufferLowSeconds))
 	}
-	return frac, text, true
+	return frac, 0, text, true
 }
 
 // fmtSpan writes a stretch of audio the way a listener thinks about it:

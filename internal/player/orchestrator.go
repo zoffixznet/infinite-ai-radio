@@ -92,6 +92,10 @@ type Status struct {
 	// batch's words. Zero when no round is running.
 	WordsmithWant  int
 	WordsmithWrote int
+	// BatchRendered counts songs rendered by the current (or latest)
+	// batch cycle, so the gauge can say "rendered 40 · 23 to play"
+	// instead of an ambiguous count.
+	BatchRendered int
 	// RampBatch is the song count the current ramp stage renders per
 	// batch (1 for a fresh context, the small batch while steering
 	// settles); 0 once cycles fill to the configured depths.
@@ -287,6 +291,8 @@ type Orchestrator struct {
 	// words (or were instrumental); the deep batch unlocks on these,
 	// not on the engine-worded openers a cold start may serve first.
 	properPlayedInEpoch int
+	// batchRenderedNow counts renders in the current batch cycle.
+	batchRenderedNow int
 	// wordsmithWantNow/wordsmithWroteNow mirror the running wordsmith
 	// round for the status display.
 	wordsmithWantNow, wordsmithWroteNow int

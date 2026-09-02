@@ -263,7 +263,7 @@ func statusText(st player.Status) string {
 		}
 	}
 	fmt.Fprintf(&b, "engine:   %s\n", engine)
-	if _, text, ok := bufferGauge(st); ok {
+	if _, _, text, ok := bufferGauge(st); ok {
 		fmt.Fprintf(&b, "buffer:   %s, generating: %v\n", text, st.Generating)
 	}
 	for _, row := range telemetryRows(st.Telemetry) {

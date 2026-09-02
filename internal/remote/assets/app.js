@@ -488,7 +488,7 @@
         lastAdvance = Date.now();
         retryDelay = 500;
         attempts = 0;
-        streamState("playing · " + Math.floor(t) + "s", "good");
+        streamState("playing the live stream · " + Math.floor(t) + "s", "good");
       } else if (Date.now() - lastAdvance > 8000) {
         streamFailed("no audio arriving");
       }
@@ -539,7 +539,7 @@
   // Buffering level (per device): how far ahead to download and how
   // many finished tracks to keep banked.
   var bufLevel = store.get("iar.buflevel", "auto");
-  if (bufLevel !== "eco" && bufLevel !== "max") bufLevel = "auto";
+  if (bufLevel !== "eco" && bufLevel !== "max" && bufLevel !== "steady") bufLevel = "auto";
 
   function idbOpen() {
     return new Promise(function (resolve, reject) {
@@ -561,6 +561,7 @@
 
   function pfDepth() {
     if (bufLevel === "eco") return 1;
+    if (bufLevel === "steady") return 3;
     if (bufLevel === "max") return 16;
     var c = navigator.connection;
     if (c && c.type === "wifi" && !c.saveData) return 5;
@@ -570,6 +571,7 @@
   // pfStoreCap bounds the banked tracks on this device.
   function pfStoreCap() {
     if (bufLevel === "eco") return 4;
+    if (bufLevel === "steady") return 8; // ~20 min at default track length
     if (bufLevel === "max") return 18; // ~45 min at default track length
     return 8;
   }
@@ -582,10 +584,16 @@
   }
 
   function pfShowMinutes() {
-    var el = $("bufmins");
-    if (!el) return;
     var n = Object.keys(pf.have).length;
-    el.textContent = n ? "~" + pfMinutes() + " min banked on this device" : "";
+    var el = $("bufmins");
+    if (el) el.textContent = n ? "~" + pfMinutes() + " min banked on this device" : "";
+    var row = $("devrow");
+    if (!row) return;
+    row.hidden = !pf.active;
+    if (!pf.active) return;
+    var note = n + " song" + (n === 1 ? "" : "s") + " on this device (~" + pfMinutes() + " min)";
+    if (pf.wrapped) note += " · replaying earlier songs, nothing new yet";
+    $("devbank").textContent = note;
   }
 
   function pfState(text, cls) { if (pf.active) streamState(text, cls); }
@@ -897,6 +905,42 @@
     return pf.els[i];
   }
 
+  // ---- the seek row -----------------------------------------------
+  // A buffered song is a whole local file: the slider seeks it. The
+  // direct live stream has no rewind, so its row is grayed and only
+  // shows the machine's clock.
+  function fmtClock(secs) {
+    if (!isFinite(secs) || secs < 0) secs = 0;
+    var m = Math.floor(secs / 60), sec = Math.floor(secs % 60);
+    return m + ":" + (sec < 10 ? "0" : "") + sec;
+  }
+  var seekDragging = false;
+  function updateSeek(el, elapsedText, durationText) {
+    var row = $("seekrow");
+    if (!row) return;
+    if (el) {
+      row.classList.remove("disabled");
+      var dur = el.duration;
+      if (!isFinite(dur) || dur <= 0) return;
+      if (!seekDragging) $("seek").value = Math.round(el.currentTime / dur * 1000);
+      $("seeknow").textContent = fmtClock(el.currentTime);
+      $("seekdur").textContent = fmtClock(dur);
+      return;
+    }
+    row.classList.add("disabled");
+    $("seek").value = 0;
+    $("seeknow").textContent = elapsedText || "0:00";
+    $("seekdur").textContent = durationText || "–:––";
+  }
+  $("seek").addEventListener("input", function () { seekDragging = true; });
+  $("seek").addEventListener("change", function () {
+    seekDragging = false;
+    if (!pf.active || !pf.playingId) return;
+    var el = pf.els[pf.cur];
+    if (!el || !isFinite(el.duration) || el.duration <= 0) return;
+    try { el.currentTime = $("seek").value / 1000 * el.duration; } catch (e) {}
+  });
+
   function pfPlay(id) {
     var rec = pf.have[id];
     if (!rec) {
@@ -925,6 +969,7 @@
       try { el.currentTime = 0; } catch (e) {}
     }
     el.onended = function () { pfAdvance(); };
+    el.ontimeupdate = function () { if (pf.playingId === id) updateSeek(el); };
     el.play().then(function () {
       autoStarting = false;
       disarmGestureStart();
@@ -988,6 +1033,31 @@
   // pfSkip is the manual, debounced skip. It changes playback only on
   // this device; the stream and other listeners keep their position.
   var lastManualSkip = 0;
+  // pfJumpLive discards every banked song and rejoins the head of the
+  // server's queue: the manual escape from a device buffer full of
+  // sound the listener has moved past.
+  function pfJumpLive() {
+    if (!pf.active) return;
+    buzz();
+    Object.keys(pf.have).forEach(function (id) {
+      try { URL.revokeObjectURL(pf.have[id].url); } catch (e) {}
+      delete pf.have[id];
+      idbReq(idbStore("readwrite")["delete"](id))["catch"](function () {});
+    });
+    pf.seen = {};
+    pf.wrapped = false;
+    pf.prevId = null;
+    pf.playingId = null;
+    pf.wantPlay = true;
+    var cur = pf.els[pf.cur];
+    if (cur) { cur.onended = null; quiet(cur); }
+    setStatus([stateEl, $("steerstatus")], "catching up with the live stream…", "ok");
+    pfShowMinutes();
+    pfRefreshQueue();
+    pfEnsureDownloads();
+  }
+  $("jumplive").addEventListener("click", pfJumpLive);
+
   function pfSkip() {
     var now = Date.now();
     if (now - lastManualSkip < 700 || !pf.active) return;
@@ -1669,12 +1739,12 @@
       $("nowprompt").textContent = (t && t.title && t.prompt) || "";
       var meta = t && t.number ? "Track " + t.number : "";
       if (t && t.subtitle) meta += (meta ? "  ·  " : "") + t.subtitle;
-      if (s.session) meta += (meta ? "  ·  " : "") + s.session;
-      if (s.elapsed) meta += (meta ? "  ·  " : "") + s.elapsed + " / " + s.duration;
       if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
-      meta += (meta ? "  ·  " : "") + (s.ready || s.queued + " ready") + (s.generating ? " · generating" : "");
-
       $("meta").textContent = meta;
+      var srv = s.session || "";
+      srv += (srv ? "  ·  " : "") + (s.ready || s.queued + " ready") + (s.generating ? " · generating" : "");
+      $("srvline").textContent = srv;
+      if (!pf.active) updateSeek(null, s.elapsed, s.duration);
       // A pause at the machine is a fact about a room this listener is
       // not in and cannot act on, so it is not mentioned. What is worth
       // saying is why the music is not what they just asked for yet.
@@ -1691,6 +1761,7 @@
       if (pf.active && pf.epoch >= 0 && s.epoch !== pf.epoch) {
         pfRefreshQueue();
       }
+      if (pf.active) pfStatus();
       // Keep the media session honest in every mode: the title is the
       // track's short name and the artist carries "Track N" plus the
       // genre/mood subtitle. Direct mode follows the laptop's track

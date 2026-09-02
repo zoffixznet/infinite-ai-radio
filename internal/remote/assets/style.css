@@ -627,3 +627,16 @@ button.action.saved::before { content: "\2713\FE0E \00a0"; }
 .panelactions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); }
 .panelactions a.chip { text-decoration: none; }
 .chip.danger { color: var(--danger); border-color: var(--danger); }
+
+/* The song position row: times flanking a seek slider. Grayed while
+   the direct live stream plays - a stream has no rewind. */
+.seekrow { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
+.seekrow .seektime { font-size: 12px; color: var(--muted, #8a857e); min-width: 34px; }
+.seekrow input[type="range"] { flex: 1; accent-color: var(--accent, #b04a17); height: 20px; }
+.seekrow.disabled { opacity: 0.45; }
+.seekrow.disabled input { pointer-events: none; }
+
+/* The server's line (session, queue depth, generating) and this
+   device's bank sit on their own quiet lines under the song facts. */
+.srvline { font-size: 12px; color: var(--muted, #8a857e); margin-top: 2px; }
+.devrow { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted, #8a857e); margin-top: 4px; }
