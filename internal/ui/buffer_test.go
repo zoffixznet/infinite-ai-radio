@@ -40,7 +40,7 @@ func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 	if frac < 0.29 || frac > 0.32 {
 		t.Errorf("gauge fraction %.3f, want about 0.31", frac)
 	}
-	for _, want := range []string{"11 songs (37m) rendered of the 2h00m target", "1 planned", "refills under 45m"} {
+	for _, want := range []string{"11 songs (37m) rendered of the 2h00m target", "1 planned", "next batch when 45m left"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("gauge text %q is missing %q", text, want)
 		}

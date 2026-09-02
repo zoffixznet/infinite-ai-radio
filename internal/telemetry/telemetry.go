@@ -45,8 +45,11 @@ type Sample struct {
 	// RAMSelf is the resident memory of the radio's own process tree:
 	// this process plus the engine daemon and everything it spawned.
 	// The RAM row colors this share separately, so "how much of that
-	// is us" has an answer at a glance.
+	// is us" has an answer at a glance. CPUSelf is the same idea for
+	// the processor: the tree's share of the machine over the last
+	// sampling interval, 0-100; -1 until two samples exist.
 	RAMSelf uint64
+	CPUSelf int
 
 	// CPUUtil is whole-machine processor use over the last sampling
 	// interval, 0-100; -1 until two samples exist to compare. Load1 is
@@ -110,8 +113,11 @@ type Sampler struct {
 	mu  sync.Mutex
 	cur Sample
 	// prevIdle/prevTotal are the last /proc/stat readings, so CPU use
-	// can be computed as a delta between samples.
+	// can be computed as a delta between samples; prevSelfJiffies is
+	// the radio tree's own accumulated CPU time at the last sample.
 	prevIdle, prevTotal uint64
+	prevSelfJiffies     uint64
+	lastTotalDelta      int64
 }
 
 // New returns an unstarted sampler. daemonLog is the engine daemon's
@@ -157,7 +163,7 @@ func (s *Sampler) refresh() {
 	next.Taken = time.Now()
 	readMeminfo(&next)
 	s.readCPU(&next)
-	next.RAMSelf = selfTreeRSS(pidOrSelf(s.enginePID))
+	next.RAMSelf, next.CPUSelf = s.selfTree(pidOrSelf(s.enginePID), &next)
 	pid := s.enginePID()
 	next.EnginePID = pid
 	readGPU(&next, pid)
@@ -223,6 +229,7 @@ func (s *Sampler) readCPU(out *Sample) {
 	// would read as astronomically busy.
 	totalDelta := int64(total) - int64(prevTotal)
 	idleDelta := int64(idle) - int64(prevIdle)
+	s.lastTotalDelta = totalDelta
 	busy := float64(totalDelta-idleDelta) / float64(totalDelta)
 	if busy < 0 {
 		busy = 0
@@ -241,19 +248,38 @@ func pidOrSelf(f func() int) int {
 	return f()
 }
 
-// selfTreeRSS sums the resident memory of this process and, when the
-// engine daemon is running, its whole process tree - the daemon plus
-// the Python engine it launches.
-func selfTreeRSS(enginePID int) uint64 {
+// selfTree sums the resident memory and CPU share of this process
+// plus, when the engine daemon is running, its whole process tree -
+// the daemon and the Python engine it launches. The CPU share is the
+// tree's jiffies delta against the machine's, using the totals readCPU
+// measured for this sample.
+func (s *Sampler) selfTree(enginePID int, out *Sample) (rss uint64, cpu int) {
 	pids := []int{os.Getpid()}
 	if enginePID > 0 {
 		pids = append(pids, descendants(enginePID)...)
 	}
-	var total uint64
+	var jiffies uint64
 	for _, pid := range pids {
-		total += rssOf(pid)
+		r, j := statsOf(pid)
+		rss += r
+		jiffies += j
 	}
-	return total
+	prev := s.prevSelfJiffies
+	s.prevSelfJiffies = jiffies
+	cpu = -1
+	// A shrinking tree (the engine died) drops the sum below the
+	// previous reading; that sample simply has no self figure.
+	if prev > 0 && jiffies >= prev && out.CPUUtil >= 0 && s.lastTotalDelta > 0 {
+		frac := float64(jiffies-prev) / float64(s.lastTotalDelta)
+		if frac < 0 {
+			frac = 0
+		}
+		if frac > 1 {
+			frac = 1
+		}
+		cpu = int(frac*100 + 0.5)
+	}
+	return rss, cpu
 }
 
 // descendants returns pid and every transitive child, from one pass
@@ -296,21 +322,33 @@ func descendants(pid int) []int {
 	return out
 }
 
-// rssOf reads one process's resident memory in bytes.
-func rssOf(pid int) uint64 {
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
+// statsOf reads one process's resident memory in bytes and its
+// accumulated CPU time in jiffies (user plus system).
+func statsOf(pid int) (rss, jiffies uint64) {
+	dir := "/proc/" + strconv.Itoa(pid)
+	if raw, err := os.ReadFile(dir + "/statm"); err == nil {
+		if f := strings.Fields(string(raw)); len(f) >= 2 {
+			if pages, err := strconv.ParseUint(f[1], 10, 64); err == nil {
+				rss = pages * uint64(os.Getpagesize())
+			}
+		}
+	}
+	raw, err := os.ReadFile(dir + "/stat")
 	if err != nil {
-		return 0
+		return rss, 0
 	}
-	f := strings.Fields(string(raw))
-	if len(f) < 2 {
-		return 0
+	i := strings.LastIndexByte(string(raw), ')')
+	if i < 0 {
+		return rss, 0
 	}
-	pages, err := strconv.ParseUint(f[1], 10, 64)
-	if err != nil {
-		return 0
+	f := strings.Fields(string(raw[i+1:]))
+	// After the comm field: state is index 0, utime 11, stime 12.
+	if len(f) > 12 {
+		u, _ := strconv.ParseUint(f[11], 10, 64)
+		sys, _ := strconv.ParseUint(f[12], 10, 64)
+		jiffies = u + sys
 	}
-	return pages * uint64(os.Getpagesize())
+	return rss, jiffies
 }
 
 // readMeminfo fills in the system memory figures from /proc/meminfo.

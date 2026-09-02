@@ -28,9 +28,6 @@ func telemetryRows(s *telemetry.Sample) []telemetryRow {
 		return nil
 	}
 	rows := []telemetryRow{cpuRow(s), ramRow(s), vramRow(s)}
-	if r, ok := cardRow(s); ok {
-		rows = append(rows, r)
-	}
 	rows = append(rows, modelRow(s))
 	return rows
 }
@@ -42,7 +39,12 @@ func cpuRow(s *telemetry.Sample) telemetryRow {
 		return r
 	}
 	r.Frac = float64(s.CPUUtil) / 100
-	r.Text = fmt.Sprintf("%d%% busy · load %.2f", s.CPUUtil, s.Load1)
+	if s.CPUSelf >= 0 {
+		r.FracOwn = float64(s.CPUSelf) / 100
+		r.Text = fmt.Sprintf("radio %d%% · all %d%% · load %.2f", s.CPUSelf, s.CPUUtil, s.Load1)
+	} else {
+		r.Text = fmt.Sprintf("%d%% busy · load %.2f", s.CPUUtil, s.Load1)
+	}
 	return r
 }
 
@@ -73,44 +75,11 @@ func vramRow(s *telemetry.Sample) telemetryRow {
 	}
 	if s.VRAMTotal > 0 {
 		r.Frac = float64(s.VRAMUsed) / float64(s.VRAMTotal)
+		r.FracOwn = float64(s.EngineVRAM) / float64(s.VRAMTotal)
 	}
-	r.Text = fmt.Sprintf("%s / %s used, %s free · gpu %d%% · %d°C",
-		gib(s.VRAMUsed), gib(s.VRAMTotal), gib(s.VRAMFree), s.GPUUtil, s.GPUTemp)
+	r.Text = fmt.Sprintf("radio %s · all %s / %s · gpu %d%% · %d°C",
+		gib(s.EngineVRAM), gib(s.VRAMUsed), gib(s.VRAMTotal), s.GPUUtil, s.GPUTemp)
 	return r
-}
-
-// cardRow names who is holding graphics memory. The radio shares the
-// card with whatever else the machine runs, and knowing which share is
-// ours is the whole question.
-func cardRow(s *telemetry.Sample) (telemetryRow, bool) {
-	if !s.GPUPresent {
-		return telemetryRow{}, false
-	}
-	r := telemetryRow{Label: "card", Frac: -1}
-	if len(s.Procs) == 0 {
-		r.Text = "nothing on the card"
-		return r, true
-	}
-	// Whose memory is whose: the radio's engine by name, everything
-	// else grouped as other programs - so a hibernated engine next to
-	// gigabytes of someone else's model reads as exactly that.
-	var parts []string
-	var otherNames []string
-	var otherVRAM uint64
-	for _, p := range s.Procs {
-		if p.Engine {
-			parts = append(parts, fmt.Sprintf("this radio's engine %s", gib(p.VRAM)))
-			continue
-		}
-		otherNames = append(otherNames, p.Name)
-		otherVRAM += p.VRAM
-	}
-	if otherVRAM > 0 {
-		parts = append(parts, fmt.Sprintf("other programs %s (%s)",
-			gib(otherVRAM), strings.Join(otherNames, " · ")))
-	}
-	r.Text = strings.Join(parts, " · ")
-	return r, true
 }
 
 // modelRow says which of the engine's models are on the card. An empty

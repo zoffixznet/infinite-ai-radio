@@ -87,6 +87,11 @@ type Status struct {
 	// BufferedTracks and BufferedSeconds are the songs already rendered
 	// and waiting to play (on disk, plus the in-memory prefetch).
 	BufferedTracks int
+	// WordsmithWant/WordsmithWrote report a wordsmith round in
+	// progress: the writer holding the freed card, writing the coming
+	// batch's words. Zero when no round is running.
+	WordsmithWant  int
+	WordsmithWrote int
 	// RampBatch is the song count the current ramp stage renders per
 	// batch (1 for a fresh context, the small batch while steering
 	// settles); 0 once cycles fill to the configured depths.
@@ -273,7 +278,10 @@ type Orchestrator struct {
 	// library copy lives (track ID -> key and library id), so a late
 	// name reaches the banked sidecar too. Pruned as tracks retire.
 	bankRefs map[string]bankRef
-	saving   bool
+	// wordsmithWantNow/wordsmithWroteNow mirror the running wordsmith
+	// round for the status display.
+	wordsmithWantNow, wordsmithWroteNow int
+	saving                              bool
 	// playCount numbers the tracks as they start playing (per process);
 	// curTrackNum is the playing track's number.
 	playCount   int

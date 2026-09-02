@@ -365,9 +365,16 @@ func (m *tuiModel) renderChrome() string {
 	// minute as the cycle moves between plan and render jobs, and a row
 	// that appears and disappears shifts everything below it.
 	genLine := s.label.Render(fmt.Sprintf("%-8s", "gen"))
-	if st.Generating {
+	switch {
+	case st.Generating:
 		genLine += m.pulseBar(barWidth) + " " + s.value.Render(clip("generating next track", m.textRoom()))
-	} else {
+	case st.WordsmithWant > 0:
+		// The engine sleeps while the writer holds the card; that is
+		// the pipeline's busiest quiet moment, not idleness.
+		text := fmt.Sprintf("writing song words on the freed card (%d of %d)",
+			st.WordsmithWrote, st.WordsmithWant)
+		genLine += m.pulseBar(barWidth) + " " + s.value.Render(clip(text, m.textRoom()))
+	default:
 		genLine += m.bar(0, barWidth) + " " + s.muted.Render(clip(genIdle(st), m.textRoom()))
 	}
 	b.WriteString(genLine + "\n")

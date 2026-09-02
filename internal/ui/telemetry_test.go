@@ -47,13 +47,8 @@ func TestTelemetryRowsHibernatedEngine(t *testing.T) {
 	if got := rowText(t, rows, "ram"); !strings.Contains(got, "all 16.00 GiB / 32.00 GiB") {
 		t.Errorf("ram row reads %q", got)
 	}
-	if got := rowText(t, rows, "vram"); !strings.Contains(got, "4.00 GiB / 12.00 GiB used") {
+	if got := rowText(t, rows, "vram"); !strings.Contains(got, "all 4.00 GiB / 12.00 GiB") {
 		t.Errorf("vram row reads %q", got)
-	}
-	// Somebody else's process is named, not claimed as ours.
-	card := rowText(t, rows, "card")
-	if !strings.Contains(card, "python (src.main)") || strings.Contains(card, "this radio") {
-		t.Errorf("card row reads %q", card)
 	}
 	// The whole point of phased generation: nothing of ours resident.
 	if got := rowText(t, rows, "models"); !strings.Contains(got, "hibernated") {
@@ -85,11 +80,9 @@ func TestTelemetryRowsNamesResidentModels(t *testing.T) {
 			t.Errorf("models row %q is missing %q", models, want)
 		}
 	}
-	// Our share of the card is labelled as ours, and listed first
-	// because it is the larger one.
-	card := rowText(t, rows, "card")
-	if !strings.HasPrefix(card, "this radio's engine 6.00 GiB") {
-		t.Errorf("card row reads %q", card)
+	// The radio's share leads the vram row.
+	if got := rowText(t, rows, "vram"); !strings.HasPrefix(got, "radio 6.00 GiB") {
+		t.Errorf("vram row reads %q", got)
 	}
 }
 
@@ -99,11 +92,5 @@ func TestTelemetryRowsReportsAMissingCard(t *testing.T) {
 	got := rowText(t, rows, "vram")
 	if !strings.Contains(got, "no graphics card found") || !strings.Contains(got, "not found") {
 		t.Errorf("vram row reads %q", got)
-	}
-	// Without a card there is nobody to list holding it.
-	for _, r := range rows {
-		if r.Label == "card" {
-			t.Errorf("unexpected card row: %q", r.Text)
-		}
 	}
 }

@@ -441,6 +441,8 @@ func (o *Orchestrator) Status() Status {
 	if o.phasedEnabled() {
 		st.Phased = true
 		st.BufferedTracks = o.bufTracks
+		st.WordsmithWant = o.wordsmithWantNow
+		st.WordsmithWrote = o.wordsmithWroteNow
 		// Mirror cycleTargets' ramp tiers (inlined: it takes o.mu).
 		switch {
 		case o.playedInEpoch == 0:

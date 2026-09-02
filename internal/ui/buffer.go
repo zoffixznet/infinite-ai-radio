@@ -102,7 +102,7 @@ func bufferGauge(st player.Status) (frac float64, text string, ok bool) {
 		text += fmt.Sprintf(" · %d planned (%s)", st.PlannedTracks, fmtSpan(st.PlannedSeconds))
 	}
 	if st.BufferLowSeconds > 0 {
-		text += fmt.Sprintf(" · refills under %s", fmtSpan(st.BufferLowSeconds))
+		text += fmt.Sprintf(" · next batch when %s left", fmtSpan(st.BufferLowSeconds))
 	}
 	return frac, text, true
 }

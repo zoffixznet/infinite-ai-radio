@@ -738,6 +738,7 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 	stop := func(wrote int) bool {
 		o.mu.Lock()
 		steered := o.epoch != epoch
+		o.wordsmithWroteNow = wrote // progress for the status display
 		o.mu.Unlock()
 		if steered {
 			return true
@@ -761,6 +762,14 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 	}
 	phaseCtx, cancel := context.WithTimeout(ctx, wordsmithBudget)
 	defer cancel()
+	o.mu.Lock()
+	o.wordsmithWantNow, o.wordsmithWroteNow = want, 0
+	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.wordsmithWantNow, o.wordsmithWroteNow = 0, 0
+		o.mu.Unlock()
+	}()
 	start := time.Now()
 	if wrote := o.builder.StockLyrics(phaseCtx, sess, want, stop); wrote > 0 {
 		o.log.Info("wordsmith phase wrote the batch's lyrics",
