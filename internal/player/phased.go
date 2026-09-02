@@ -264,13 +264,25 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	pe := o.eng.(phasedEngine)
 	o.wordsmithPhase(ctx)
+	// lyricStarved is set when planning runs out of written words; the
+	// defer hands the card back to the wordsmith instead of staying
+	// warm.
+	lyricStarved := false
 	o.setEngineActive(true)
 	defer func() {
-		if ctx.Err() == nil && o.wantCycle(o.syncPhasedState()) {
-			return // more work due (ramp climbing, or a fresh epoch): stay warm
-		}
 		if o.exportingNow() {
 			return // an export owns the engine; it finishes on its own
+		}
+		if lyricStarved {
+			// More plans are due, but they are waiting on words: the
+			// wordsmith needs the card, so the engine sleeps even
+			// though the cycle is not finished. The loop re-enters
+			// within seconds.
+			o.hibernateEngine()
+			return
+		}
+		if ctx.Err() == nil && o.wantCycle(o.syncPhasedState()) {
+			return // more work due (ramp climbing, or a fresh epoch): stay warm
 		}
 		o.hibernateEngine()
 	}()
@@ -433,6 +445,36 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			ok = renderOne()
 		case stepPlan:
 			_, sess := o.snapshotSession()
+			// Below the starve floor, audio beats authorship: the next
+			// song may take engine-invented words rather than keep the
+			// speakers waiting on the writer.
+			if buffered >= starve && o.builder.AwaitingLyrics(sess) {
+				// The writer has no words ready for the next song, and
+				// planning past the writer is what turns a station
+				// into one song in a hundred costumes. Planning stops
+				// here - but plans already written still deserve their
+				// audio, so renders drain first; then the cycle ends,
+				// hibernates, and the next round starts with the
+				// wordsmith owning the freed card.
+				if !lyricStarved {
+					lyricStarved = true
+					o.log.Info("plan paused for the wordsmith",
+						"event", "plan_awaits_lyrics", "epoch", epoch,
+						"planned_this_cycle", plannedThisCycle)
+				}
+				if planned > 0 {
+					ok = renderOne()
+					break
+				}
+				if plannedThisCycle == 0 {
+					// The whole cycle accomplished nothing: no sheets
+					// were written and nothing waited to render. A
+					// failing helper would otherwise respawn the
+					// engine every two seconds; give it a breath.
+					o.coolDown(time.Minute)
+				}
+				return
+			}
 			ok = planOne(sess)
 		default:
 			return // all targets met; the defer hibernates
@@ -629,9 +671,27 @@ func planTitleKey(plan *engine.Plan) string {
 	return prompting.SongKey(plan.Lyrics)
 }
 
-// wordsmithMax is how many lyric sheets a cycle writes ahead before
-// waking the engine.
-const wordsmithMax = 8
+// wordsmithWant is how many lyric sheets the coming batch needs: the
+// full plan gap, because a deep batch is in no hurry - the writer sits
+// on the free card until every planned song has its own words. Ramp
+// stages want exactly their batch, and a starved buffer wants a single
+// sheet so first audio is never kept waiting.
+func (o *Orchestrator) wordsmithWant(epoch int) int {
+	planSecs, _, batchCap := o.cycleTargets(epoch)
+	if batchCap > 0 {
+		return batchCap
+	}
+	if planSecs <= 0 {
+		planSecs = float64(o.cfg.Buffer.PlanAheadMinutes) * 60
+	}
+	_, plannedSecs := o.Buffer.PlanStats(epoch)
+	gap := planSecs - plannedSecs - o.bufferedSeconds(epoch)
+	if gap <= 0 {
+		return 0
+	}
+	want := int(gap)/o.cfg.TrackSeconds + 1
+	return want
+}
 
 // wordsmithPhase writes the coming batch's lyrics - and names their
 // songs - while the engine is still hibernated and the helper has the
@@ -651,15 +711,8 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 	if sess == nil || !sess.Vocal {
 		return
 	}
-	// A fresh context plans a single song first so the listener hears
-	// the new sound quickly; stock exactly what that batch will sing.
-	want := wordsmithMax
-	if _, _, batchCap := o.cycleTargets(epoch); batchCap > 0 && batchCap < want {
-		want = batchCap
-	}
-	o.mu.Lock()
-	buffered := o.bufSeconds
-	o.mu.Unlock()
+	want := o.wordsmithWant(epoch)
+	buffered := o.bufferedSeconds(epoch)
 	if buffered < float64(starveMinutes)*60 {
 		// Audio first: with the buffer starved - or empty, the most
 		// starved of all - the phase writes a single sheet, so the
@@ -667,26 +720,60 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 		// waiting for the rest.
 		want = 1
 	}
-	// A steer mid-phase makes the remaining sheets a stale context's;
-	// stop writing them.
-	stale := func() bool {
+	if want <= 0 {
+		return
+	}
+	// The phase ends when a steer makes its context stale, or - after
+	// at least one sheet is on the shelf - when the rendered buffer
+	// decays to the starve floor and the engine must have the card
+	// back. The refill trigger deliberately does NOT stop the writer:
+	// every refill wake starts below it by definition, and stopping
+	// there would hand the card straight back with an empty shelf,
+	// planning nothing, forever. The writer resumes on the next
+	// hibernation, so a deep batch is covered across rounds, all of
+	// them on the card.
+	floor := float64(starveMinutes) * 60
+	var lastBuffered float64
+	var lastCheck time.Time
+	stop := func(wrote int) bool {
 		o.mu.Lock()
-		defer o.mu.Unlock()
-		return o.epoch != epoch
+		steered := o.epoch != epoch
+		o.mu.Unlock()
+		if steered {
+			return true
+		}
+		if o.exportingNow() {
+			// An export claims the engine and the card; the writer
+			// yields immediately and resumes on the next hibernation.
+			return true
+		}
+		if wrote == 0 {
+			return false
+		}
+		// The disk scan behind bufferedSeconds is not free; a few
+		// seconds of staleness cannot matter against a 2.5-minute
+		// song.
+		if time.Since(lastCheck) > 5*time.Second {
+			lastBuffered = o.bufferedSeconds(epoch)
+			lastCheck = time.Now()
+		}
+		return lastBuffered < floor
 	}
 	phaseCtx, cancel := context.WithTimeout(ctx, wordsmithBudget)
 	defer cancel()
 	start := time.Now()
-	if wrote := o.builder.StockLyrics(phaseCtx, sess, want, stale); wrote > 0 {
+	if wrote := o.builder.StockLyrics(phaseCtx, sess, want, stop); wrote > 0 {
 		o.log.Info("wordsmith phase wrote the batch's lyrics",
-			"event", "wordsmith_done", "sheets", wrote,
+			"event", "wordsmith_done", "sheets", wrote, "want", want,
 			"elapsed_seconds", time.Since(start).Seconds())
 	}
 }
 
-// wordsmithBudget bounds the whole wordsmith phase, so a struggling
-// helper can only ever delay the engine's wake-up briefly.
-const wordsmithBudget = 3 * time.Minute
+// wordsmithBudget is a pure backstop against a wedged helper; the real
+// governor of a wordsmith round is the rendered buffer running low
+// (see wordsmithPhase's stop rule). Writing a deep batch's words on
+// the card takes tens of minutes, and the buffer holds hours.
+const wordsmithBudget = 45 * time.Minute
 
 // setGenBusy flips the status flag around one engine job.
 func (o *Orchestrator) setGenBusy(busy bool) {

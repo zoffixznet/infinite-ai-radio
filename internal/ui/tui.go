@@ -48,6 +48,7 @@ type styles struct {
 	label   lipgloss.Style
 	value   lipgloss.Style
 	barOn   lipgloss.Style
+	barOwn  lipgloss.Style
 	barOff  lipgloss.Style
 	panel   lipgloss.Style
 	muted   lipgloss.Style
@@ -60,7 +61,7 @@ func newStyles() styles {
 		plain := lipgloss.NewStyle()
 		return styles{
 			title: plain, playing: plain, waiting: plain, warn: plain,
-			label: plain, value: plain, barOn: plain, barOff: plain,
+			label: plain, value: plain, barOn: plain, barOwn: plain, barOff: plain,
 			panel: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).PaddingLeft(1).PaddingRight(1),
 			muted: plain,
 		}
@@ -73,6 +74,7 @@ func newStyles() styles {
 		label:   lipgloss.NewStyle().Foreground(lipgloss.Cyan),
 		value:   lipgloss.NewStyle(),
 		barOn:   lipgloss.NewStyle().Foreground(lipgloss.Green),
+		barOwn:  lipgloss.NewStyle().Foreground(lipgloss.Yellow),
 		barOff:  lipgloss.NewStyle().Foreground(lipgloss.Blue),
 		panel: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Cyan).PaddingLeft(1).PaddingRight(1),
@@ -239,15 +241,35 @@ func (m *tuiModel) clampScroll() {
 
 // bar renders a determinate progress bar of the given width.
 func (m tuiModel) bar(frac float64, width int) string {
-	if frac < 0 {
-		frac = 0
+	return m.splitBar(0, frac, width)
+}
+
+// splitBar draws a bar whose leading own-share is the radio's color
+// and the rest of the used share the machine's, so "how much of that
+// is us" is visible without reading a number.
+func (m tuiModel) splitBar(own, frac float64, width int) string {
+	clamp := func(f float64) float64 {
+		if f < 0 {
+			return 0
+		}
+		if f > 1 {
+			return 1
+		}
+		return f
 	}
-	if frac > 1 {
-		frac = 1
+	frac = clamp(frac)
+	own = clamp(own)
+	if own > frac {
+		own = frac
 	}
-	on := int(frac*float64(width) + 0.5)
-	return m.styles.barOn.Render(strings.Repeat("█", on)) +
-		m.styles.barOff.Render(strings.Repeat("░", width-on))
+	ownOn := int(own*float64(width) + 0.5)
+	on := int(frac*float64(width)+0.5) - ownOn
+	if on < 0 {
+		on = 0
+	}
+	return m.styles.barOwn.Render(strings.Repeat("█", ownOn)) +
+		m.styles.barOn.Render(strings.Repeat("█", on)) +
+		m.styles.barOff.Render(strings.Repeat("░", width-ownOn-on))
 }
 
 // pulseBar renders an indeterminate animated activity bar.
@@ -361,7 +383,7 @@ func (m *tuiModel) renderChrome() string {
 	for _, row := range telemetryRows(st.Telemetry) {
 		line := s.label.Render(fmt.Sprintf("%-8s", row.Label))
 		if row.Frac >= 0 {
-			line += m.bar(row.Frac, barWidth)
+			line += m.splitBar(row.FracOwn, row.Frac, barWidth)
 		} else {
 			line += strings.Repeat(" ", barWidth)
 		}

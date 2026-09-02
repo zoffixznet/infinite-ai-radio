@@ -42,6 +42,12 @@ type Sample struct {
 	SwapTotal    uint64
 	SwapUsed     uint64
 
+	// RAMSelf is the resident memory of the radio's own process tree:
+	// this process plus the engine daemon and everything it spawned.
+	// The RAM row colors this share separately, so "how much of that
+	// is us" has an answer at a glance.
+	RAMSelf uint64
+
 	// CPUUtil is whole-machine processor use over the last sampling
 	// interval, 0-100; -1 until two samples exist to compare. Load1 is
 	// the one-minute load average.
@@ -151,6 +157,7 @@ func (s *Sampler) refresh() {
 	next.Taken = time.Now()
 	readMeminfo(&next)
 	s.readCPU(&next)
+	next.RAMSelf = selfTreeRSS(pidOrSelf(s.enginePID))
 	pid := s.enginePID()
 	next.EnginePID = pid
 	readGPU(&next, pid)
@@ -224,6 +231,86 @@ func (s *Sampler) readCPU(out *Sample) {
 		busy = 1
 	}
 	out.CPUUtil = int(busy*100 + 0.5)
+}
+
+// pidOrSelf guards a nil engine-pid source.
+func pidOrSelf(f func() int) int {
+	if f == nil {
+		return 0
+	}
+	return f()
+}
+
+// selfTreeRSS sums the resident memory of this process and, when the
+// engine daemon is running, its whole process tree - the daemon plus
+// the Python engine it launches.
+func selfTreeRSS(enginePID int) uint64 {
+	pids := []int{os.Getpid()}
+	if enginePID > 0 {
+		pids = append(pids, descendants(enginePID)...)
+	}
+	var total uint64
+	for _, pid := range pids {
+		total += rssOf(pid)
+	}
+	return total
+}
+
+// descendants returns pid and every transitive child, from one pass
+// over /proc.
+func descendants(pid int) []int {
+	children := map[int][]int{}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return []int{pid}
+	}
+	for _, e := range entries {
+		p, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + e.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+		// Field 4 is the parent pid; the comm field can hold spaces
+		// but is parenthesised, so parse after the closing paren.
+		i := strings.LastIndexByte(string(raw), ')')
+		if i < 0 {
+			continue
+		}
+		f := strings.Fields(string(raw[i+1:]))
+		if len(f) < 2 {
+			continue
+		}
+		ppid, err := strconv.Atoi(f[1])
+		if err != nil {
+			continue
+		}
+		children[ppid] = append(children[ppid], p)
+	}
+	out := []int{pid}
+	for i := 0; i < len(out); i++ {
+		out = append(out, children[out[i]]...)
+	}
+	return out
+}
+
+// rssOf reads one process's resident memory in bytes.
+func rssOf(pid int) uint64 {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
+	if err != nil {
+		return 0
+	}
+	f := strings.Fields(string(raw))
+	if len(f) < 2 {
+		return 0
+	}
+	pages, err := strconv.ParseUint(f[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return pages * uint64(os.Getpagesize())
 }
 
 // readMeminfo fills in the system memory figures from /proc/meminfo.

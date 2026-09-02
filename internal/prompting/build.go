@@ -47,6 +47,9 @@ type Builder struct {
 	// context so follow-up writes avoid repeating a chorus.
 	lyrReady map[string][]StockedLyrics
 	lyrLast  map[string]StockedLyrics
+	// phased records whether generation is phased: only then does a
+	// busy engine suppress background lyric writing (see buildLyrics).
+	phased bool
 	// lyrLastUses counts how many songs the lyrLast sheet has been
 	// given to, so reuse stays a hiccup-bridge and never a habit.
 	lyrLastUses map[string]int
@@ -56,9 +59,12 @@ type Builder struct {
 	// restAfter is when the helper may be consulted again. A run of
 	// failures rests the helper rather than retiring it: the graphics
 	// card is shared, and a model that timed out while something else
-	// had the card is busy, not broken.
-	restAfter time.Time
-	runCtx    context.Context
+	// had the card is busy, not broken. restEarnedIdle marks a rest
+	// whose failures happened on a free card - that one is the model's
+	// own fault and survives the card being handed back.
+	restAfter      time.Time
+	restEarnedIdle bool
+	runCtx         context.Context
 }
 
 // maxOllamaFailures is how many consecutive failed helper calls rest the
@@ -225,8 +231,15 @@ const lyricsReadyTarget = 1
 // twice in total.
 const maxSheetReuse = 1
 
-// maxAvoidHooks caps the remembered hook lines per steering context.
-const maxAvoidHooks = 4
+// maxAvoidHooks caps the remembered hook lines per steering context
+// and language. Sized for batch writing: a deep cycle pens dozens of
+// songs of one context back to back, and each should steer clear of
+// the recent choruses. Wider would cover even longer batches, but the
+// whole list rides every lyric prompt, so this is a balance between
+// repetition at the tail of a very deep batch and prompt bloat on
+// every call; per-song captions and sampling temperature carry the
+// rest of the variety.
+const maxAvoidHooks = 24
 
 // maxLyricsBytes caps a generator's output defensively.
 const maxLyricsBytes = 4000
@@ -266,7 +279,7 @@ func (b *Builder) captionSong(ctx context.Context, style, lyrics string) string 
 // the helper has the whole graphics card: each sheet is written there
 // in seconds, and its song is named in the same breath. Languages are
 // drawn per sheet exactly as they would be at consumption time.
-func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int, stop func() bool) int {
+func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int, stop func(wrote int) bool) int {
 	if s == nil || !s.Vocal || !b.helperUsable() {
 		return 0
 	}
@@ -287,7 +300,7 @@ func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int,
 	b.lyrReady[key] = kept
 	b.mu.Unlock()
 	wrote := 0
-	for ctx.Err() == nil && b.helperUsable() && (stop == nil || !stop()) {
+	for ctx.Err() == nil && b.helperUsable() && (stop == nil || !stop(wrote)) {
 		lang := b.chooseLanguage(s, r)
 		b.mu.Lock()
 		have := len(b.lyrReady[key])
@@ -530,11 +543,60 @@ func (b *Builder) buildLyrics(s *session.Session, r Rendered) (StockedLyrics, bo
 		out, got = last, true
 	}
 	needFill := len(b.lyrReady[key]) < lyricsReadyTarget
+	phased := b.phased
 	b.mu.Unlock()
-	if needFill {
+	// Under phased generation, a busy engine means the card is taken
+	// and a background write would land on the CPU - minutes per song
+	// on a machine whose owner is using it. Phased cycles get their
+	// words from wordsmith rounds on the free card instead, so the
+	// fill waits for the card. The fused path never releases the card
+	// at all and has always paid the CPU price for its lyrics; it
+	// keeps doing so.
+	if needFill && !(phased && b.engineBusyNow()) {
 		b.fillLyricsAsync(key, gen, s, r)
 	}
 	return out, got
+}
+
+// SetPhased tells the builder whether generation is phased, which is
+// what decides if a busy engine should pause background lyric writing.
+func (b *Builder) SetPhased(v bool) {
+	b.mu.Lock()
+	b.phased = v
+	b.mu.Unlock()
+}
+
+// engineBusyNow reports whether the music engine currently holds the
+// graphics card.
+func (b *Builder) engineBusyNow() bool {
+	return b.ollama != nil && b.ollama.engineBusy.Load()
+}
+
+// AwaitingLyrics reports whether the next vocal song would have to fall
+// back to engine-invented words: the helper is usable but has no sheet
+// stocked and no reuse left. A planner that sees true should stop and
+// let a wordsmith round refill the shelf on the free card, rather than
+// planning songs the writer never got to.
+func (b *Builder) AwaitingLyrics(s *session.Session) bool {
+	if s == nil || !s.Vocal || !b.helperUsable() {
+		return false
+	}
+	gen := b.generatorFor(s)
+	r := Render(s)
+	key := b.lyricsKey(gen, s, r)
+	acceptable := b.langAcceptable(s, r)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, st := range b.lyrReady[key] {
+		if acceptable(st.Lang) {
+			return false
+		}
+	}
+	if last := b.lyrLast[key]; last.Text != "" && acceptable(last.Lang) &&
+		b.lyrLastUses[key] <= maxSheetReuse {
+		return false
+	}
+	return true
 }
 
 // hooksKey buckets remembered hook lines per language within a
@@ -725,6 +787,7 @@ func (b *Builder) noteFailure(err error) {
 	if rest {
 		b.failures = 0
 		b.restAfter = time.Now().Add(helperRest)
+		b.restEarnedIdle = !b.engineBusyNow()
 	}
 	b.mu.Unlock()
 	if rest {
@@ -782,7 +845,9 @@ func (b *Builder) SetEngineBusy(busy bool) {
 	b.ollama.SetEngineBusy(busy)
 	if !busy {
 		b.mu.Lock()
-		b.restAfter = time.Time{}
+		if !b.restEarnedIdle {
+			b.restAfter = time.Time{}
+		}
 		b.mu.Unlock()
 	}
 }

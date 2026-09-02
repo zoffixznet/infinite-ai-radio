@@ -73,6 +73,7 @@ func (o *Ollama) unload() {
 	}
 	body, err := json.Marshal(map[string]any{
 		"model": model, "messages": []any{}, "keep_alive": 0,
+		"stream": false,
 	})
 	if err != nil {
 		return

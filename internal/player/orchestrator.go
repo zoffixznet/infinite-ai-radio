@@ -86,7 +86,11 @@ type Status struct {
 	Phased bool
 	// BufferedTracks and BufferedSeconds are the songs already rendered
 	// and waiting to play (on disk, plus the in-memory prefetch).
-	BufferedTracks  int
+	BufferedTracks int
+	// RampBatch is the song count the current ramp stage renders per
+	// batch (1 for a fresh context, the small batch while steering
+	// settles); 0 once cycles fill to the configured depths.
+	RampBatch       int
 	BufferedSeconds float64
 	// PlannedTracks and PlannedSeconds are songs the planner has
 	// written but the renderer has not turned into audio yet.
@@ -348,6 +352,14 @@ func (o *Orchestrator) Start(ctx context.Context) {
 		o.Telemetry.Start(ctx)
 	}
 	o.wg.Add(4)
+	o.builder.SetPhased(o.phasedEnabled())
+	if _, capable := o.eng.(phasedEngine); capable && !o.phasedEnabled() {
+		// The fused path keeps the engine resident on the card for the
+		// whole run, so the helper stays off it permanently - the
+		// historical behavior, and the exact out-of-memory protection
+		// the placement rules encode.
+		o.builder.SetEngineBusy(true)
+	}
 	if o.phasedEnabled() {
 		// A backlog from before sheet reuse was capped can hold dozens
 		// of plans and songs singing identical words; sweep it once so

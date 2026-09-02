@@ -249,10 +249,16 @@ disk-backing mode).
 Phased generation, the default way music is produced: every model gets
 the graphics card in turn, and none of them ever fights another for
 it. A cycle begins before the engine wakes, with the card still free:
-the lyric helper writes the batch's words there and names each song
-from them in the same breath (the wordsmith phase - a few sheets at
-most, one when the buffer is low, and skipped entirely when the engine
-was left warm). Then the engine wakes and plans the batch (planner
+the lyric helper writes the coming batch's words there and names and
+describes each song from them in the same breath (the wordsmith phase).
+The writer keeps the card until every planned song has its own words,
+yielding early only to a steer, an export, or the rendered buffer
+decaying to its starve floor - and planning never outruns it: a batch
+that empties the shelf pauses, renders what is already planned, and
+hands the card back to the writer for the next round. With the buffer
+starved the phase writes a single song's words so first audio is never
+kept waiting, and it skips entirely when the engine was left warm.
+Then the engine wakes and plans the batch (planner
 alone on the card, the audio model dropped entirely, the pre-written
 words consumed as-is), renders it from the planned audio codes (audio
 model alone, streamed from disk), stores the songs on disk under the

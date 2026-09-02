@@ -202,3 +202,76 @@ func TestCaptionFailureFallsBackToSteeringCaption(t *testing.T) {
 		t.Fatalf("caption fallback should be the steering caption, got %q", spec.Prompt)
 	}
 }
+
+// The planner must know when the writer has nothing ready, so it can
+// stop and hand the card back instead of planning songs without words.
+func TestAwaitingLyricsTracksTheSupply(t *testing.T) {
+	f := &fakeOllama{reply: "[Verse]\nsteel in the water"}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	b.SetPhased(true)
+	b.SetEngineBusy(true) // mid-cycle: no background fills may run
+	s := wordsmithSession()
+
+	if !b.AwaitingLyrics(s) {
+		t.Fatal("an empty shelf must read as awaiting")
+	}
+	b.SetEngineBusy(false)
+	if wrote := b.StockLyrics(context.Background(), s, 1, nil); wrote != 1 {
+		t.Fatalf("wrote %d", wrote)
+	}
+	b.SetEngineBusy(true)
+	if b.AwaitingLyrics(s) {
+		t.Fatal("a stocked sheet must satisfy the planner")
+	}
+	b.BuildSpec(context.Background(), s, 150) // consumes the sheet (use 1)
+	if b.AwaitingLyrics(s) {
+		t.Fatal("one reuse remains; not yet awaiting")
+	}
+	b.BuildSpec(context.Background(), s, 150) // the one allowed reuse
+	if !b.AwaitingLyrics(s) {
+		t.Fatal("supply spent; the planner must wait for the wordsmith")
+	}
+}
+
+// While a phased engine holds the card, consuming lyrics must not kick
+// a background CPU write - the machine's owner is using that CPU, and
+// the words come from wordsmith rounds on the free card instead.
+func TestNoBackgroundLyricWritesWhileEngineBusy(t *testing.T) {
+	f := &fakeOllama{reply: "[Verse]\nsteel in the water"}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	b.SetPhased(true)
+	if wrote := b.StockLyrics(context.Background(), wordsmithSession(), 1, nil); wrote != 1 {
+		t.Fatalf("wrote %d", wrote)
+	}
+	b.SetEngineBusy(true)
+	// Let the in-flight naming, caption and eviction calls settle so
+	// the counter only moves if BuildSpec itself starts a write.
+	settle := f.fills.Load()
+	for {
+		time.Sleep(120 * time.Millisecond)
+		if now := f.fills.Load(); now == settle {
+			break
+		} else {
+			settle = now
+		}
+	}
+	before := f.fills.Load()
+	b.BuildSpec(context.Background(), wordsmithSession(), 150)
+	time.Sleep(150 * time.Millisecond)
+	if got := f.fills.Load(); got != before {
+		t.Fatalf("a fill ran on the busy card: %d -> %d", before, got)
+	}
+	b.SetEngineBusy(false)
+	b.BuildSpec(context.Background(), wordsmithSession(), 150)
+	deadline := time.Now().Add(3 * time.Second)
+	for f.fills.Load() == before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if f.fills.Load() == before {
+		t.Fatal("the freed card should resume background writing")
+	}
+}

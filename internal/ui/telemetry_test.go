@@ -44,7 +44,7 @@ func TestTelemetryRowsHibernatedEngine(t *testing.T) {
 	s.RAMAvailable = s.RAMTotal - s.RAMUsed
 	rows := telemetryRows(s)
 
-	if got := rowText(t, rows, "ram"); !strings.Contains(got, "16.00 GiB / 32.00 GiB used") {
+	if got := rowText(t, rows, "ram"); !strings.Contains(got, "all 16.00 GiB / 32.00 GiB") {
 		t.Errorf("ram row reads %q", got)
 	}
 	if got := rowText(t, rows, "vram"); !strings.Contains(got, "4.00 GiB / 12.00 GiB used") {

@@ -441,6 +441,13 @@ func (o *Orchestrator) Status() Status {
 	if o.phasedEnabled() {
 		st.Phased = true
 		st.BufferedTracks = o.bufTracks
+		// Mirror cycleTargets' ramp tiers (inlined: it takes o.mu).
+		switch {
+		case o.playedInEpoch == 0:
+			st.RampBatch = 1
+		case o.playedInEpoch < rampStableTracks:
+			st.RampBatch = rampSmallBatch
+		}
 		st.BufferedSeconds = o.bufSeconds
 		st.PlannedTracks = o.bufPlans
 		st.PlannedSeconds = o.bufPlanSeconds

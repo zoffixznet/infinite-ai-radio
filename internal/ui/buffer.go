@@ -71,10 +71,33 @@ func bufferGauge(st player.Status) (frac float64, text string, ok bool) {
 		return float64(st.Queued) / float64(st.BufferTarget),
 			fmt.Sprintf("%d/%d buffered", st.Queued, st.BufferTarget), true
 	}
+	// Songs are the exact number; spans of time are how long those
+	// songs happen to run. The bar tracks whichever target the current
+	// ramp stage is filling: a batch of N songs early on, the
+	// configured depth of audio once steering settles.
+	if st.RampBatch > 0 {
+		done := st.BufferedTracks
+		if done > st.RampBatch {
+			done = st.RampBatch
+		}
+		frac = float64(done) / float64(st.RampBatch)
+		text = fmt.Sprintf("%d of %d songs this batch", done, st.RampBatch)
+		if st.PlannedTracks > 0 {
+			text += fmt.Sprintf(" · %d planned", st.PlannedTracks)
+		}
+		return frac, text, true
+	}
 	if st.BufferTargetSeconds > 0 {
 		frac = st.BufferedSeconds / st.BufferTargetSeconds
 	}
-	text = fmt.Sprintf("%s of %s rendered", fmtSpan(st.BufferedSeconds), fmtSpan(st.BufferTargetSeconds))
+	text = fmt.Sprintf("%d songs (%s) rendered", st.BufferedTracks, fmtSpan(st.BufferedSeconds))
+	if st.BufferTargetSeconds > 0 {
+		if st.BufferedSeconds >= st.BufferTargetSeconds {
+			text += fmt.Sprintf(" · %s target met", fmtSpan(st.BufferTargetSeconds))
+		} else {
+			text += fmt.Sprintf(" of the %s target", fmtSpan(st.BufferTargetSeconds))
+		}
+	}
 	if st.PlannedTracks > 0 {
 		text += fmt.Sprintf(" · %d planned (%s)", st.PlannedTracks, fmtSpan(st.PlannedSeconds))
 	}

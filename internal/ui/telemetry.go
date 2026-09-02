@@ -13,7 +13,11 @@ import (
 type telemetryRow struct {
 	Label string
 	Frac  float64
-	Text  string
+	// FracOwn, when positive, is the leading share of the bar drawn in
+	// the radio's own color: the part of the machine's usage that is
+	// this program and its engine.
+	FracOwn float64
+	Text    string
 }
 
 // telemetryRows turns a resource sample into the lines the displays
@@ -49,8 +53,9 @@ func ramRow(s *telemetry.Sample) telemetryRow {
 		return r
 	}
 	r.Frac = float64(s.RAMUsed) / float64(s.RAMTotal)
-	r.Text = fmt.Sprintf("%s / %s used, %s free",
-		gib(s.RAMUsed), gib(s.RAMTotal), gib(s.RAMAvailable))
+	r.FracOwn = float64(s.RAMSelf) / float64(s.RAMTotal)
+	r.Text = fmt.Sprintf("radio %s · all %s / %s",
+		gib(s.RAMSelf), gib(s.RAMUsed), gib(s.RAMTotal))
 	if s.SwapTotal > 0 {
 		r.Text += fmt.Sprintf(" · swap %s / %s", gib(s.SwapUsed), gib(s.SwapTotal))
 	}
@@ -86,13 +91,23 @@ func cardRow(s *telemetry.Sample) (telemetryRow, bool) {
 		r.Text = "nothing on the card"
 		return r, true
 	}
-	parts := make([]string, 0, len(s.Procs))
+	// Whose memory is whose: the radio's engine by name, everything
+	// else grouped as other programs - so a hibernated engine next to
+	// gigabytes of someone else's model reads as exactly that.
+	var parts []string
+	var otherNames []string
+	var otherVRAM uint64
 	for _, p := range s.Procs {
-		name := p.Name
 		if p.Engine {
-			name = "this radio's engine"
+			parts = append(parts, fmt.Sprintf("this radio's engine %s", gib(p.VRAM)))
+			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s %s", name, gib(p.VRAM)))
+		otherNames = append(otherNames, p.Name)
+		otherVRAM += p.VRAM
+	}
+	if otherVRAM > 0 {
+		parts = append(parts, fmt.Sprintf("other programs %s (%s)",
+			gib(otherVRAM), strings.Join(otherNames, " · ")))
 	}
 	r.Text = strings.Join(parts, " · ")
 	return r, true
