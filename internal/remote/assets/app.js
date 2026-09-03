@@ -78,13 +78,11 @@
   // otherwise, without being an alarm: the music ducks, the beeps
   // sound, the music comes back.
   var audioCues = store.get("iar.audiocues", true) !== false;
+  // Enough beeps to be unmistakable across a room, still soft.
+  var cueBeeps = 6;
   var cueUntil = 0;      // a cue is sounding; do not stack another
   var lastCueAt = 0;     // when the last one sounded
   var cueCtx = null;
-  // cueGap is the shortest time between cues: often enough to notice a
-  // stuck radio, rare enough not to become the noise it is warning
-  // about.
-  var cueGap = 3 * 60 * 1000;
   function cueTone(ctx, at, freq) {
     var osc = ctx.createOscillator();
     var gain = ctx.createGain();
@@ -102,25 +100,23 @@
   // playTroubleCue sounds the cue and returns roughly how long the
   // music should stay out of the way, in milliseconds. Returns 0 when
   // cues are off, unsupported, or one just sounded.
-  function playTroubleCue(minGapMs) {
+  function playTroubleCue() {
     if (!audioCues) return 0;
     var now = Date.now();
     if (now < cueUntil) return 0;
-    if (minGapMs && now - lastCueAt < minGapMs) return 0;
     var Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return 0;
     try {
       if (!cueCtx) cueCtx = new Ctx();
       if (cueCtx.state === "suspended") cueCtx.resume();
-      var lead = 0.6, t = cueCtx.currentTime + lead;
-      cueTone(cueCtx, t, 880);
-      cueTone(cueCtx, t + 0.24, 880);
-      cueTone(cueCtx, t + 0.48, 880);
+      var lead = 0.6, gap = 0.24, t = cueCtx.currentTime + lead;
+      for (var i = 0; i < cueBeeps; i++) cueTone(cueCtx, t + i * gap, 880);
     } catch (e) {
       return 0;
     }
     lastCueAt = now;
-    var total = 1900; // lead, three beeps, and a breath after
+    // Lead-in silence, the beeps, and a breath before the music.
+    var total = Math.round((0.6 + cueBeeps * 0.24 + 0.5) * 1000);
     cueUntil = now + total;
     return total;
   }
@@ -132,6 +128,17 @@
     try { el.volume = 0; } catch (e) { return; }
     setTimeout(function () { try { el.volume = was; } catch (e) {} }, ms);
   }
+
+  // clockSeconds parses the server's "m:ss" clock; -1 when it is not
+  // one.
+  function clockSeconds(text) {
+    var m = /^(\d+):(\d\d)$/.exec(String(text || ""));
+    if (!m) return -1;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  }
+  // loopClock is the last elapsed reading while the stream was
+  // repeating itself, so a restart can be told from a steady advance.
+  var loopClock = -1;
 
   // say announces a transition to a screen reader. The visible status
   // line updates every couple of seconds with an elapsed count, which
@@ -1102,7 +1109,7 @@
     // Nothing new has arrived and this device is about to repeat
     // itself: say so before it does, in the gap between the tracks.
     if (pf.wrapped) {
-      var ms = playTroubleCue(cueGap);
+      var ms = playTroubleCue();
       if (ms) {
         pf.cur = 1 - pf.cur;
         setTimeout(function () { pfPlay(nextId); }, ms);
@@ -1355,7 +1362,7 @@
     audioCues = $("audiocues").checked;
     store.set("iar.audiocues", audioCues);
     // Sound one immediately so the listener knows what to listen for.
-    if (audioCues) playTroubleCue(0);
+    if (audioCues) playTroubleCue();
   });
   $("carsave").checked = carSave;
   $("carsave").addEventListener("change", function () {
@@ -1532,39 +1539,11 @@
       "names=" + encodeURIComponent($("langnames").value), "saving languages…");
   });
 
-  // The page is served over plain HTTP on a home network, where the
-  // clipboard API is unavailable, so a hidden textarea is the fallback
-  // rather than an afterthought.
-  function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text);
-    }
-    return new Promise(function (resolve, reject) {
-      var ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = false;
-      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-      document.body.removeChild(ta);
-      ok ? resolve() : reject(new Error("copy refused"));
-    });
-  }
-  $("lyrcopy").addEventListener("click", function () {
-    if (!lyricsText) {
-      setStatus($("lyrcopystatus"), "nothing to copy yet", "err");
-      return;
-    }
-    buzz();
-    copyText(lyricsText).then(function () {
-      setStatus($("lyrcopystatus"), "copied", "ok");
-    })["catch"](function () {
-      setStatus($("lyrcopystatus"), "could not copy - select the words and copy by hand", "err");
-    });
-  });
+  // Nothing in this page writes to the clipboard. The words are plain
+  // selectable text: press-and-hold selects them, and the phone's own
+  // copy does the rest. A page that reaches for the clipboard itself
+  // is a page that can pester a listener with system "copied"
+  // notifications while they are only trying to listen to music.
 
   // ---- lyric writer ------------------------------------------------
   // A small select in the steering card switches which generator pens
@@ -1873,11 +1852,17 @@
         ? "The radio itself is looping its playing track; this device plays its own bank."
         : "Looping this track until the loop is turned off.";
       else if (s.looping) phaseText = "Replaying the last track while the next one generates.";
-      // The stream cannot be paused for a cue, so the music ducks
-      // around it instead. Repeated on a long interval: a radio stuck
-      // for an hour should say so more than once.
-      if (s.looping && !pf.active && wantStream) {
-        duckThrough(audio, playTroubleCue(cueGap));
+      // Cue the stream only at the seam, never over a playing song:
+      // the looped track starting again is the moment worth marking,
+      // and the elapsed clock running backwards is that moment.
+      var at = clockSeconds(s.elapsed);
+      if (s.looping && !pf.active && wantStream && at >= 0) {
+        if (loopClock >= 0 && at < loopClock) {
+          duckThrough(audio, playTroubleCue());
+        }
+        loopClock = at;
+      } else {
+        loopClock = -1;
       }
       setText($("phase"), phaseText);
       paintLoop(pf.active ? pf.loop : !!s.loop_on);

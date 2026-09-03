@@ -119,3 +119,43 @@ func TestGenIdleText(t *testing.T) {
 		}
 	}
 }
+
+// A cycle that stops early - the writer ran out of words, so the batch
+// rendered 11 of an intended 20 and handed the card back - is finished
+// business, not a stall. Beside an idle engine the batch's own count
+// reads as one, so the line says what is banked and what starts the
+// next batch instead.
+func TestBufferLineBetweenBatches(t *testing.T) {
+	st := player.Status{
+		Phased:           true,
+		RampBatch:        20,
+		BatchRendered:    11,
+		BufferedTracks:   17,
+		BufferedSeconds:  51 * 60,
+		BufferLowSeconds: 45 * 60,
+	}
+
+	// Idle: the batch count is gone from the words.
+	_, _, text, ok := bufferGauge(st)
+	if !ok {
+		t.Fatal("no gauge for an idle phased buffer")
+	}
+	if strings.Contains(text, "of 20") {
+		t.Errorf("an idle engine still advertises an unfinished batch: %q", text)
+	}
+	for _, want := range []string{"17 songs to play", "51m", "next batch when 45m left"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("idle line %q is missing %q", text, want)
+		}
+	}
+
+	// Generating: the batch is live again and its progress is the news.
+	st.Generating = true
+	_, _, text, ok = bufferGauge(st)
+	if !ok {
+		t.Fatal("no gauge while generating")
+	}
+	if !strings.Contains(text, "11 of 20 songs rendered") || !strings.Contains(text, "17 to play") {
+		t.Errorf("working line reads %q", text)
+	}
+}

@@ -79,6 +79,23 @@ func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool
 	if st.RampBatch > 0 {
 		toPlay := st.BufferedTracks + st.Queued
 		rendered := st.BatchRendered
+		// Between batches the batch's own count is finished business:
+		// a cycle that stopped at 11 of 20 because the writer ran out
+		// of words is not still working on the other nine, and saying
+		// "11 of 20 rendered" beside an idle engine reads as a stall.
+		// What matters then is how much music is banked and what will
+		// start the next batch.
+		if !st.Generating {
+			text = fmt.Sprintf("%d songs to play (%s)", toPlay, fmtSpan(st.BufferedSeconds))
+			if st.BufferLowSeconds > 0 {
+				text += fmt.Sprintf(" · next batch when %s left", fmtSpan(st.BufferLowSeconds))
+			}
+			frac = float64(rendered) / float64(st.RampBatch)
+			if eaten := rendered - toPlay; eaten > 0 {
+				consumed = float64(eaten) / float64(st.RampBatch)
+			}
+			return frac, consumed, text, true
+		}
 		text = fmt.Sprintf("%d of %d songs rendered · %d to play",
 			rendered, st.RampBatch, toPlay)
 		if st.PlannedTracks > 0 {
