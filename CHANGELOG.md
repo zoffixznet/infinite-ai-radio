@@ -6,7 +6,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-09-01
+## [1.0.0] - 2026-09-03
 
 First public release. Everything below is what you get on day one.
 
@@ -43,6 +43,11 @@ First public release. Everything below is what you get on day one.
 - Buffered playback that survives minutes of dead signal, media-session
   metadata for lock screens and car displays, and two car conveniences
   (save from the previous-track button, resume when the car reconnects).
+- A seek bar for buffered songs, a loop button that repeats the track
+  you flag (the whole radio on the live stream, this device alone in
+  buffered playback), buffering depth chosen in minutes, and a line
+  showing what is banked on the device with a Flush button back to the
+  live edge.
 - Accounts with four independent permissions, invitation and reset links,
   and optional SMTP delivery for them.
 - MPRIS desktop integration: media keys, `playerctl`, KDE Connect.
