@@ -24,8 +24,9 @@
   {{if .Flash.EmailError}}<p class="hint">Email could not be sent ({{.Flash.EmailError}}); share the link yourself.</p>{{end}}
   <div class="linkbox">
     <input id="link" type="text" readonly value="{{.Flash.Link}}" aria-label="Link">
+    <button id="copy" class="action primary" type="button">Copy</button>
   </div>
-  <p class="hint">Tap the link to select it, then copy it with your browser's own copy. Send it by text or chat; the person must be able to reach this address (same Tailscale network or LAN).</p>
+  <p class="hint">Send it by text or chat. The person must be able to reach this address (same Tailscale network or LAN).</p>
 </section>
 {{end}}
 
@@ -86,5 +87,24 @@
   {{end}}
 </section>
 
+<script>
+(function () {
+  "use strict";
+  var copy = document.getElementById("copy");
+  if (!copy) return;
+  copy.addEventListener("click", function () {
+    var input = document.getElementById("link");
+    input.select();
+    input.setSelectionRange(0, input.value.length);
+    var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(input.value).then(done, function () { document.execCommand("copy"); done(); });
+    } else {
+      document.execCommand("copy");
+      done();
+    }
+  });
+})();
+</script>
 </body>
 </html>

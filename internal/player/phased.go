@@ -314,6 +314,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	o.mu.Lock()
 	o.batchRenderedNow = 0
 	o.mu.Unlock()
+
 	o.setEngineActive(true)
 	defer func() {
 		if o.exportingNow() {
@@ -340,6 +341,12 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 
 	epoch := o.syncPhasedState()
 	planTarget, renderTarget, batchCap := o.cycleTargets(epoch)
+	// Whatever the ladder says later, this cycle's own size is what its
+	// rendered count must be read against: the rung is recomputed from
+	// live play counts and can climb while the batch is still running.
+	o.mu.Lock()
+	o.batchCapNow = batchCap
+	o.mu.Unlock()
 	if batchCap > 0 {
 		// A batch cycle renders every plan it wrote before sleeping;
 		// the buffer's depth is the ladder's business, not a clock's.

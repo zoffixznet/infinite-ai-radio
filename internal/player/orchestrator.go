@@ -301,6 +301,11 @@ type Orchestrator struct {
 	properPlayedInEpoch int
 	// batchRenderedNow counts renders in the current batch cycle.
 	batchRenderedNow int
+	// batchCapNow is the size THIS cycle set out to render. The ladder
+	// rung is recomputed from live play counts, so it can climb while a
+	// batch is still running; reporting a batch against a target it was
+	// never given reads as a batch that stopped half way.
+	batchCapNow int
 	// wordsmithWantNow/wordsmithWroteNow mirror the running wordsmith
 	// round for the status display.
 	wordsmithWantNow, wordsmithWroteNow int

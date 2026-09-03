@@ -489,7 +489,12 @@ func (o *Orchestrator) Status() Status {
 		st.BufferedTracks = o.bufTracks
 		st.WordsmithWant = o.wordsmithWantNow
 		st.WordsmithWrote = o.wordsmithWroteNow
-		st.RampBatch = rampBatchFor(o.playedInEpoch, o.properPlayedInEpoch)
+		// The batch's own size while one has run; the next rung before
+		// the first cycle, so the gauge has a target to draw against.
+		st.RampBatch = o.batchCapNow
+		if st.RampBatch == 0 {
+			st.RampBatch = rampBatchFor(o.playedInEpoch, o.properPlayedInEpoch)
+		}
 		st.BatchRendered = o.batchRenderedNow
 		st.BufferedSeconds = o.bufSeconds
 		st.PlannedTracks = o.bufPlans

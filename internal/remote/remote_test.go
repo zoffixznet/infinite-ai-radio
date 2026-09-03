@@ -1004,9 +1004,7 @@ func TestInviteFlowWithoutEmail(t *testing.T) {
 		t.Fatalf("create = %d %s", resp.StatusCode, body)
 	}
 	_, page := admin.get("/users")
-	// The link is selectable text, not a copy button: nothing in the
-	// remote writes to the clipboard.
-	for _, want := range []string{"Account created for jane@example.com", "Invitation link", `id="link"`, "jane@example.com", "invited", "expires in"} {
+	for _, want := range []string{"Account created for jane@example.com", "Invitation link", `id="copy"`, "jane@example.com", "invited", "expires in"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("users page missing %q:\n%s", want, page)
 		}
@@ -1886,36 +1884,5 @@ func TestReadySummaryReportsTheDiskBuffer(t *testing.T) {
 	empty := player.Status{Phased: true, Queued: 0}
 	if got := readySummary(empty); got != "0 ready" {
 		t.Errorf("empty summary = %q, want %q", got, "0 ready")
-	}
-}
-
-// Nothing the remote serves may write to the clipboard. A page that
-// reaches for it can pester a listener with system "copied"
-// notifications while they are only trying to hear music, and the
-// words and the invitation link are both plain selectable text.
-func TestNoPageWritesToTheClipboard(t *testing.T) {
-	h := newHarness(t, nil)
-	admin := h.admin()
-	admin.postForm("/users/create", url.Values{"email": {"jane@example.com"}})
-	pages := map[string]string{}
-	for _, path := range []string{"/", "/users", "/account"} {
-		_, body := admin.get(path)
-		pages[path] = body
-	}
-	_, app := admin.get("/app.js")
-	pages["/app.js"] = app
-	for path, body := range pages {
-		for _, banned := range []string{"navigator.clipboard", "execCommand(\"copy\")", "execCommand('copy')"} {
-			// Comments may name the clipboard; code may not call it.
-			for _, line := range strings.Split(body, "\n") {
-				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
-					continue
-				}
-				if strings.Contains(line, banned) {
-					t.Errorf("%s reaches for the clipboard: %q", path, strings.TrimSpace(line))
-				}
-			}
-		}
 	}
 }

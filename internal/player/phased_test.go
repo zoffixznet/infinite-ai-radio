@@ -281,3 +281,40 @@ func TestAnotherBuildsBufferIsCleared(t *testing.T) {
 		t.Fatalf("build stamp not updated: %q", cur.Build())
 	}
 }
+
+// The ladder rung is recomputed from live play counts, so it climbs
+// while a batch is still running. Reporting the batch against the new
+// rung is how a finished ten-song batch came to read as "11 of 20" -
+// a batch that looked abandoned half way through. The gauge must be
+// told the size this cycle actually set out to render.
+func TestStatusReportsTheBatchItActuallyRan(t *testing.T) {
+	cfg := testConfig()
+	cfg.Buffer.Phased = true
+	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
+		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
+	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
+
+	// Before any cycle the next rung stands in, so the bar has a target.
+	if got := o.Status().RampBatch; got != rampBatchFor(0, 0) {
+		t.Fatalf("pre-cycle batch = %d, want the next rung %d", got, rampBatchFor(0, 0))
+	}
+
+	// A cycle ran a ten-song batch; afterwards enough proper plays land
+	// to move the ladder on to twenty.
+	o.mu.Lock()
+	o.batchCapNow = 10
+	o.batchRenderedNow = 10
+	o.playedInEpoch, o.properPlayedInEpoch = 25, 25
+	o.mu.Unlock()
+	if next := rampBatchFor(25, 25); next == 10 {
+		t.Fatal("the ladder did not move on; the test proves nothing")
+	}
+
+	st := o.Status()
+	if st.RampBatch != 10 {
+		t.Errorf("batch reported as %d; want the 10 this cycle ran", st.RampBatch)
+	}
+	if st.BatchRendered != 10 {
+		t.Errorf("rendered = %d, want 10", st.BatchRendered)
+	}
+}

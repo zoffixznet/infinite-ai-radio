@@ -1128,22 +1128,45 @@
   // pfJumpLive discards every banked song and rejoins the head of the
   // server's queue: the manual escape from a device buffer full of
   // sound the listener has moved past.
+  // pfJumpLive empties this device completely: every downloaded song,
+  // whatever is playing, and whatever was staged to play next. What
+  // comes back comes from the server, so with the server unreachable
+  // the honest result is silence rather than the same bank again.
   function pfJumpLive() {
     if (!pf.active) return;
     buzz();
+    // Stop the audio first. Both elements: the staged one holds the
+    // next song and would otherwise play on happily through a flush.
+    pf.els.forEach(function (el) {
+      if (!el) return;
+      el.onended = null;
+      el.ontimeupdate = null;
+      quiet(el);
+      try {
+        el.removeAttribute("src");
+        el.load();
+      } catch (e) {}
+    });
+    // Then the bank. Each blob is released whatever its neighbours do:
+    // one failure used to throw straight out of the loop and leave the
+    // flush half done, which is how a flushed device kept its songs.
     Object.keys(pf.have).forEach(function (id) {
       try { URL.revokeObjectURL(pf.have[id].url); } catch (e) {}
       delete pf.have[id];
-      idbReq(idbStore("readwrite")["delete"](id))["catch"](function () {});
     });
+    pf.have = {};
+    // One transaction empties the store, rather than one per song.
+    try {
+      idbReq(idbStore("readwrite").clear())["catch"](function () {});
+    } catch (e) {}
     pf.seen = {};
     pf.wrapped = false;
+    pf.storeFull = false;
     if (pf.loop) pfSetLoop(false, true);
     pf.prevId = null;
     pf.playingId = null;
     pf.wantPlay = true;
-    var cur = pf.els[pf.cur];
-    if (cur) { cur.onended = null; quiet(cur); }
+    pf.switchOnDownload = false;
     setStatus([stateEl, $("steerstatus")], "catching up with the live stream…", "ok");
     pfShowMinutes();
     pfRefreshQueue();
@@ -1167,6 +1190,16 @@
   }
 
   function pfStatus() {
+    // Nothing playing and nothing banked is its own state, and saying
+    // "playing" through it is how a silent radio looks like a working
+    // one - after a flush with the machine unreachable, most of all.
+    if (!pf.playingId && !Object.keys(pf.have).length) {
+      pfState(pf.offline
+        ? "nothing on this device and the radio is unreachable"
+        : "waiting for the radio to send a song…", pf.offline ? "bad" : "");
+      pfShowMinutes();
+      return;
+    }
     var extra = pf.offline ? " · offline, playing banked tracks" : "";
     if (!pf.offline && pf.wrapped) extra = " · replaying stored tracks, nothing new yet";
     if (pf.loop) extra += " · looping this track";
@@ -1539,11 +1572,40 @@
       "names=" + encodeURIComponent($("langnames").value), "saving languages…");
   });
 
-  // Nothing in this page writes to the clipboard. The words are plain
-  // selectable text: press-and-hold selects them, and the phone's own
-  // copy does the rest. A page that reaches for the clipboard itself
-  // is a page that can pester a listener with system "copied"
-  // notifications while they are only trying to listen to music.
+  // The page is served over plain HTTP on a home network, where the
+  // clipboard API is unavailable, so a hidden textarea is the fallback
+  // rather than an afterthought. Both paths run only from a press of
+  // the button below: nothing here touches the clipboard on its own.
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error("copy refused"));
+    });
+  }
+  $("lyrcopy").addEventListener("click", function () {
+    if (!lyricsText) {
+      setStatus($("lyrcopystatus"), "nothing to copy yet", "err");
+      return;
+    }
+    buzz();
+    copyText(lyricsText).then(function () {
+      setStatus($("lyrcopystatus"), "copied", "ok");
+    })["catch"](function () {
+      setStatus($("lyrcopystatus"), "could not copy - select the words and copy by hand", "err");
+    });
+  });
 
   // ---- lyric writer ------------------------------------------------
   // A small select in the steering card switches which generator pens
