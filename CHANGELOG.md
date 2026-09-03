@@ -22,7 +22,7 @@ First public release. Everything below is what you get on day one.
   on-disk buffer, and the engine shuts down completely between batches,
   giving back all of its graphics and system memory while playback
   continues.
-- Twenty built-in presets grouped by energy, sessions that persist
+- Twenty-one built-in presets grouped by energy, sessions that persist
   automatically, equal-power crossfades, and loudness normalization.
 - Noise modes (pink, white, brown) that need no GPU at all.
 

@@ -108,7 +108,6 @@ release: ## Build release tarballs and checksums for every platform into dist/
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build $(RELFLAGS) -o dist/$$name/$(BINARY) ./cmd/iar || exit 1; \
 		cp README.md LICENSE dist/$$name/; \
 		cp internal/prosody/data/LICENSE dist/$$name/LICENSE.third-party; \
-		cp -r docs dist/$$name/docs; \
 		cp -r assets dist/$$name/assets; \
 		tar -C dist -czf dist/$$name.tar.gz $$name; \
 		rm -rf dist/$$name; \

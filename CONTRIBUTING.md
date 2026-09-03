@@ -61,3 +61,14 @@ generation, the log carries the engine's own output too.
 
 Please do not paste anything from your config file without removing
 SMTP credentials first.
+
+## Environment variables for tests and diagnostics
+
+- `IAR_PIPE_TARGET`: routes the pipe player to a specific
+  PipeWire/Pulse sink (the tests play into a null sink through it).
+- `IAR_PLAYER_SPEED`: speed multiplier for the null and file audio
+  backends.
+- `IAR_TEE_PCM`: path of a file that receives every PCM byte sent to
+  the audio backend, for verifying digital output.
+- `IAR_SHOTS`: directory `make screenshots` writes the phone-remote
+  pictures into.
