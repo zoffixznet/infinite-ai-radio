@@ -64,16 +64,8 @@ started (or reused) as needed.`,
 			if err != nil {
 				return err
 			}
-			if language != "" {
-				code, err := resolveLanguage(language)
-				if err != nil {
-					return err
-				}
-				// Pinned, exactly like naming a language by hand while
-				// listening: without the pin the lyric writer keeps
-				// drawing from the configured language list instead.
-				sess.Spec.VocalLanguage = code
-				sess.Spec.LanguagePinned = true
+			if err := pinLanguage(sess, language); err != nil {
+				return err
 			}
 
 			bld := a.buildBuilder(ctx, noLLM)
@@ -142,6 +134,26 @@ started (or reused) as needed.`,
 	fl.BoolVar(&noLLM, "no-llm", false, "disable Ollama-assisted prompt rewriting")
 	fl.BoolVarP(&verbose, "verbose", "v", false, "mirror logs to stderr")
 	return cmd
+}
+
+// pinLanguage sets the session's sung language from a --language
+// value, pinned exactly as naming one by hand while listening is:
+// without the pin the lyric writer goes on drawing from the configured
+// language list, so the export comes back in the wrong language.
+func pinLanguage(sess *session.Session, language string) error {
+	if language == "" {
+		return nil
+	}
+	code, err := resolveLanguage(language)
+	if err != nil {
+		return err
+	}
+	// A preset that steers nothing of its own carries no spec at all,
+	// so make one before writing to it.
+	prompting.EnsureSpec(sess)
+	sess.Spec.VocalLanguage = code
+	sess.Spec.LanguagePinned = true
+	return nil
 }
 
 // resolveLanguage turns a language name or code into the engine's tag.
