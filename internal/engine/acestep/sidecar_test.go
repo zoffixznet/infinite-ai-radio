@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,5 +144,46 @@ func TestServerCommandMemoryEnv(t *testing.T) {
 	}
 	if !hasEnv(env, "ACESTEP_SAMPLE_DURATION_CAP=300") {
 		t.Error("MaxTrackSeconds did not reach the child env")
+	}
+}
+
+// The engine server holds the graphics card, so it must be a direct
+// child: kill-on-parent-death reaches a child, never a grandchild.
+// Launched through 'uv run' it was uv's child, and a daemon killed
+// outright left the server behind holding gigabytes of video memory.
+func TestServerCommandRunsTheEngineAsItsOwnChild(t *testing.T) {
+	dir := t.TempDir()
+	venvBin := filepath.Join(dir, ".venv", "bin")
+	if err := os.MkdirAll(venvBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(venvBin, "acestep-api")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSidecar(SidecarConfig{EngineDir: dir, Port: 1234}, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cmd, err := s.serverCommand(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Path != entry {
+		t.Fatalf("engine launched as %q; want the venv's own entrypoint %q", cmd.Path, entry)
+	}
+	if len(cmd.Args) != 1 {
+		t.Fatalf("engine launched with arguments %v; want none, so no launcher sits in between", cmd.Args)
+	}
+	// The interpreter still needs the environment uv would have set.
+	if !hasEnv(cmd.Env, "VIRTUAL_ENV="+filepath.Join(dir, ".venv")) {
+		t.Error("VIRTUAL_ENV was not set for the engine")
+	}
+	var path string
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "PATH=") {
+			path = e
+		}
+	}
+	if !strings.HasPrefix(path, "PATH="+venvBin+string(os.PathListSeparator)) {
+		t.Errorf("the venv's bin is not first on PATH: %q", path)
 	}
 }

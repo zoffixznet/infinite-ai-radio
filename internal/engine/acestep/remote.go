@@ -80,9 +80,17 @@ func (r *Remote) Hibernate() bool {
 	r.mu.Lock()
 	r.active = false
 	pid := r.st.PID
-	r.phase = "hibernated"
 	r.mu.Unlock()
+	// The phase is only set once the daemon is really gone: saying
+	// "hibernated" while a daemon still holds the card is how a stuck
+	// engine hides behind a display that claims no memory is held.
+	hibernated := func() {
+		r.mu.Lock()
+		r.phase = "hibernated"
+		r.mu.Unlock()
+	}
 	if pid == 0 || !state.PIDAlive(pid) {
+		hibernated()
 		return false
 	}
 	if r.dir.OtherClientBeat(otherClientFresh) {
@@ -100,6 +108,7 @@ func (r *Remote) Hibernate() bool {
 		return false
 	}
 	r.dir.RemoveEngineStateIf(pid)
+	hibernated()
 	return true
 }
 

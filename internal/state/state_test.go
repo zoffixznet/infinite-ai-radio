@@ -232,3 +232,46 @@ func TestDropHeartbeat(t *testing.T) {
 		t.Fatal("heartbeat survived DropHeartbeat")
 	}
 }
+
+// The regression this covers: the daemon writes a grace heartbeat of
+// its own before its first client arrives. Counted as a client, that
+// beat told every player the daemon was in use by somebody else, so
+// nobody would ever stop it - a daemon left holding the graphics card
+// while the interface reported the engine hibernated.
+func TestTheDaemonIsNotItsOwnClient(t *testing.T) {
+	d, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := exec.Command("sleep", "30")
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer daemon.Process.Kill()
+	if err := d.WriteEngineState(EngineState{PID: daemon.Process.Pid, Port: 1, Started: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	// What the daemon writes for its grace period leaves no client
+	// file at all, and would not count even if one existed.
+	if err := d.HeartbeatShared(); err != nil {
+		t.Fatal(err)
+	}
+	if d.OtherClientBeat(time.Minute) {
+		t.Fatal("the daemon's own grace heartbeat counted as a client")
+	}
+	if age := d.HeartbeatAge(); age > 5*time.Second {
+		t.Fatalf("the shared heartbeat the daemon's idle timer reads was not updated: age %s", age)
+	}
+
+	// Belt and braces: even a per-client file under the daemon's pid
+	// is ignored, because the daemon is what is being kept alive.
+	beat := filepath.Join(d.Path(), "heartbeats", strconv.Itoa(daemon.Process.Pid))
+	os.MkdirAll(filepath.Dir(beat), 0o755)
+	if err := os.WriteFile(beat, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d.OtherClientBeat(time.Minute) {
+		t.Fatal("a heartbeat under the daemon's own pid counted as a client")
+	}
+}

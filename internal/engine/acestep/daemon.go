@@ -173,8 +173,11 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig, log *slog.Logger) error {
 		lock.Release()
 		return fmt.Errorf("writing engine state: %w", err)
 	}
-	// Grace period before the first client heartbeat arrives.
-	cfg.StateDir.Heartbeat()
+	// Grace period before the first client heartbeat arrives. Shared
+	// only: the daemon is not a client of itself, and a per-client
+	// beat here would tell every player the daemon was in use by
+	// somebody else and must never be stopped.
+	cfg.StateDir.HeartbeatShared()
 	lock.Release()
 	// Only ever retract OUR OWN record: a successor may already have
 	// claimed the file by the time this daemon exits.

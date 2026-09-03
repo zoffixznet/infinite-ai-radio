@@ -94,15 +94,32 @@ func NewSidecar(cfg SidecarConfig, client *Client, log *slog.Logger) *Sidecar {
 
 // serverCommand builds the real API server child process.
 func (s *Sidecar) serverCommand(ctx context.Context) (*exec.Cmd, error) {
-	uv, err := findUV()
-	if err != nil {
-		return nil, err
+	// The engine server is what holds the graphics card, so it must be
+	// THIS process's direct child: the kill-on-parent-death the
+	// sidecar sets reaches a child, never a grandchild. Launched
+	// through 'uv run' the server is uv's child, and a daemon killed
+	// outright left it behind holding gigabytes of video memory with
+	// nothing supervising it. The environment setup built it a
+	// launcher of its own, so use that when it is there.
+	venvDir := filepath.Join(s.cfg.EngineDir, ".venv")
+	entry := filepath.Join(venvDir, "bin", "acestep-api")
+	var cmd *exec.Cmd
+	if fi, err := os.Stat(entry); err == nil && !fi.IsDir() {
+		cmd = exec.CommandContext(ctx, entry)
+	} else {
+		uv, err := findUV()
+		if err != nil {
+			return nil, err
+		}
+		// --no-sync: the environment was built by setup; skipping the
+		// sync check keeps startup fast and independent of the network.
+		cmd = exec.CommandContext(ctx, uv, "run", "--no-sync", "--project", s.cfg.EngineDir, "acestep-api")
 	}
-	// --no-sync: the environment was built by setup; skipping the sync
-	// check keeps startup fast and independent of the network.
-	cmd := exec.CommandContext(ctx, uv, "run", "--no-sync", "--project", s.cfg.EngineDir, "acestep-api")
 	cmd.Dir = s.cfg.EngineDir
 	cmd.Env = append(os.Environ(),
+		// What 'uv run' would have set up for the interpreter.
+		"VIRTUAL_ENV="+venvDir,
+		"PATH="+filepath.Join(venvDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"ACESTEP_API_HOST=127.0.0.1",
 		fmt.Sprintf("ACESTEP_API_PORT=%d", s.cfg.Port),
 		// Load models eagerly at startup so readiness means ready;

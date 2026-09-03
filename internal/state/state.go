@@ -165,6 +165,14 @@ func (d Dir) Heartbeat() error {
 	return touch(d.heartbeatFile())
 }
 
+// HeartbeatShared updates only the shared heartbeat, without claiming
+// to be a client. The daemon uses it for the grace period before its
+// first real client arrives: a daemon that counted as its own client
+// would forbid every player from ever stopping it.
+func (d Dir) HeartbeatShared() error {
+	return touch(d.heartbeatFile())
+}
+
 // touch creates the file if needed and stamps it with the current time.
 func touch(path string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
@@ -188,10 +196,16 @@ func (d Dir) OtherClientBeat(fresh time.Duration) bool {
 		return false
 	}
 	self := os.Getpid()
+	// The daemon is what is being kept alive, never a reason to keep
+	// it alive.
+	daemon := 0
+	if st, ok := d.ReadEngineState(); ok {
+		daemon = st.PID
+	}
 	other := false
 	for _, e := range entries {
 		pid, err := strconv.Atoi(e.Name())
-		if err != nil || pid == self {
+		if err != nil || pid == self || (daemon != 0 && pid == daemon) {
 			continue
 		}
 		if !PIDAlive(pid) {
