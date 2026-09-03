@@ -238,6 +238,65 @@ func TestScribeFallsBackWithoutBrief(t *testing.T) {
 	}
 }
 
+// A thinking model can spend its whole num_predict budget reasoning
+// and answer with nothing at all. When that happens the plan must
+// still land - a song that falls back to the standard shape loses the
+// verse count and bridge its story asked for, and comes out short.
+func TestScribeBriefSurvivesAThinkingModelThatAnswersNothing(t *testing.T) {
+	var thinkFlags []bool
+	brief := scribeBrief{
+		Title: "Mall Day", Hook: "We are shopping at the mall",
+		Setting: "a busy shopping mall",
+		Story:   "verse one arrives, verse two heads home, verse three unpacks",
+		Verses:  3, Bridge: true,
+		Nouns:  []string{"mall", "bags", "stores", "shoes", "coffee", "doors"},
+		Verbs:  []string{"shop", "walk", "laugh", "buy"},
+		Images: []string{"bright lights down the hall"},
+		Moods:  []string{"happy", "light"},
+	}
+	encoded, _ := json.Marshal(brief)
+	llm := &fakeLLM{chatWith: func(system, user string, opts ChatOpts) (string, error) {
+		if opts.Format == nil {
+			return "[Verse 1]\nwe walk the hall", nil
+		}
+		think := opts.Think != nil && *opts.Think
+		thinkFlags = append(thinkFlags, think)
+		if think {
+			// Exactly what a thinking model does when its budget goes
+			// entirely to the thinking channel.
+			return "", fmt.Errorf("ollama: empty reply")
+		}
+		return string(encoded), nil
+	}}
+
+	got := (&Scribe{}).brief(context.Background(), llm, LyricsRequest{
+		Style: "pop-punk", Theme: "summer nights with friends",
+	})
+	if got.Title != "Mall Day" || got.Verses != 3 || !got.Bridge {
+		t.Fatalf("the plan did not land: %+v", got)
+	}
+	if len(thinkFlags) != 2 || !thinkFlags[0] || thinkFlags[1] {
+		t.Fatalf("attempts asked for thinking %v; want [true false]", thinkFlags)
+	}
+}
+
+// The thinking attempt needs room to both reason and answer; the
+// budget that only fits an answer is what starved it.
+func TestScribeBriefGivesTheThinkingAttemptRoom(t *testing.T) {
+	var predicts []int
+	llm := &fakeLLM{chatWith: func(system, user string, opts ChatOpts) (string, error) {
+		if opts.Format == nil {
+			return "[Verse 1]\nwe walk the hall", nil
+		}
+		predicts = append(predicts, opts.NumPredict)
+		return "", fmt.Errorf("ollama: empty reply")
+	}}
+	(&Scribe{}).brief(context.Background(), llm, LyricsRequest{Style: "pop", Theme: "rain"})
+	if len(predicts) != 2 || predicts[0] <= 700 {
+		t.Fatalf("thinking attempt budget = %v; the thinking attempt needs more than the answer alone", predicts)
+	}
+}
+
 func TestScribeNonEnglishUsesSimplePath(t *testing.T) {
 	var gotSystem string
 	llm := &fakeLLM{chatWith: func(system, user string, opts ChatOpts) (string, error) {

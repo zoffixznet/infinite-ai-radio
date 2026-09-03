@@ -106,11 +106,6 @@ neon, shadows, echoes, whispers, embers, twilight, symphony, tapestry,
 shimmering.
 Follow every RULE in the request exactly.`
 
-// think enables the reasoning phase on models that support it; both
-// planning and writing benefit from it, and the latency is invisible
-// in a background write.
-var think = true
-
 // scribeKeepAlive keeps the model loaded briefly after each helper
 // call, so the calls that cluster around one track - the lyric write
 // and the title that follows seconds later - share a single model load
@@ -342,10 +337,23 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 	if len(req.AvoidHooks) > 0 {
 		user += "\nHooks already used recently, do not reuse or echo them: " + strings.Join(req.AvoidHooks, " | ")
 	}
-	for attempt, temp := range []float64{0.4, 0.8} {
+	// Planning is the one call where thinking earns its keep, but a
+	// thinking model can spend the whole budget reasoning and answer
+	// with nothing at all - and a plan that never lands costs the song
+	// its shape, not just its words. So the first attempt thinks with
+	// room to finish, and the retry turns thinking off entirely.
+	for attempt, a := range []struct {
+		temp    float64
+		think   bool
+		predict int
+	}{
+		{temp: 0.4, think: true, predict: 2000},
+		{temp: 0.8, think: false, predict: 700},
+	} {
+		think := a.think
 		raw, err := llm.ChatWith(ctx, scribeBriefSystem, user, ChatOpts{
-			Format: scribeBriefSchema, Temperature: temp, Think: &think,
-			NumCtx: 8192, NumPredict: 700, KeepAliveSeconds: scribeKeepAlive,
+			Format: scribeBriefSchema, Temperature: a.temp, Think: &think,
+			NumCtx: 8192, NumPredict: a.predict, KeepAliveSeconds: scribeKeepAlive,
 		})
 		if err != nil {
 			// Logged per attempt so a night of failing plans is
