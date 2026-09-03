@@ -29,7 +29,6 @@ type Remote struct {
 	phase       string
 	adopted     bool
 	active      bool
-	lastBeat    time.Time
 	lastSpawn   time.Time
 	forcedCount int
 	nextForced  time.Time
@@ -53,13 +52,17 @@ func (r *Remote) SetActive(on bool) {
 	r.mu.Lock()
 	was := r.active
 	r.active = on
-	if on {
-		r.lastBeat = time.Now()
-	}
 	r.mu.Unlock()
 	if on && !was {
 		r.dir.Heartbeat()
 		r.ensureDaemon()
+		return
+	}
+	if !on {
+		// Stop counting as a client immediately: another process
+		// deciding whether it may stop the daemon should not be held
+		// back by a beat this one has finished with.
+		r.dir.DropHeartbeat()
 	}
 }
 
@@ -68,23 +71,23 @@ func (r *Remote) SetActive(on bool) {
 // memory. It reports whether a running daemon was actually stopped.
 // The next SetActive(true) (or probe while active) starts a fresh one.
 //
-// The daemon is shared, so a heartbeat fresher than this client's own
-// last one means another process (an export, a second player) is using
-// it right now: that daemon is left alone - deactivating is enough,
-// and the other client's heartbeats keep it alive as long as needed.
+// The daemon is shared, so another live process still using it (an
+// export, a second player) means the daemon is left alone -
+// deactivating is enough, and the other client's heartbeats keep it
+// alive as long as it needs. Stopping a daemon another process is
+// generating on kills that generation outright.
 func (r *Remote) Hibernate() bool {
 	r.mu.Lock()
 	r.active = false
 	pid := r.st.PID
-	lastBeat := r.lastBeat
 	r.phase = "hibernated"
 	r.mu.Unlock()
 	if pid == 0 || !state.PIDAlive(pid) {
 		return false
 	}
-	if age := r.dir.HeartbeatAge(); age < time.Since(lastBeat)-time.Second {
+	if r.dir.OtherClientBeat(otherClientFresh) {
 		r.log.Info("engine daemon left running for another client",
-			"event", "engine_hibernate_shared", "pid", pid, "heartbeat_age", age.Seconds())
+			"event", "engine_hibernate_shared", "pid", pid)
 		return false
 	}
 	r.log.Info("stopping engine daemon for hibernation", "event", "engine_hibernate", "pid", pid)
@@ -334,6 +337,12 @@ func (r *Remote) probe(ctx context.Context) string {
 	}
 }
 
+// otherClientFresh is how recently another process must have used the
+// daemon to count as still using it. Clients beat every 20 seconds, so
+// this tolerates two missed beats without keeping a daemon alive for a
+// process that has quietly gone away.
+const otherClientFresh = 70 * time.Second
+
 // heartbeatLoop keeps the daemon alive while this client runs.
 func (r *Remote) heartbeatLoop(ctx context.Context) {
 	r.dir.Heartbeat()
@@ -346,9 +355,6 @@ func (r *Remote) heartbeatLoop(ctx context.Context) {
 		case <-ticker.C:
 			if r.activeNow() {
 				r.dir.Heartbeat()
-				r.mu.Lock()
-				r.lastBeat = time.Now()
-				r.mu.Unlock()
 			}
 		}
 	}

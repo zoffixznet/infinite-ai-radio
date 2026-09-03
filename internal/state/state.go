@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -33,6 +34,13 @@ func (d Dir) Path() string { return d.path }
 
 func (d Dir) engineFile() string    { return filepath.Join(d.path, "engine.json") }
 func (d Dir) heartbeatFile() string { return filepath.Join(d.path, "heartbeat") }
+
+// beatsDir holds one heartbeat file per live client, named by process
+// id. The single shared heartbeat above answers "is anyone still
+// using the daemon" for the daemon's own idle timer; only per-client
+// files can answer "is anyone ELSE using it", which is what a client
+// about to stop the daemon needs to know.
+func (d Dir) beatsDir() string { return filepath.Join(d.path, "heartbeats") }
 
 // EngineState describes a running (or starting) engine daemon.
 type EngineState struct {
@@ -147,16 +155,64 @@ func PIDAlive(pid int) bool {
 	return pidAlive(pid)
 }
 
-// Heartbeat updates the client heartbeat; the daemon shuts down when no
-// client has heartbeat for its idle timeout.
+// Heartbeat updates this process's heartbeat, both in the shared file
+// the daemon's idle timer reads and in this client's own file, so
+// other clients can tell this one apart from themselves.
 func (d Dir) Heartbeat() error {
-	f, err := os.OpenFile(d.heartbeatFile(), os.O_CREATE|os.O_WRONLY, 0o644)
+	if err := os.MkdirAll(d.beatsDir(), 0o755); err == nil {
+		touch(filepath.Join(d.beatsDir(), strconv.Itoa(os.Getpid())))
+	}
+	return touch(d.heartbeatFile())
+}
+
+// touch creates the file if needed and stamps it with the current time.
+func touch(path string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	f.Close()
 	now := time.Now()
-	return os.Chtimes(d.heartbeatFile(), now, now)
+	return os.Chtimes(path, now, now)
+}
+
+// OtherClientBeat reports whether some OTHER live process has used the
+// engine daemon within fresh. A client that is about to stop the
+// daemon asks this first: the daemon is shared, and stopping one that
+// another process is generating on kills that generation outright.
+// Heartbeats left by processes that have since died are cleaned up
+// here rather than keeping a daemon alive for nobody.
+func (d Dir) OtherClientBeat(fresh time.Duration) bool {
+	entries, err := os.ReadDir(d.beatsDir())
+	if err != nil {
+		return false
+	}
+	self := os.Getpid()
+	other := false
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == self {
+			continue
+		}
+		if !PIDAlive(pid) {
+			os.Remove(filepath.Join(d.beatsDir(), e.Name()))
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if time.Since(info.ModTime()) <= fresh {
+			other = true
+		}
+	}
+	return other
+}
+
+// DropHeartbeat removes this process's heartbeat, so a client that
+// exits cleanly stops counting as a reason to keep the daemon up.
+func (d Dir) DropHeartbeat() {
+	os.Remove(filepath.Join(d.beatsDir(), strconv.Itoa(os.Getpid())))
 }
 
 // HeartbeatAge reports how long ago a client last heartbeat. Returns a
