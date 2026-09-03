@@ -132,7 +132,7 @@ func TestGroupOrderAndRender(t *testing.T) {
 	for _, p := range l.Presets {
 		presets = append(presets, p.Name)
 	}
-	want := "grind,hard-rock,liquid-dnb,nu-metal,pop-punk," +
+	want := "grind,hard-rock,liquid-dnb,nu-metal,pop-punk,trap," +
 		"chiptune,deep-house,funk-soul,sunshine-pop," +
 		"boom-bap,epic-score,night-drive,reggae-dub,roadhouse-country," +
 		"chamber-strings,deep-focus,jazz-club,lofi-study," +

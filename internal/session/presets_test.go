@@ -16,8 +16,8 @@ func TestPresetFilesAllParse(t *testing.T) {
 	if len(ps) != len(entries) {
 		t.Fatalf("%d preset files but %d parsed presets (malformed JSON is dropped silently)", len(entries), len(ps))
 	}
-	if len(ps) != 20 {
-		t.Fatalf("preset count = %d; want 20", len(ps))
+	if len(ps) != 21 {
+		t.Fatalf("preset count = %d; want 21", len(ps))
 	}
 	names := map[string]bool{}
 	for _, p := range ps {
