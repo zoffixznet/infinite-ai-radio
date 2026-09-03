@@ -155,8 +155,37 @@ func TestScreenshots(t *testing.T) {
 		w.exec(`var e=document.getElementById('now'); return e ? e.textContent : '';`, &now)
 		return now != "" && !strings.Contains(now, "…")
 	})
+	// Buffered playback is what a phone actually does, so it is what
+	// the picture should show: the device's own bank of songs, the
+	// Flush chip that empties it, and a seek bar that works because
+	// the song is a whole file sitting on the phone.
+	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
 	w.click("#play")
-	assertPlays(t, w, "liveaudio", 2, 30*time.Second)
+	// Wait for a bank worth showing: songs stacked up ahead of the one
+	// playing, and no "nothing new yet" note. Caught too early the
+	// picture shows the one state a listener never wants to see.
+	waitFor(t, 120*time.Second, "a healthy device bank", func() bool {
+		var st struct {
+			Playing bool   `json:"playing"`
+			Count   string `json:"count"`
+			Note    string `json:"note"`
+			Hidden  bool   `json:"hidden"`
+			Ahead   int    `json:"ahead"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var el=null; a.forEach(function (x) { if (x && !x.paused && x.currentTime > 0.5) el = x; });
+			var pill=(document.getElementById('streamstate')||{}).textContent||"";
+			var m=pill.match(/(\d+) ahead/);
+			return {
+				playing: !!el,
+				count: (document.getElementById('devcount')||{}).textContent||"",
+				note: (document.getElementById('devnote')||{}).textContent||"",
+				hidden: !!document.getElementById('devrow').hidden,
+				ahead: m ? parseInt(m[1], 10) : 0
+			};`, &st)
+		return st.Playing && !st.Hidden && st.Note == "" && st.Ahead >= 1 &&
+			!strings.HasPrefix(st.Count, "1 song ")
+	})
 	waitFor(t, 20*time.Second, "lyrics on the page", func() bool {
 		var lyr string
 		w.exec(`return document.getElementById('lyrics').textContent;`, &lyr)
@@ -177,7 +206,9 @@ func TestScreenshots(t *testing.T) {
 	var nowTitle, nowMeta string
 	w.exec(`return document.getElementById('now').textContent;`, &nowTitle)
 	w.exec(`return document.getElementById('meta').textContent;`, &nowMeta)
-	t.Logf("live screen: now=%q meta=%q", nowTitle, nowMeta)
+	var devBank string
+	w.exec(`var e=document.getElementById('devbank'); return e ? e.textContent : '';`, &devBank)
+	t.Logf("live screen: now=%q meta=%q bank=%q", nowTitle, nowMeta, devBank)
 	w.screenshot(shot("remote-player.png"))
 
 	// --- the lyrics of the playing track, scrolled into view ---
