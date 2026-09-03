@@ -114,6 +114,8 @@ type fakeLLM struct {
 	chat     func(system, user string) (string, error)
 	chatJSON func(system, user string, schema any) (string, error)
 	chatWith func(system, user string, opts ChatOpts) (string, error)
+	// chatWithCtx sees the call's context, for tests about deadlines.
+	chatWithCtx func(ctx context.Context, opts ChatOpts) (string, error)
 }
 
 func (f *fakeLLM) Chat(_ context.Context, system, user string) (string, error) {
@@ -124,7 +126,10 @@ func (f *fakeLLM) ChatJSON(_ context.Context, system, user string, schema any) (
 	return f.chatJSON(system, user, schema)
 }
 
-func (f *fakeLLM) ChatWith(_ context.Context, system, user string, opts ChatOpts) (string, error) {
+func (f *fakeLLM) ChatWith(ctx context.Context, system, user string, opts ChatOpts) (string, error) {
+	if f.chatWithCtx != nil {
+		return f.chatWithCtx(ctx, opts)
+	}
 	if f.chatWith != nil {
 		return f.chatWith(system, user, opts)
 	}

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"iar/internal/prosody"
 )
@@ -277,6 +278,43 @@ func TestScribeBriefSurvivesAThinkingModelThatAnswersNothing(t *testing.T) {
 	}
 	if len(thinkFlags) != 2 || !thinkFlags[0] || thinkFlags[1] {
 		t.Fatalf("attempts asked for thinking %v; want [true false]", thinkFlags)
+	}
+}
+
+// A first attempt that runs long must not leave the retry with an
+// expired context: both attempts then fail at once ("context deadline
+// exceeded" twice in the same second) and the song loses its plan.
+func TestScribeBriefKeepsBudgetForTheRetry(t *testing.T) {
+	var deadlines []time.Duration
+	llm := &fakeLLM{chatWith: func(system, user string, opts ChatOpts) (string, error) {
+		return "[Verse 1]\nwe walk the hall", nil
+	}}
+	llm.chatWithCtx = func(ctx context.Context, opts ChatOpts) (string, error) {
+		if opts.Format == nil {
+			return "[Verse 1]\nwe walk the hall", nil
+		}
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Error("a planning attempt ran with no deadline of its own")
+			return "", fmt.Errorf("no deadline")
+		}
+		deadlines = append(deadlines, time.Until(d).Round(time.Second))
+		return "", fmt.Errorf("ollama: empty reply")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	(&Scribe{}).brief(ctx, llm, LyricsRequest{Style: "pop", Theme: "rain"})
+
+	if len(deadlines) != 2 {
+		t.Fatalf("attempt deadlines = %v, want two", deadlines)
+	}
+	// The first attempt may claim at most half, so the retry keeps a
+	// usable window rather than inheriting an exhausted context.
+	if deadlines[0] > 2*time.Minute+30*time.Second {
+		t.Errorf("first attempt claimed %v of a 5m budget", deadlines[0])
+	}
+	if deadlines[1] < time.Minute {
+		t.Errorf("retry was left only %v", deadlines[1])
 	}
 }
 

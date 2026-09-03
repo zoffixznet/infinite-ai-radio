@@ -351,10 +351,17 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 		{temp: 0.8, think: false, predict: 700},
 	} {
 		think := a.think
-		raw, err := llm.ChatWith(ctx, scribeBriefSystem, user, ChatOpts{
+		// Each attempt gets its own slice of the budget. A thinking
+		// model can burn minutes and still answer nothing, and an
+		// unbounded first attempt leaves the retry with an already
+		// expired context - both attempts then fail at once and the
+		// song loses its plan.
+		attemptCtx, cancel := context.WithTimeout(ctx, briefAttemptBudget(ctx, attempt))
+		raw, err := llm.ChatWith(attemptCtx, scribeBriefSystem, user, ChatOpts{
 			Format: scribeBriefSchema, Temperature: a.temp, Think: &think,
 			NumCtx: 8192, NumPredict: a.predict, KeepAliveSeconds: scribeKeepAlive,
 		})
+		cancel()
 		if err != nil {
 			// Logged per attempt so a night of failing plans is
 			// countable from the log (the planning call is the one
@@ -379,6 +386,31 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 		"event", "scribe_brief_fallback", "theme", req.Theme)
 	return fallbackBrief(req)
 }
+
+// briefAttemptBudget splits what is left of the caller's budget so the
+// first attempt cannot spend all of it: half for the first, the
+// remainder for the retry. Without a deadline to divide, each attempt
+// gets the writer's own per-call ceiling.
+func briefAttemptBudget(ctx context.Context, attempt int) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return briefAttemptCeiling
+	}
+	left := time.Until(deadline)
+	if left <= 0 {
+		return time.Second
+	}
+	if attempt == 0 {
+		left /= 2
+	}
+	if left > briefAttemptCeiling {
+		left = briefAttemptCeiling
+	}
+	return left
+}
+
+// briefAttemptCeiling caps a single planning call.
+const briefAttemptCeiling = 3 * time.Minute
 
 // sanitizeBrief trims and filters the model's plan to real, common
 // words.
