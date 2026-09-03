@@ -109,7 +109,7 @@ func TestScreenshots(t *testing.T) {
 	// depth (the config clamps below 10/10/5) so the shoot renders the
 	// handful of songs the pages actually show.
 	sb := prepareSandbox(t, "acestep", `"vocal_languages":["English","Spanish","Japanese"],`+
-		`"buffer":{"phased":true,"plan_ahead_minutes":10,"render_ahead_minutes":10,"render_low_minutes":5}`)
+		`"buffer":{"phased":true,"render_low_minutes":5}`)
 	// Resume the seeded station rather than starting from the prompt, so
 	// the now-playing line names a station instead of a generated
 	// session id. --no-llm keeps the shoot reproducible: with a helper

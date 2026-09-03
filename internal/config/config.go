@@ -91,19 +91,9 @@ type Buffer struct {
 	// generates each track in one fused engine job, holding the audio
 	// model resident the whole time (the pre-buffer behavior).
 	Phased bool `json:"phased"`
-	// PlanAheadMinutes and RenderAheadMinutes are retired: the batch
-	// ladder decides how much is planned and rendered. The fields are
-	// kept so existing configuration files still load.
-	// PlanAheadMinutes is how much audio the planner writes ahead once
-	// the steering context is stable. Plans are small JSON files;
-	// planning is the cheap-memory phase, so this can be deep.
-	PlanAheadMinutes int `json:"plan_ahead_minutes"`
-	// RenderAheadMinutes is how much rendered audio is kept on disk
-	// ahead of playback. Rendering is the phase that is thrown away by
-	// a steer, so it stays shallower than the plans.
-	RenderAheadMinutes int `json:"render_ahead_minutes"`
 	// RenderLowMinutes is the refill trigger: when the rendered buffer
-	// drops below this, the engine wakes for another cycle.
+	// drops below this, the engine wakes for another cycle. The batch
+	// ladder decides how much each cycle plans and renders.
 	RenderLowMinutes int `json:"render_low_minutes"`
 }
 
@@ -241,10 +231,8 @@ func Default() Config {
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
 		Buffer: Buffer{
-			Phased:             true,
-			PlanAheadMinutes:   360,
-			RenderAheadMinutes: 120,
-			RenderLowMinutes:   45,
+			Phased:           true,
+			RenderLowMinutes: 45,
 		},
 		ACEStep: ACEStep{
 			Port:            0,
@@ -341,21 +329,8 @@ func purgeObsoleteKeys(data []byte) ([]byte, bool) {
 
 // sanitize clamps out-of-range values back to safe ones.
 func (c *Config) sanitize() {
-	// Buffer targets must nest sanely: low < render <= plan, all positive.
-	if c.Buffer.PlanAheadMinutes < 10 {
-		c.Buffer.PlanAheadMinutes = 10
-	}
-	if c.Buffer.RenderAheadMinutes < 10 {
-		c.Buffer.RenderAheadMinutes = 10
-	}
-	if c.Buffer.RenderAheadMinutes > c.Buffer.PlanAheadMinutes {
-		c.Buffer.RenderAheadMinutes = c.Buffer.PlanAheadMinutes
-	}
 	if c.Buffer.RenderLowMinutes < 5 {
 		c.Buffer.RenderLowMinutes = 5
-	}
-	if c.Buffer.RenderLowMinutes > c.Buffer.RenderAheadMinutes-5 {
-		c.Buffer.RenderLowMinutes = c.Buffer.RenderAheadMinutes - 5
 	}
 	if c.TrackSeconds < 30 {
 		c.TrackSeconds = 30
