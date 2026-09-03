@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"iar/internal/prosody"
@@ -22,7 +23,15 @@ import (
 // feedback (a bounded number of tries) before the best attempt is
 // kept: small models cannot judge their own writing, but they follow
 // concrete corrections.
-type Scribe struct{}
+type Scribe struct {
+	mu sync.Mutex
+	// thinkingDuds counts planning calls where the model was asked to
+	// think and answered nothing at all. Some models never finish that
+	// call, and it costs minutes of the card's time per song, so past
+	// the limit the thinking attempt is skipped for the rest of the
+	// run and planning goes straight to the answer.
+	thinkingDuds int
+}
 
 // Name implements LyricsGenerator.
 func (*Scribe) Name() string { return "scribe" }
@@ -341,15 +350,10 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 	// thinking model can spend the whole budget reasoning and answer
 	// with nothing at all - and a plan that never lands costs the song
 	// its shape, not just its words. So the first attempt thinks with
-	// room to finish, and the retry turns thinking off entirely.
-	for attempt, a := range []struct {
-		temp    float64
-		think   bool
-		predict int
-	}{
-		{temp: 0.4, think: true, predict: 2000},
-		{temp: 0.8, think: false, predict: 700},
-	} {
+	// room to finish, and the retry turns thinking off entirely. Once
+	// thinking has proved to be a dud on this model, it is not asked
+	// for again.
+	for attempt, a := range s.briefAttempts() {
 		think := a.think
 		// Each attempt gets its own slice of the budget. A thinking
 		// model can burn minutes and still answer nothing, and an
@@ -365,10 +369,13 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 		if err != nil {
 			// Logged per attempt so a night of failing plans is
 			// countable from the log (the planning call is the one
-			// place thinking stays enabled, and a thinking model that
-			// burns its budget surfaces here as an empty reply).
+			// place thinking is asked for, and a model that burns its
+			// budget on it surfaces here as an empty reply).
 			slog.Default().Info("lyric plan call failed",
 				"event", "scribe_brief_failed", "attempt", attempt+1, "error", err.Error())
+			if think {
+				s.noteThinkingDud()
+			}
 			continue
 		}
 		var b scribeBrief
@@ -385,6 +392,49 @@ func (s *Scribe) brief(ctx context.Context, llm LLM, req LyricsRequest) scribeBr
 	slog.Default().Info("lyric plan fell back to the standard shape",
 		"event", "scribe_brief_fallback", "theme", req.Theme)
 	return fallbackBrief(req)
+}
+
+// briefAttempt is one planning call's shape.
+type briefAttempt struct {
+	temp    float64
+	think   bool
+	predict int
+}
+
+// briefAttempts is the plan-then-retry pair, with the thinking attempt
+// dropped once thinking has proved fruitless on this model.
+func (s *Scribe) briefAttempts() []briefAttempt {
+	if s.thinkingIsADud() {
+		return []briefAttempt{
+			{temp: 0.4, think: false, predict: 900},
+			{temp: 0.8, think: false, predict: 700},
+		}
+	}
+	return []briefAttempt{
+		{temp: 0.4, think: true, predict: 2000},
+		{temp: 0.8, think: false, predict: 700},
+	}
+}
+
+// maxThinkingDuds is how many fruitless thinking attempts it takes to
+// stop asking for thinking. Two rules out a single unlucky call.
+const maxThinkingDuds = 2
+
+func (s *Scribe) noteThinkingDud() {
+	s.mu.Lock()
+	s.thinkingDuds++
+	n := s.thinkingDuds
+	s.mu.Unlock()
+	if n == maxThinkingDuds {
+		slog.Default().Info("planning stops asking this model to think; it answers nothing when it does",
+			"event", "scribe_thinking_disabled")
+	}
+}
+
+func (s *Scribe) thinkingIsADud() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.thinkingDuds >= maxThinkingDuds
 }
 
 // briefAttemptBudget splits what is left of the caller's budget so the

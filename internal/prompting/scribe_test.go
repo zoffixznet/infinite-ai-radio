@@ -638,3 +638,53 @@ func TestChantLine(t *testing.T) {
 		}
 	}
 }
+
+// Asking a model to think costs minutes of the card's time per song.
+// When a model answers nothing every time it is asked to, the writer
+// stops asking rather than paying that toll for every song of a batch.
+func TestScribeStopsAskingAModelThatCannotThink(t *testing.T) {
+	brief := scribeBrief{
+		Title: "Mall Day", Hook: "We are shopping at the mall",
+		Setting: "a busy shopping mall", Story: "verse one arrives, verse two leaves",
+		Verses: 2, Bridge: true,
+		Nouns:  []string{"mall", "bags", "stores", "shoes", "coffee", "doors"},
+		Verbs:  []string{"shop", "walk", "laugh", "buy"},
+		Images: []string{"bright lights down the hall"}, Moods: []string{"happy"},
+	}
+	encoded, _ := json.Marshal(brief)
+	var asked []bool
+	llm := &fakeLLM{chatWith: func(system, user string, opts ChatOpts) (string, error) {
+		if opts.Format == nil {
+			return "[Verse 1]\nwe walk the hall", nil
+		}
+		think := opts.Think != nil && *opts.Think
+		asked = append(asked, think)
+		if think {
+			return "", fmt.Errorf("ollama: empty reply")
+		}
+		return string(encoded), nil
+	}}
+
+	s := &Scribe{}
+	req := LyricsRequest{Style: "pop-punk", Theme: "summer nights"}
+	for i := 0; i < 4; i++ {
+		if got := s.brief(context.Background(), llm, req); got.Title != "Mall Day" {
+			t.Fatalf("song %d got no plan: %+v", i+1, got)
+		}
+	}
+	// The first two songs each pay for one fruitless thinking call;
+	// after that the writer goes straight to the answer.
+	thinking := 0
+	for _, t := range asked {
+		if t {
+			thinking++
+		}
+	}
+	if thinking != maxThinkingDuds {
+		t.Fatalf("asked for thinking %d times across four songs; want %d", thinking, maxThinkingDuds)
+	}
+	// A fresh writer has learned nothing and tries thinking again.
+	if (&Scribe{}).thinkingIsADud() {
+		t.Fatal("a new writer started out refusing to think")
+	}
+}
