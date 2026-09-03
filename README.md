@@ -849,7 +849,7 @@ Inside the data directory:
 - `buffer/` - phased generation's disk buffer: `plans/` (small JSON song
   plans), `tracks/` (rendered MP3s, each with a JSON metadata sidecar),
   and the stored steering context. The largest directory after `engine/`
-  and `library/`, sized by the `buffer` settings above
+  and `library/`; how much it holds follows the batch ladder
 - `snippets/<tag>/` - tracks captured with the save command, one
   directory per tag (`untagged/` when none was given)
 - `remote/` - the phone remote's accounts and login sessions
