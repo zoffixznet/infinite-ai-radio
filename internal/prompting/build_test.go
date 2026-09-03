@@ -431,3 +431,34 @@ func TestTitleAsyncSchemaConstrained(t *testing.T) {
 		t.Fatalf("cache miss on repeat: %d calls", f.jsonCalls.Load())
 	}
 }
+
+// A language named by hand outranks the configured catalogue. The bug
+// this covers: the export command set the session's language code but
+// not its pin, so the lyric writer went on drawing from the configured
+// list - a Spanish export came back sung in whatever the list held.
+func TestPinnedLanguageOutranksTheConfiguredList(t *testing.T) {
+	b := NewBuilder(nil, nil)
+	b.SetLanguages([]string{"Tagalog"})
+	s := session.New()
+	s.Vocal = true
+
+	// Unpinned: the catalogue decides.
+	if got := b.chooseLanguage(s, Render(s)); got.Name != "Tagalog" {
+		t.Fatalf("unpinned language = %q, want the configured Tagalog", got.Name)
+	}
+
+	// Pinned: the named language wins, and only sheets in it are kept.
+	s.Spec.VocalLanguage = "es"
+	s.Spec.LanguagePinned = true
+	r := Render(s)
+	if got := b.chooseLanguage(s, r); got.Code != "es" {
+		t.Fatalf("pinned language = %q, want es", got.Code)
+	}
+	ok := b.langAcceptable(s, r)
+	if !ok(Language{Code: "es", Name: "Spanish"}) {
+		t.Fatal("a Spanish sheet was rejected under a Spanish pin")
+	}
+	if ok(Language{Code: "tl", Name: "Tagalog"}) {
+		t.Fatal("a Tagalog sheet was accepted under a Spanish pin")
+	}
+}

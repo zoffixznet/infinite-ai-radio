@@ -22,6 +22,29 @@ import (
 // MaxMinutes caps a single export.
 const MaxMinutes = 180
 
+// MaxSongs caps a by-count export.
+const MaxSongs = 40
+
+// Request describes one export. Exactly one of Minutes and Songs is
+// set: Minutes renders whole songs until at least that much music
+// exists (nothing is ever cut mid-song, so the file may run up to one
+// song longer); Songs renders exactly that many complete songs.
+type Request struct {
+	Minutes int
+	Songs   int
+	// OutPath is the MP3 to write.
+	OutPath string
+}
+
+// planner is the two-step engine surface the radio itself uses: the
+// plan writes the song's score (so its length follows the lyrics) and
+// the render plays it. Engines without it fall back to single-shot
+// generation at the fixed track length.
+type planner interface {
+	Plan(ctx context.Context, spec engine.Spec) (*engine.Plan, error)
+	Render(ctx context.Context, plan *engine.Plan) (*engine.Track, error)
+}
+
 // MP3Options tunes the MP3 encode.
 type MP3Options struct {
 	// Quality is libmp3lame VBR quality: 0 best to 9 smallest.
@@ -57,12 +80,16 @@ type Renderer struct {
 }
 
 // Render produces minutes of audio matching sess into an MP3 at outPath.
-func (r *Renderer) Render(ctx context.Context, sess *session.Session, minutes int, outPath string) error {
-	if minutes < 1 {
-		return fmt.Errorf("export needs at least 1 minute")
-	}
-	if minutes > MaxMinutes {
+func (r *Renderer) Render(ctx context.Context, sess *session.Session, req Request) error {
+	switch {
+	case req.Minutes > 0 && req.Songs > 0:
+		return fmt.Errorf("ask for --minutes or --songs, not both")
+	case req.Minutes < 1 && req.Songs < 1:
+		return fmt.Errorf("export needs --minutes or --songs")
+	case req.Minutes > MaxMinutes:
 		return fmt.Errorf("export capped at %d minutes; ask for %d or fewer", MaxMinutes, MaxMinutes)
+	case req.Songs > MaxSongs:
+		return fmt.Errorf("export capped at %d songs; ask for %d or fewer", MaxSongs, MaxSongs)
 	}
 	log := r.Log
 	if log == nil {
@@ -73,36 +100,37 @@ func (r *Renderer) Render(ctx context.Context, sess *session.Session, minutes in
 		progress = func(string) {}
 	}
 
-	totalFrames := minutes * 60 * audio.SampleRate
 	var samples []int16
 	var err error
 	if sess.Mode == session.ModeNoise {
-		progress(fmt.Sprintf("synthesizing %d minutes of %s noise", minutes, sess.NoiseColor))
-		samples = r.renderNoise(sess, totalFrames)
+		// Noise has no songs, only duration.
+		if req.Songs > 0 {
+			return fmt.Errorf("noise has no songs; ask for --minutes instead")
+		}
+		progress(fmt.Sprintf("synthesizing %d minutes of %s noise", req.Minutes, sess.NoiseColor))
+		samples = r.renderNoise(sess, req.Minutes*60*audio.SampleRate)
 	} else {
-		samples, err = r.renderMusic(ctx, sess, totalFrames, progress, log)
+		samples, err = r.renderMusic(ctx, sess, req, progress, log)
 		if err != nil {
 			return err
 		}
 	}
-	if len(samples) > totalFrames*audio.Channels {
-		samples = samples[:totalFrames*audio.Channels]
-	}
 	audio.ApplyEdgeFades(samples, audio.SampleRate/2)
 
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
 		return err
 	}
 	progress("encoding MP3")
-	if err := EncodeMP3(ctx, samples, outPath, MP3Options{
+	if err := EncodeMP3(ctx, samples, req.OutPath, MP3Options{
 		Quality: r.MP3Quality,
 		Title:   sess.Describe(),
 		Artist:  "Infinite AI Radio",
 	}); err != nil {
 		return err
 	}
-	log.Info("export finished", "event", "export_done", "path", outPath, "minutes", minutes)
-	progress("export complete: " + outPath)
+	log.Info("export finished", "event", "export_done", "path", req.OutPath,
+		"minutes", req.Minutes, "songs", req.Songs)
+	progress("export complete: " + req.OutPath)
 	return nil
 }
 
@@ -112,38 +140,72 @@ func (r *Renderer) renderNoise(sess *session.Session, totalFrames int) []int16 {
 	return gen.Generate(totalFrames)
 }
 
-// renderMusic generates enough tracks and crossfade-joins them.
-func (r *Renderer) renderMusic(ctx context.Context, sess *session.Session, totalFrames int, progress func(string), log *slog.Logger) ([]int16, error) {
+// renderMusic generates whole songs on the radio's own quality path -
+// a stocked lyric sheet first so vocal songs are sung from the
+// writer's words, then plan and render so each song's length follows
+// its lyrics - and crossfade-joins them. Nothing is cut mid-song.
+func (r *Renderer) renderMusic(ctx context.Context, sess *session.Session, req Request, progress func(string), log *slog.Logger) ([]int16, error) {
 	if r.Engine == nil {
 		return nil, fmt.Errorf("music engine unavailable; only noise sessions can be exported right now")
 	}
 	fadeFrames := int(r.CrossfadeSeconds * audio.SampleRate)
-	trackFrames := r.TrackSeconds * audio.SampleRate
-	if trackFrames <= fadeFrames {
-		return nil, fmt.Errorf("track length must exceed the crossfade")
-	}
-	// Each extra track adds (track - fade) frames.
-	n := 1 + (totalFrames-trackFrames+trackFrames-fadeFrames-1)/(trackFrames-fadeFrames)
-	if n < 1 {
-		n = 1
-	}
+	wantFrames := req.Minutes * 60 * audio.SampleRate
 	var tracks [][]int16
-	for i := 0; i < n; i++ {
+	joined := 0
+	saidNoWriter := false
+	for i := 0; ; i++ {
+		if req.Songs > 0 && i >= req.Songs {
+			break
+		}
+		if req.Songs == 0 && joined >= wantFrames {
+			break
+		}
 		if r.Gate != nil {
 			if err := r.Gate(ctx); err != nil {
 				return nil, err
 			}
 		}
-		progress(fmt.Sprintf("generating track %d of %d", i+1, n))
+		label := fmt.Sprintf("song %d", i+1)
+		if req.Songs > 0 {
+			label = fmt.Sprintf("song %d of %d", i+1, req.Songs)
+		}
+		if sess.Vocal && r.Builder != nil {
+			// A no-op when the shelf was stocked up front; a top-up
+			// write when it was not.
+			r.Builder.StockLyrics(ctx, sess, 1, func(wrote int) bool { return wrote >= 1 })
+		}
 		spec := r.Builder.BuildSpec(ctx, sess, r.TrackSeconds)
+		if sess.Vocal && (spec.Lyrics == "" || spec.Lyrics == engine.InstrumentalLyrics) && !saidNoWriter {
+			saidNoWriter = true
+			progress("the lyric writer has no words ready; the engine writes its own")
+		}
 		start := time.Now()
-		track, err := r.Engine.Generate(ctx, spec)
+		var track *engine.Track
+		var err error
+		if p, ok := r.Engine.(planner); ok {
+			progress(label + ": planning")
+			plan, perr := p.Plan(ctx, spec)
+			if perr != nil {
+				return nil, fmt.Errorf("planning %s: %w", label, perr)
+			}
+			progress(label + ": rendering")
+			track, err = p.Render(ctx, plan)
+		} else {
+			progress(label + ": generating")
+			track, err = r.Engine.Generate(ctx, spec)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("generating track %d/%d: %w", i+1, n, err)
+			return nil, fmt.Errorf("generating %s: %w", label, err)
 		}
 		log.Info("export track generated", "event", "export_track",
-			"index", i+1, "total", n, "elapsed_seconds", time.Since(start).Seconds())
+			"index", i+1, "elapsed_seconds", time.Since(start).Seconds())
 		tracks = append(tracks, track.Samples)
+		frames := len(track.Samples) / audio.Channels
+		if joined == 0 {
+			joined = frames
+		} else {
+			joined += frames - fadeFrames
+		}
 	}
 	return audio.CrossfadeJoin(tracks, fadeFrames), nil
 }
@@ -225,9 +287,16 @@ func EncodeMP3Bytes(ctx context.Context, samples []int16, opts MP3Options) ([]by
 }
 
 // DefaultPath builds the default export file name inside dir.
-func DefaultPath(dir, sessionName string, minutes int) string {
+func DefaultPath(dir, sessionName string, minutes, songs int) string {
 	stamp := time.Now().Format("20060102-150405")
-	return filepath.Join(dir, fmt.Sprintf("%s-%dmin-%s.mp3", sessionName, minutes, stamp))
+	size := fmt.Sprintf("%dmin", minutes)
+	if songs > 0 {
+		size = fmt.Sprintf("%dsong", songs)
+		if songs > 1 {
+			size += "s"
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%s-%s.mp3", sessionName, size, stamp))
 }
 
 // RetitleMP3 rewrites an existing MP3's title tag without re-encoding

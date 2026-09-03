@@ -130,3 +130,31 @@ func TestGoingIdleWakesARestingHelper(t *testing.T) {
 		t.Fatal("a free card should end the rest")
 	}
 }
+
+// A short-lived CLI run must be able to wait for the probe's verdict:
+// with a healthy daemon AwaitHelper turns true as soon as the probe
+// lands, and with no daemon at all it answers false immediately.
+func TestAwaitHelperFollowsTheProbe(t *testing.T) {
+	cap := &gpuCapture{}
+	srv := cap.server()
+	defer srv.Close()
+	b := NewBuilder(NewOllama(srv.URL, "m", 0), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.ProbeAsync(ctx)
+	if !b.AwaitHelper(ctx, 5*time.Second) {
+		t.Fatal("healthy daemon never became usable")
+	}
+	if !b.helperUsable() {
+		t.Fatal("usable flag not set after AwaitHelper")
+	}
+
+	none := NewBuilder(nil, nil)
+	start := time.Now()
+	if none.AwaitHelper(ctx, 5*time.Second) {
+		t.Fatal("no daemon reported usable")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("nil-ollama AwaitHelper waited instead of answering")
+	}
+}

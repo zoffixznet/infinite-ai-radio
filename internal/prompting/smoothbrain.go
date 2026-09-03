@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Smoothbrain is the original one-shot lyric writer: a single short
+// Smoothbrain is the quick one-shot lyric writer: a single short
 // prompt with no craft rules, no plan and no revision. It is kept
 // selectable for comparison against the newer generators.
 type Smoothbrain struct{}
@@ -21,7 +21,7 @@ func (*Smoothbrain) Name() string { return "smoothbrain" }
 
 // Blurb implements LyricsGenerator.
 func (*Smoothbrain) Blurb() string {
-	return "the original quick one-shot writer; simple rhymes, no revision"
+	return "a quick one-shot writer; simple rhymes, no revision"
 }
 
 // Timeout implements LyricsGenerator. Generous enough to cover a cold

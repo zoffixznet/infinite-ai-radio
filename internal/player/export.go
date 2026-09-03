@@ -40,7 +40,7 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 	o.mu.Unlock()
 
 	if outPath == "" {
-		outPath = export.DefaultPath(exportsDir, sess.Name, minutes)
+		outPath = export.DefaultPath(exportsDir, sess.Name, minutes, 0)
 	}
 	ctx := o.runCtx
 	if ctx == nil {
@@ -77,7 +77,7 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 				o.log.Info("export progress", "event", "export_progress", "line", line)
 			},
 		}
-		err := r.Render(ctx, &sess, minutes, outPath)
+		err := r.Render(ctx, &sess, export.Request{Minutes: minutes, OutPath: outPath})
 		o.mu.Lock()
 		o.exporting = ""
 		o.mu.Unlock()

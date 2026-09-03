@@ -767,6 +767,30 @@ func (b *Builder) fillAsync(key string, fn func(ctx context.Context) (string, er
 	return true
 }
 
+// AwaitHelper blocks until the background usability probe has
+// answered (true) or the budget runs out (false). Short-lived CLI runs
+// that want the lyric writer call this before deciding; the radio
+// itself never waits on the helper.
+func (b *Builder) AwaitHelper(ctx context.Context, budget time.Duration) bool {
+	if b.ollama == nil {
+		return false
+	}
+	deadline := time.Now().Add(budget)
+	for {
+		if b.helperUsable() {
+			return true
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 // helperUsable reports whether the helper should be consulted.
 func (b *Builder) helperUsable() bool {
 	if b.ollama == nil {
