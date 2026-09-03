@@ -678,6 +678,26 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &title)
 		return n == 1 && strings.HasPrefix(title, "road-trip")
 	})
+	// A page that rewrites itself every couple of seconds tells the
+	// phone it changed, every couple of seconds, forever - and Android
+	// clipboard tools that watch for exactly that then read the
+	// clipboard, which is what puts a system "copied" pill in front of
+	// a listener who only pressed play. Nothing may change in the DOM
+	// across polls while the radio's state is standing still.
+	w.exec(`window.__mutations = 0;
+		new MutationObserver(function (records) { window.__mutations += records.length; })
+			.observe(document.body, {subtree: true, childList: true, characterData: true,
+				attributes: true, attributeFilter: ["class", "aria-pressed", "aria-label", "value"]});
+		return true;`, nil)
+	time.Sleep(7 * time.Second) // three /state polls
+	var mutations int
+	w.exec(`return window.__mutations;`, &mutations)
+	// The clock in the seek row is allowed to advance; a handful of
+	// text updates a poll is that and nothing more.
+	if mutations > 12 {
+		t.Fatalf("the page mutated %d times over three idle polls; it should hold still", mutations)
+	}
+
 	// The per-device settings a traveller depends on: hours of music
 	// banked for a dead zone, and a cue when the radio goes quiet.
 	var settings struct {

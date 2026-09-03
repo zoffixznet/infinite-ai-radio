@@ -151,6 +151,23 @@
   function setText(el, text) {
     if (el && el.textContent !== text) el.textContent = text;
   }
+  // The same rule for the other things a timed repaint writes. An
+  // attribute or a class re-set to the value it already holds still
+  // counts as a change to the accessibility tree, and an input's value
+  // re-assigned to itself still moves the caret - both of which reach
+  // the phone as "this page changed", every two seconds, forever.
+  function setAttr(el, name, value) {
+    if (el && el.getAttribute(name) !== value) el.setAttribute(name, value);
+  }
+  function setClass(el, name, on) {
+    if (el && el.classList.contains(name) !== !!on) el.classList.toggle(name, !!on);
+  }
+  function setHTML(el, html) {
+    if (el && el.innerHTML !== html) el.innerHTML = html;
+  }
+  function setValue(el, value) {
+    if (el && el.value !== String(value)) el.value = value;
+  }
 
   function say(text) {
     var el = $("say");
@@ -850,6 +867,10 @@
     if (pf.loop) pfSetLoop(false, true);
   }
 
+  // trackFetchTimeout bounds one track download. Generous: a whole
+  // song over a bad connection is slow, but never endless.
+  var trackFetchTimeout = 90 * 1000;
+
   // pfEnsureDownloads keeps the store filled to the level's depth,
   // sequentially, one AbortController per download. It never recurses
   // into playback: pf.wantPlay marks that playback should start as
@@ -876,7 +897,16 @@
     }
     pf.ctrl = new AbortController();
     var row = next;
+    // A download that never finishes would wedge the device for good:
+    // one request is in flight at a time, and the next only starts
+    // when this one settles. Give it a deadline so a stalled fetch
+    // becomes a retry instead of a bank that stops filling.
+    var ctrl = pf.ctrl;
+    var deadline = setTimeout(function () {
+      try { ctrl.abort(); } catch (e) {}
+    }, trackFetchTimeout);
     fetch(row.url, { signal: pf.ctrl.signal }).then(function (r) {
+      clearTimeout(deadline);
       if (r.status === 401 || r.status === 403) { throw { auth: true }; }
       if (!r.ok) { throw new Error("track " + r.status); }
       return r.blob();
@@ -908,6 +938,7 @@
       }
       pfEnsureDownloads();
     })["catch"](function (e) {
+      clearTimeout(deadline);
       pf.ctrl = null;
       if (e && e.auth) {
         stopBuffered("session expired - reload this page and log in again", "bad");
@@ -1000,16 +1031,16 @@
     var row = $("seekrow");
     if (!row) return;
     if (el) {
-      row.classList.remove("disabled");
+      setClass(row, "disabled", false);
       var dur = el.duration;
       if (!isFinite(dur) || dur <= 0) return;
-      if (!seekDragging) $("seek").value = Math.round(el.currentTime / dur * 1000);
+      if (!seekDragging) setValue($("seek"), Math.round(el.currentTime / dur * 1000));
       setText($("seeknow"), fmtClock(el.currentTime));
       setText($("seekdur"), fmtClock(dur));
       return;
     }
-    row.classList.add("disabled");
-    $("seek").value = 0;
+    setClass(row, "disabled", true);
+    setValue($("seek"), 0);
     setText($("seeknow"), elapsedText || "0:00");
     setText($("seekdur"), durationText || "–:––");
   }
@@ -1259,8 +1290,8 @@
   function paintLoop(on) {
     var btn = $("loop");
     if (!btn) return;
-    btn.classList.toggle("on", !!on);
-    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    setClass(btn, "on", on);
+    setAttr(btn, "aria-pressed", on ? "true" : "false");
   }
   function pfSetLoop(on, quietly) {
     pf.loop = !!on;
@@ -1564,7 +1595,7 @@
     var names = [];
     list.forEach(function (l) { names.push(l.name); });
     var field = $("langnames");
-    if (document.activeElement !== field) field.value = names.join(", ");
+    if (document.activeElement !== field) setValue(field, names.join(", "));
   }
   $("langsave").addEventListener("click", function () {
     langSig = "";
@@ -1628,7 +1659,7 @@
       });
     }
     if (document.activeElement !== sel && s.lyrics_generator) {
-      sel.value = s.lyrics_generator;
+      setValue(sel, s.lyrics_generator);
     }
   }
   $("lyricsgen").addEventListener("change", function () {
@@ -1658,13 +1689,13 @@
   function setSavedClass(btn, id) {
     if (!btn) return;
     var on = isSaved(id);
-    btn.classList.toggle("saved", !!on);
-    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    setClass(btn, "saved", on);
+    setAttr(btn, "aria-pressed", on ? "true" : "false");
     if (btn === $("save")) {
       // Filled heart, same geometry, so nothing moves when it flips.
-      $("saveglyph").innerHTML = on ? icon.heartFull : icon.heart;
-      $("savelabel").textContent = on ? "Saved" : "Save";
-      btn.setAttribute("aria-label", on ? "Already saved" : "Save this track");
+      setHTML($("saveglyph"), on ? icon.heartFull : icon.heart);
+      setText($("savelabel"), on ? "Saved" : "Save");
+      setAttr(btn, "aria-label", on ? "Already saved" : "Save this track");
     }
   }
   // updateSaveButtons re-derives the greyed state; called on every

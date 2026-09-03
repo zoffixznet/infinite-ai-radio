@@ -11,6 +11,7 @@ package remote_test
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -155,16 +156,38 @@ func TestScreenshots(t *testing.T) {
 		w.exec(`var e=document.getElementById('now'); return e ? e.textContent : '';`, &now)
 		return now != "" && !strings.Contains(now, "…")
 	})
+	// Let the machine finish stocking before the phone starts banking:
+	// a device can only download what is offered, and starting while
+	// one track is listed is a race the picture loses half the time.
+	waitFor(t, 120*time.Second, "the machine to offer a few songs", func() bool {
+		var q struct {
+			Tracks []struct {
+				ID string `json:"id"`
+			} `json:"tracks"`
+		}
+		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/api/queue').then(function(r){return r.json()}).then(cb);`, &q)
+		return len(q.Tracks) >= 3
+	})
 	// Buffered playback is what a phone actually does, so it is what
 	// the picture should show: the device's own bank of songs, the
 	// Flush chip that empties it, and a seek bar that works because
 	// the song is a whole file sitting on the phone.
-	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
+	w.exec(`document.getElementById('buffered').click();
+		var sel = document.getElementById('buflevel');
+		sel.value = 'steady';
+		sel.dispatchEvent(new Event('change'));
+		return true;`, nil)
 	w.click("#play")
 	// Wait for a bank worth showing: songs stacked up ahead of the one
 	// playing, and no "nothing new yet" note. Caught too early the
 	// picture shows the one state a listener never wants to see.
-	waitFor(t, 120*time.Second, "a healthy device bank", func() bool {
+	var lastBank string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("device bank at the end: %s", lastBank)
+		}
+	})
+	waitFor(t, 200*time.Second, "a healthy device bank", func() bool {
 		var st struct {
 			Playing bool   `json:"playing"`
 			Count   string `json:"count"`
@@ -183,6 +206,14 @@ func TestScreenshots(t *testing.T) {
 				hidden: !!document.getElementById('devrow').hidden,
 				ahead: m ? parseInt(m[1], 10) : 0
 			};`, &st)
+		var q struct {
+			Tracks []struct {
+				Kind string `json:"kind"`
+			} `json:"tracks"`
+		}
+		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/api/queue').then(function(r){return r.json()}).then(cb);`, &q)
+		lastBank = fmt.Sprintf("playing=%v hidden=%v ahead=%d count=%q note=%q serverRows=%d",
+			st.Playing, st.Hidden, st.Ahead, st.Count, st.Note, len(q.Tracks))
 		return st.Playing && !st.Hidden && st.Note == "" && st.Ahead >= 1 &&
 			!strings.HasPrefix(st.Count, "1 song ")
 	})
