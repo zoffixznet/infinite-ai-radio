@@ -52,7 +52,7 @@ type Builder struct {
 	// every vocal song arrives with a description of its own.
 	instReady map[string][]string
 	lyrReady  map[string][]StockedLyrics
-	lyrLast  map[string]StockedLyrics
+	lyrLast   map[string]StockedLyrics
 	// phased records whether generation is phased: only then does a
 	// busy engine suppress background lyric writing (see buildLyrics).
 	phased bool
