@@ -72,6 +72,67 @@
     try { navigator.vibrate(10); } catch (e) {}
   }
 
+  // ---- audio cue for trouble ---------------------------------------
+  // A radio that quietly repeats itself looks exactly like a radio
+  // that is working. Three soft beeps in a hole in the music say
+  // otherwise, without being an alarm: the music ducks, the beeps
+  // sound, the music comes back.
+  var audioCues = store.get("iar.audiocues", true) !== false;
+  var cueUntil = 0;      // a cue is sounding; do not stack another
+  var lastCueAt = 0;     // when the last one sounded
+  var cueCtx = null;
+  // cueGap is the shortest time between cues: often enough to notice a
+  // stuck radio, rare enough not to become the noise it is warning
+  // about.
+  var cueGap = 3 * 60 * 1000;
+  function cueTone(ctx, at, freq) {
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    // Shaped edges: a square-edged beep clicks.
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.25, at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.16);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(at);
+    osc.stop(at + 0.2);
+  }
+  // playTroubleCue sounds the cue and returns roughly how long the
+  // music should stay out of the way, in milliseconds. Returns 0 when
+  // cues are off, unsupported, or one just sounded.
+  function playTroubleCue(minGapMs) {
+    if (!audioCues) return 0;
+    var now = Date.now();
+    if (now < cueUntil) return 0;
+    if (minGapMs && now - lastCueAt < minGapMs) return 0;
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return 0;
+    try {
+      if (!cueCtx) cueCtx = new Ctx();
+      if (cueCtx.state === "suspended") cueCtx.resume();
+      var lead = 0.6, t = cueCtx.currentTime + lead;
+      cueTone(cueCtx, t, 880);
+      cueTone(cueCtx, t + 0.24, 880);
+      cueTone(cueCtx, t + 0.48, 880);
+    } catch (e) {
+      return 0;
+    }
+    lastCueAt = now;
+    var total = 1900; // lead, three beeps, and a breath after
+    cueUntil = now + total;
+    return total;
+  }
+  // duckThrough silences whatever is playing for the cue, then brings
+  // it back, so the beeps land in a hole rather than under the music.
+  function duckThrough(el, ms) {
+    if (!el || !ms) return;
+    var was = el.volume;
+    try { el.volume = 0; } catch (e) { return; }
+    setTimeout(function () { try { el.volume = was; } catch (e) {} }, ms);
+  }
+
   // say announces a transition to a screen reader. The visible status
   // line updates every couple of seconds with an elapsed count, which
   // is not something anyone wants read aloud.
@@ -527,13 +588,14 @@
     seen: {},        // ids already heard in this context, so Next moves on
     wrapped: false,  // the last pick came back round to something heard
     wantPlay: false, // start playback as soon as anything is stored
-    loop: false      // repeat the playing track on this device
+    loop: false,     // repeat the playing track on this device
+    storeFull: false // the device refused to store a downloaded track
   };
 
   // Buffering level (per device): how far ahead to download and how
   // many finished tracks to keep banked.
   var bufLevel = store.get("iar.buflevel", "auto");
-  if (bufLevel !== "eco" && bufLevel !== "max" && bufLevel !== "steady") bufLevel = "auto";
+  if (bufLevel !== "eco" && bufLevel !== "max" && bufLevel !== "steady" && bufLevel !== "ultra") bufLevel = "auto";
 
   function idbOpen() {
     return new Promise(function (resolve, reject) {
@@ -557,6 +619,7 @@
     if (bufLevel === "eco") return 1;
     if (bufLevel === "steady") return 3;
     if (bufLevel === "max") return 16;
+    if (bufLevel === "ultra") return 48;
     var c = navigator.connection;
     if (c && c.type === "wifi" && !c.saveData) return 5;
     return 2; // cellular, save-data, or no connection API
@@ -567,6 +630,10 @@
     if (bufLevel === "eco") return 4;
     if (bufLevel === "steady") return 8; // ~20 min at default track length
     if (bufLevel === "max") return 18; // ~45 min at default track length
+    // Hours rather than minutes, for a flight or a long dead zone.
+    // Whole songs on the device, so the ceiling is the phone's room
+    // rather than ours; a phone that runs out says so.
+    if (bufLevel === "ultra") return 72;
     return 8;
   }
 
@@ -585,7 +652,10 @@
     row.hidden = !pf.active;
     if (!pf.active) return;
     setText($("devcount"), n + " song" + (n === 1 ? "" : "s") + " on this device (~" + pfMinutes() + " min)");
-    setText($("devnote"), pf.wrapped ? "replaying earlier songs, nothing new yet" : "");
+    var note = "";
+    if (pf.wrapped) note = "replaying earlier songs, nothing new yet";
+    else if (pf.storeFull) note = "no room left on this device - these play now but are not saved";
+    setText($("devnote"), note);
   }
 
   function pfState(text, cls) { if (pf.active) streamState(text, cls); }
@@ -806,7 +876,15 @@
     }).then(function (blob) {
       pf.ctrl = null;
       pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "" };
-      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", blob: blob, saved: Date.now() }))["catch"](function () {});
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", blob: blob, saved: Date.now() }))
+        .then(function () { pf.storeFull = false; })
+        ["catch"](function () {
+          // Out of room on the device: the song plays from memory this
+          // session but will not survive a reload, which matters most
+          // to the listener banking hours for a flight.
+          pf.storeFull = true;
+          pfShowMinutes();
+        });
       pfTrimStore();
       pfShowMinutes();
       // Only a freshly generated track is worth cutting the current
@@ -1020,6 +1098,16 @@
       pf.wantPlay = true;
       pfEnsureDownloads();
       return;
+    }
+    // Nothing new has arrived and this device is about to repeat
+    // itself: say so before it does, in the gap between the tracks.
+    if (pf.wrapped) {
+      var ms = playTroubleCue(cueGap);
+      if (ms) {
+        pf.cur = 1 - pf.cur;
+        setTimeout(function () { pfPlay(nextId); }, ms);
+        return;
+      }
     }
     // With a single stored track, pfPlay rewinds and replays it on the
     // other element; with two or more, the staged element takes over.
@@ -1262,6 +1350,13 @@
   }
   syncPrevAction();
   document.addEventListener("iar:msaction", function (e) { msAction(e.detail); });
+  $("audiocues").checked = audioCues;
+  $("audiocues").addEventListener("change", function () {
+    audioCues = $("audiocues").checked;
+    store.set("iar.audiocues", audioCues);
+    // Sound one immediately so the listener knows what to listen for.
+    if (audioCues) playTroubleCue(0);
+  });
   $("carsave").checked = carSave;
   $("carsave").addEventListener("change", function () {
     carSave = $("carsave").checked;
@@ -1778,6 +1873,12 @@
         ? "The radio itself is looping its playing track; this device plays its own bank."
         : "Looping this track until the loop is turned off.";
       else if (s.looping) phaseText = "Replaying the last track while the next one generates.";
+      // The stream cannot be paused for a cue, so the music ducks
+      // around it instead. Repeated on a long interval: a radio stuck
+      // for an hour should say so more than once.
+      if (s.looping && !pf.active && wantStream) {
+        duckThrough(audio, playTroubleCue(cueGap));
+      }
       setText($("phase"), phaseText);
       paintLoop(pf.active ? pf.loop : !!s.loop_on);
       renderSound(s);

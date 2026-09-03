@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -677,6 +678,22 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &title)
 		return n == 1 && strings.HasPrefix(title, "road-trip")
 	})
+	// The per-device settings a traveller depends on: hours of music
+	// banked for a dead zone, and a cue when the radio goes quiet.
+	var settings struct {
+		Tiers []string `json:"tiers"`
+		Cues  bool     `json:"cues"`
+	}
+	w.exec(`var sel=document.getElementById('buflevel');
+		var out=[];
+		for (var i=0;i<sel.options.length;i++) out.push(sel.options[i].value);
+		return {tiers: out, cues: document.getElementById('audiocues').checked};`, &settings)
+	if !slices.Contains(settings.Tiers, "ultra") {
+		t.Fatalf("no hours-deep buffering tier offered: %v", settings.Tiers)
+	}
+	if !settings.Cues {
+		t.Fatal("audio cues for trouble were not on by default")
+	}
 	w.click("#sheetclose")
 	// Station bands are collapsible; open them all so the target row is
 	// clickable.

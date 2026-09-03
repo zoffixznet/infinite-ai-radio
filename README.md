@@ -408,7 +408,9 @@ The page defaults to **buffered playback**: it downloads whole upcoming
 tracks and plays them back-to-back, so the music keeps going through
 minutes of dead signal. How much is buffered is a per-device choice
 under Settings, from one track ahead on metered connections to about 45
-minutes for flights. In buffered mode the Next button skips only on that
+minutes - or, on the Ultra setting, about three hours for a flight or
+a long dead zone (a phone that runs out of room says so rather than
+failing quietly). In buffered mode the Next button skips only on that
 device; other listeners and the machine keep their own position. A
 Settings switch selects the direct live stream instead - the one
 `/stream.mp3` serves - whose Next skips for everyone. The Loop button
@@ -426,6 +428,12 @@ button next to that count dumps the bank and rejoins the live stream at
 its edge. If the stream drops or stalls, the page reconnects on its own
 and picks up the moment the stream is reachable again; only an expired
 login stops it.
+
+**Audio cues for trouble** are on by default. A radio that quietly
+repeats itself looks exactly like a radio that is working, so when the
+music stops arriving and the same song comes round again, the sound
+ducks for three soft beeps and comes back. It repeats at most every few
+minutes, and switching it off in Settings is one tap.
 
 Saving from the phone captures what *you* are hearing - in buffered mode
 that is this device's track, which may trail the machine's speakers.
@@ -584,13 +592,12 @@ everything else keeps its default. The complete set, with defaults:
   pw-play/pacat pipe). `"pipe"`, `"null"` (silent, realtime-paced) and
   `"file"` (raw PCM to a file, used with `--player-file`) are mostly for
   scripting and tests. The `--player` flag overrides per run.
-- `track_seconds` (30-300): length of each generated instrumental track.
-  Longer tracks mean fewer transitions but steering tweaks take longer
-  to arrive. Vocal tracks do not follow this: a song's length comes
-  from its words - the lyric writer writes a complete song and the
-  engine derives a fitting duration from it (or, when the engine
-  writes the words itself, its planner picks a natural song length) -
-  bounded only by `max_track_seconds`.
+- `track_seconds` (30-300): the length asked for when a length has to
+  be named - the short first track that gets music playing sooner, and
+  MP3 exports measured in minutes. Ordinary tracks do not follow it:
+  every song's length comes from the song, bounded only by
+  `max_track_seconds`. A vocal track's length follows its words, and an
+  instrumental's is chosen by the engine's planner to suit the piece.
 - `crossfade_seconds` (0.5-10): equal-power crossfade between tracks.
 - `buffer_tracks` (1-8): only used when `buffer.phased` is false - how
   many finished tracks the in-memory queue keeps ahead of playback
@@ -743,14 +750,14 @@ disk-backing mode).
   system memory to hold them; the music itself is identical. It does
   not lower the peak during generation, so it fixes the collisions that
   happen between tracks, not the ones during them.
-- `max_track_seconds`: a ceiling on vocal track length, however the
-  length was decided - derived from a written lyric sheet, or picked by
-  the engine's planner when no sheet was ready in time. Both paths
-  produce natural song lengths, typically three to four minutes. Longer plans cost proportionally more video memory and
+- `max_track_seconds`: a ceiling on track length, however the length
+  was decided - derived from a written lyric sheet, or picked by the
+  engine's planner for an instrumental or a song it wrote the words
+  for. Every path produces natural song lengths, typically three to
+  four minutes. Longer plans cost proportionally more video memory and
   generation time, so the ceiling trims the occasional runaway pick
-  without shortening normal songs; picks under the ceiling pass through
-  untouched. 0 removes the ceiling. Instrumental tracks follow
-  `track_seconds` exactly and never consult this.
+  without shortening normal songs; picks under the ceiling pass
+  through untouched. 0 removes the ceiling.
 - `repo_url`, `tag`: which engine version `iar setup` installs. Change
   only if you know you want a different release.
 
