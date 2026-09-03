@@ -584,9 +584,8 @@
     if (!row) return;
     row.hidden = !pf.active;
     if (!pf.active) return;
-    var note = n + " song" + (n === 1 ? "" : "s") + " on this device (~" + pfMinutes() + " min)";
-    if (pf.wrapped) note += " · replaying earlier songs, nothing new yet";
-    setText($("devbank"), note);
+    setText($("devcount"), n + " song" + (n === 1 ? "" : "s") + " on this device (~" + pfMinutes() + " min)");
+    setText($("devnote"), pf.wrapped ? "replaying earlier songs, nothing new yet" : "");
   }
 
   function pfState(text, cls) { if (pf.active) streamState(text, cls); }
