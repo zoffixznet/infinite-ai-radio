@@ -3,6 +3,7 @@ package prompting
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -460,5 +461,85 @@ func TestPinnedLanguageOutranksTheConfiguredList(t *testing.T) {
 	}
 	if ok(Language{Code: "tl", Name: "Tagalog"}) {
 		t.Fatal("a Tagalog sheet was accepted under a Spanish pin")
+	}
+}
+
+// An instrumental session used to reach the engine under the identical
+// terse tag list for every track, while every vocal song arrived with a
+// description written for it alone. The writer now describes
+// instrumentals too, and each track takes one of its own.
+func TestInstrumentalTracksGetTheirOwnDescription(t *testing.T) {
+	var asked int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tags") {
+			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{{"name": "m"}}})
+			return
+		}
+		asked++
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{
+			"role": "assistant", "content": fmt.Sprintf("A rolling groove number %d, brushed drums and a warm bass walking under a muted keys line.", asked),
+		}})
+	}))
+	defer srv.Close()
+
+	b := NewBuilder(NewOllama(srv.URL, "m", 0), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.ProbeAsync(ctx)
+	if !b.AwaitHelper(ctx, 5*time.Second) {
+		t.Fatal("helper never became usable")
+	}
+	s := session.New()
+	s.Vocal = false
+
+	// Nothing stocked: planning should wait rather than send the tag
+	// list again, and the spec falls back to the steering caption.
+	if !b.AwaitingInstrumentalCaptions(s) {
+		t.Fatal("an empty shelf did not report as awaiting")
+	}
+	bare := b.BuildSpec(ctx, s, 150)
+	if bare.Lyrics != engine.InstrumentalLyrics {
+		t.Fatalf("instrumental lyrics = %q", bare.Lyrics)
+	}
+
+	if wrote := b.StockInstrumentalCaptions(ctx, s, 2, nil); wrote != 2 {
+		t.Fatalf("stocked %d descriptions, want 2", wrote)
+	}
+	if b.AwaitingInstrumentalCaptions(s) {
+		t.Fatal("a stocked shelf still reported as awaiting")
+	}
+
+	first := b.BuildSpec(ctx, s, 150)
+	second := b.BuildSpec(ctx, s, 150)
+	if first.Prompt == bare.Prompt {
+		t.Fatal("the track was still described by the terse steering caption")
+	}
+	if first.Prompt == second.Prompt {
+		t.Fatalf("two tracks shared one description: %q", first.Prompt)
+	}
+	for _, spec := range []engine.Spec{first, second} {
+		if spec.Lyrics != engine.InstrumentalLyrics {
+			t.Fatalf("a described instrumental lost its instrumental marker: %q", spec.Lyrics)
+		}
+		if spec.ExactSeconds {
+			t.Fatal("an ordinary instrumental asked for an exact length")
+		}
+	}
+	// Drained again, the terse caption stands rather than nothing.
+	if third := b.BuildSpec(ctx, s, 150); third.Prompt != bare.Prompt {
+		t.Fatalf("a bare shelf did not fall back to the steering caption: %q", third.Prompt)
+	}
+}
+
+// A vocal session must not be touched by any of it.
+func TestVocalSessionsIgnoreTheInstrumentalShelf(t *testing.T) {
+	b := NewBuilder(nil, nil)
+	s := session.New()
+	s.Vocal = true
+	if b.AwaitingInstrumentalCaptions(s) {
+		t.Fatal("a vocal session reported as awaiting instrumental descriptions")
+	}
+	if n := b.StockInstrumentalCaptions(context.Background(), s, 2, nil); n != 0 {
+		t.Fatalf("wrote %d instrumental descriptions for a vocal session", n)
 	}
 }

@@ -188,15 +188,16 @@ func (e *Engine) request(spec engine.Spec) GenerateRequest {
 	} else {
 		req.Prompt = spec.Prompt
 		req.Lyrics = spec.Lyrics
-		if spec.Vocal() {
-			// A track with written lyrics is a complete song; its
-			// length follows from the words, the way songs actually
-			// get made. Omitting the duration lets the engine's
-			// planner read the lyrics and derive a fitting length
-			// (bounded by the max_track_seconds ceiling), instead of
-			// squeezing or padding the song to track_seconds.
-			// Instrumentals keep the exact requested length - they
-			// are background music cut to a schedule, not songs.
+		if !spec.ExactSeconds {
+			// Let the engine's planner choose the length, the way
+			// music actually gets made: a song runs as long as it
+			// needs to, bounded by the max_track_seconds ceiling.
+			// Sending a duration does not merely suggest one - the
+			// server turns it into a hard quota on the audio-code
+			// stream, forbidding the piece to end until exactly that
+			// many codes exist and then cutting it off there, so the
+			// arrangement is squeezed or padded to fit a number
+			// nobody chose for musical reasons.
 			req.AudioDuration = 0
 		}
 	}

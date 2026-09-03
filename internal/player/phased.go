@@ -500,7 +500,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			playedNow := o.playedInEpoch
 			o.mu.Unlock()
 			fallbackOK := playedNow == 0 || buffered < lyricEmergencySeconds
-			if !fallbackOK && o.builder.AwaitingLyrics(sess) {
+			if !fallbackOK && (o.builder.AwaitingLyrics(sess) || o.builder.AwaitingInstrumentalCaptions(sess)) {
 				// The writer has no words ready for the next song, and
 				// planning past the writer is what turns a station
 				// into one song in a hundred costumes. Planning stops
@@ -813,6 +813,17 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 		o.mu.Unlock()
 	}()
 	start := time.Now()
+	// An instrumental session has no words to write, but it has the
+	// same need: something of its own per song, rather than the same
+	// terse tag list under every track of the batch.
+	if !sess.Vocal {
+		if wrote := o.builder.StockInstrumentalCaptions(phaseCtx, sess, want, stop); wrote > 0 {
+			o.log.Info("wordsmith phase described the batch's tracks",
+				"event", "wordsmith_done", "descriptions", wrote, "want", want,
+				"elapsed_seconds", time.Since(start).Seconds())
+		}
+		return
+	}
 	if wrote := o.builder.StockLyrics(phaseCtx, sess, want, stop); wrote > 0 {
 		o.log.Info("wordsmith phase wrote the batch's lyrics",
 			"event", "wordsmith_done", "sheets", wrote, "want", want,

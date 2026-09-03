@@ -588,10 +588,12 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		o.mu.Unlock()
 		if firstTrack && seconds > 60 {
 			// A shorter first track gets music playing sooner; later
-			// tracks use the configured length.
+			// tracks let the engine choose a length that suits them.
 			seconds = 60
 		}
 		spec := o.builder.BuildSpec(ctx, sess, seconds)
+		// Only the hurry-up opener insists on its length.
+		spec.ExactSeconds = firstTrack
 		// Ask the helper for an evocative short name while the track
 		// generates; generation takes far longer, so the name is
 		// usually ready when the track lands.

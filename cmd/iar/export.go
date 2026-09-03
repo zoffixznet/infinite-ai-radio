@@ -79,22 +79,24 @@ started (or reused) as needed.`,
 			}
 			if sess.Mode == session.ModeMusic {
 				// The radio's own order: the writer gets the card to
-				// itself for every song's words, and only then does
-				// the engine wake to plan and render them.
-				if sess.Vocal {
-					fmt.Println("waking the lyric writer")
-					if bld.AwaitHelper(ctx, 90*time.Second) {
-						want := songs
-						if want == 0 {
-							want = minutes*60/a.cfg.TrackSeconds + 1
-						}
+				// itself for every song, and only then does the engine
+				// wake to plan and render them.
+				want := songs
+				if want == 0 {
+					want = minutes*60/a.cfg.TrackSeconds + 1
+				}
+				if bld.AwaitHelper(ctx, 90*time.Second) {
+					if sess.Vocal {
 						fmt.Printf("writing the words for %d song(s) before the engine starts\n", want)
 						if wrote := bld.StockLyrics(ctx, sess, want, nil); wrote == 0 {
 							fmt.Println("the lyric writer wrote nothing; the engine will write its own words")
 						}
 					} else {
-						fmt.Println("no lyric writer available; the engine will write its own words")
+						fmt.Printf("describing %d instrumental track(s) before the engine starts\n", want)
+						bld.StockInstrumentalCaptions(ctx, sess, want, nil)
 					}
+				} else if sess.Vocal {
+					fmt.Println("no lyric writer available; the engine will write its own words")
 				}
 				eng, remote, note := a.buildEngine(ctx, false)
 				if eng == nil {

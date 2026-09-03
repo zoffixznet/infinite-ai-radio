@@ -45,7 +45,13 @@ type Builder struct {
 	// when no fresh write finished in time: stale beats
 	// machine-invented). lyrHooks remembers recent hook lines per
 	// context so follow-up writes avoid repeating a chorus.
-	lyrReady map[string][]StockedLyrics
+	// instReady holds per-song descriptions for instrumental tracks,
+	// keyed like the lyric shelf. An instrumental has no words to
+	// describe it, so without these every instrumental of a session
+	// reaches the engine under the identical terse tag list while
+	// every vocal song arrives with a description of its own.
+	instReady map[string][]string
+	lyrReady  map[string][]StockedLyrics
 	lyrLast  map[string]StockedLyrics
 	// phased records whether generation is phased: only then does a
 	// busy engine suppress background lyric writing (see buildLyrics).
@@ -110,6 +116,7 @@ func NewBuilder(ollama *Ollama, log *slog.Logger) *Builder {
 		log:         log,
 		cache:       map[string]string{},
 		pending:     map[string]bool{},
+		instReady:   map[string][]string{},
 		lyrReady:    map[string][]StockedLyrics{},
 		lyrLast:     map[string]StockedLyrics{},
 		lyrLastUses: map[string]int{},
@@ -184,6 +191,9 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 	}
 	if !s.Vocal {
 		spec.Lyrics = engine.InstrumentalLyrics
+		if d := b.takeInstrumentalCaption(s, r); d != "" {
+			spec.Prompt = d
+		}
 		return spec
 	}
 	// A language steered in by hand ("sing in french") pins the session
@@ -254,6 +264,91 @@ a STYLE tag list and the song's LYRICS, reply with one vivid sentence
 texture and mood, echoing the song's imagery. Stay strictly inside the
 STYLE - every tag holds; add color, never contradictions. Plain prose,
 no quotes, no artist names, no mention of prompts or AI.`
+
+// instrumentalSystem instructs the helper to describe one specific
+// instrumental piece. It has no lyrics to work from, so the brief is
+// the arrangement itself: what the piece does over its length.
+const instrumentalSystem = `You describe instrumental pieces for a music
+generator. Given a STYLE tag list, reply with one vivid sentence (25-45
+words) describing one specific instrumental track in that style: its
+instruments, its groove, and how it moves from its opening through a
+middle to its ending. No singing, no vocals, no lyrics - this piece has
+none. Stay strictly inside the STYLE - every tag holds; add color,
+never contradictions. Plain prose, no quotes, no artist names, no
+mention of prompts or AI.`
+
+// instrumentalKey names the shelf slot for a session's instrumental
+// descriptions: the steering context they were written for.
+func (b *Builder) instrumentalKey(r Rendered) string { return "inst:" + r.Caption }
+
+// StockInstrumentalCaptions writes per-song descriptions ahead for an
+// instrumental session, the way StockLyrics writes words for a vocal
+// one, and returns how many it wrote. Synchronous: the caller owns the
+// timing, and means to spend the freed graphics card on it.
+func (b *Builder) StockInstrumentalCaptions(ctx context.Context, s *session.Session, want int, stop func(wrote int) bool) int {
+	if s == nil || s.Vocal || !b.helperUsable() {
+		return 0
+	}
+	r := Render(s)
+	key := b.instrumentalKey(r)
+	wrote := 0
+	for ctx.Err() == nil && b.helperUsable() && (stop == nil || !stop(wrote)) {
+		b.mu.Lock()
+		have := len(b.instReady[key])
+		b.mu.Unlock()
+		if have >= want {
+			break
+		}
+		callCtx, cancel := context.WithTimeout(ctx, captionTimeout)
+		out, err := b.ollama.ChatWith(callCtx, instrumentalSystem, "STYLE: "+r.Caption, ChatOpts{
+			Temperature: 0.9, KeepAliveSeconds: scribeKeepAlive,
+		})
+		cancel()
+		line := sanitizeLine(out, 400)
+		if err != nil || line == "" {
+			b.noteFailure(fmt.Errorf("instrumental description: %w", err))
+			return wrote
+		}
+		b.mu.Lock()
+		b.instReady[key] = append(b.instReady[key], line)
+		b.mu.Unlock()
+		wrote++
+		b.log.Info("instrumental description stocked ahead",
+			"event", "instrumental_stocked", "ready", have+1)
+	}
+	return wrote
+}
+
+// AwaitingInstrumentalCaptions reports that an instrumental session has
+// no description left to hand out, so planning should pause and let the
+// writer refill rather than sending the terse tag list again.
+func (b *Builder) AwaitingInstrumentalCaptions(s *session.Session) bool {
+	if s == nil || s.Vocal || !b.helperUsable() {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.instReady[b.instrumentalKey(Render(s))]) == 0
+}
+
+// takeInstrumentalCaption pops one stocked description, or returns
+// empty when the shelf is bare - in which case the terse steering
+// caption stands, exactly as it always did.
+func (b *Builder) takeInstrumentalCaption(s *session.Session, r Rendered) string {
+	key := b.instrumentalKey(r)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	shelf := b.instReady[key]
+	if len(shelf) == 0 {
+		return ""
+	}
+	out := shelf[0]
+	b.instReady[key] = shelf[1:]
+	return out
+}
+
+// captionTimeout bounds one description call.
+const captionTimeout = 90 * time.Second
 
 // captionSong asks the helper to describe one song, synchronously; the
 // caller owns the timing. Empty on any failure - the terse steering

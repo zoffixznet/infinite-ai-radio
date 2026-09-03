@@ -164,7 +164,9 @@ func TestEngineMapsSpecs(t *testing.T) {
 	sidecar.mu.Unlock()
 	eng := NewEngine(sidecar, Options{InferenceSteps: 8, Thinking: true})
 
-	// Instrumental spec.
+	// Instrumental spec. A piece is as long as it wants to be, so no
+	// duration is sent: the server turns one into a hard quota on the
+	// audio-code stream and cuts the arrangement to fit it.
 	_, err := eng.Generate(context.Background(), engine.Spec{
 		Prompt: "lofi", Lyrics: engine.InstrumentalLyrics, Seconds: 60, Seed: -1,
 	})
@@ -177,8 +179,20 @@ func TestEngineMapsSpecs(t *testing.T) {
 	if !f.lastReq.UseRandomSeed {
 		t.Fatal("seed -1 should use random seed")
 	}
+	if f.lastReq.AudioDuration != 0 {
+		t.Fatalf("instrumental sent duration %v; want none, so the engine picks a length", f.lastReq.AudioDuration)
+	}
+
+	// The one caller that does need a length says so: the hurry-up
+	// first track, which trades a fitting length for playing sooner.
+	_, err = eng.Generate(context.Background(), engine.Spec{
+		Prompt: "lofi", Lyrics: engine.InstrumentalLyrics, Seconds: 60, Seed: -1, ExactSeconds: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if f.lastReq.AudioDuration != 60 {
-		t.Fatalf("duration = %v", f.lastReq.AudioDuration)
+		t.Fatalf("an exact-length request sent duration %v; want 60", f.lastReq.AudioDuration)
 	}
 
 	// Vocal with written lyrics: the words are the song, so no

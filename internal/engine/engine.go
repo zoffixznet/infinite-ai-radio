@@ -24,6 +24,12 @@ type Spec struct {
 	SampleQuery string
 	// Seconds is the requested track duration.
 	Seconds int
+	// ExactSeconds asks for exactly Seconds of audio instead of
+	// letting the engine's planner choose a length that suits the
+	// material. It is for the rare caller that needs a specific
+	// duration - the short first track that gets music playing
+	// sooner - not for ordinary songs.
+	ExactSeconds bool
 	// Seed pins the random seed; -1 means random.
 	Seed int64
 
