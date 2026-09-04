@@ -114,7 +114,7 @@ degrades gracefully rather than refusing to play:
 ## Install
 
 A static binary for `linux/amd64` and `linux/arm64` is published on the
-[releases page](https://github.com/OWNER/REPO/releases), with a
+[releases page](https://github.com/zoffixznet/infinite-ai-radio/releases), with a
 `SHA256SUMS` file beside it:
 
 ```sh

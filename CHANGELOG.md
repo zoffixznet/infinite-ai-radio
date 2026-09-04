@@ -60,5 +60,5 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/OWNER/REPO/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/OWNER/REPO/releases/tag/v1.0.0
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/zoffixznet/infinite-ai-radio/releases/tag/v1.0.0
