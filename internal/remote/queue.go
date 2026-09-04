@@ -74,7 +74,12 @@ func (s *Server) handleQueueTrack(w http.ResponseWriter, r *http.Request, u acco
 		return
 	}
 	w.Header().Set("Content-Type", "audio/mpeg")
-	w.Header().Set("Cache-Control", "private, max-age=3600")
+	// The phone keeps its own copy of every track it banks, so a second
+	// copy in the browser's cache buys nothing - and costs correctness:
+	// a flushed device re-requesting a song was handed it straight back
+	// out of that cache, with the radio switched off, which made Flush
+	// look like it had done nothing at all.
+	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, id+".mp3", time.Time{}, bytes.NewReader(data))
 }
 

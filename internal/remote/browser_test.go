@@ -1412,6 +1412,34 @@ func TestRealBrowserResilience(t *testing.T) {
 			return {src:'', t:0};`, &cur)
 		return cur.Src != "" && cur.Src != srcBefore
 	})
+
+	// Flush means flush, even with the radio switched off. The songs
+	// are gone from the device and nothing plays, rather than being
+	// handed straight back out of the browser's own cache - which is
+	// what made a flushed bank refill with the same songs and restart
+	// the song that was playing.
+	w.click("#jumplive")
+	emptied := func() (string, bool) {
+		var st struct {
+			Count   string `json:"count"`
+			Playing bool   `json:"playing"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var on=false; a.forEach(function (x) { if (x && !x.paused) on = true; });
+			return {count: (document.getElementById('devcount')||{}).textContent||"", playing: on};`, &st)
+		return st.Count, strings.HasPrefix(st.Count, "0 song") && !st.Playing
+	}
+	waitFor(t, 20*time.Second, "the device to empty", func() bool {
+		_, ok := emptied()
+		return ok
+	})
+	// Still empty a few polls later: a refill out of the browser's own
+	// cache would land within one.
+	time.Sleep(6 * time.Second)
+	if count, ok := emptied(); !ok {
+		t.Fatalf("a flushed device refilled itself while the radio was off: %q", count)
+	}
+
 	sb.startPlayer(t)
 	sb.waitListening(t)
 }

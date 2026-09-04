@@ -905,7 +905,11 @@
     var deadline = setTimeout(function () {
       try { ctrl.abort(); } catch (e) {}
     }, trackFetchTimeout);
-    fetch(row.url, { signal: pf.ctrl.signal }).then(function (r) {
+    // no-store: this device stores the song itself, in a place a flush
+    // can actually empty. Left to the browser's cache there is a
+    // second copy nothing here controls, and a flushed bank refills
+    // from it instantly - even with the radio switched off.
+    fetch(row.url, { signal: pf.ctrl.signal, cache: "no-store" }).then(function (r) {
       clearTimeout(deadline);
       if (r.status === 401 || r.status === 403) { throw { auth: true }; }
       if (!r.ok) { throw new Error("track " + r.status); }
