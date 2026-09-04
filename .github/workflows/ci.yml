@@ -19,6 +19,12 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
+      # The tests that exercise the disk buffer, the retitle pass and
+      # MP3 export all encode audio for real rather than faking it, so
+      # the test job needs ffmpeg exactly as the smoke job does.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)

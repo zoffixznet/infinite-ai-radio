@@ -3,6 +3,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # So a release can be re-run for a tag that already exists, without
+  # deleting and re-pushing the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g. v1.0.0)"
+        required: true
 
 permissions:
   contents: write
@@ -15,6 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-go@v5
         with:
@@ -32,13 +40,16 @@ jobs:
           ./scripts/smoke_test.sh
 
       - name: Build release tarballs
-        run: make release VERSION="${GITHUB_REF_NAME}"
+        run: make release VERSION="${TAG}"
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
+            --title "$TAG" \
             --generate-notes \
             dist/*.tar.gz dist/SHA256SUMS
