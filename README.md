@@ -283,6 +283,7 @@ typed at the same prompt. A leading slash is optional: `skip` and
 | `load <name>` | resume a saved session |
 | `preset <name>` | switch to a built-in preset |
 | `delete <name>` | delete a session or hide a preset (asks first) |
+| `delete autos [days]` | delete the sessions nobody named (asks first) |
 | `mp3 <minutes> [file]` | export minutes of the current vibe to MP3 |
 | `skip` | jump to the next track |
 | `loop` | repeat the playing track until toggled off |
@@ -316,13 +317,32 @@ button clears the hold for everyone.
 
 ## Sessions and presets
 
-Everything you type is persisted automatically; you never have to save.
-`name gym-grind` gives the current session a name, and `./iar --session
-gym-grind` (or `load gym-grind` inside) brings the same vibe back.
-`sessions` lists your named sessions, the presets and the auto-saved
-ones; sessions you never named are swept two days after they last
-played (`sessions.auto_retention_days`), while named ones stay. Session
-files are plain JSON in your data directory.
+Everything you type is persisted automatically; you never have to save,
+and a restart carries on with the session that was playing rather than
+starting something new. `name gym-grind` gives the current session a
+name, and `./iar --session gym-grind` (or `load gym-grind` inside)
+brings that vibe back at any time. Session files are plain JSON in your
+data directory.
+
+**Changing the sound branches the session.** A steer, a language switch,
+a different lyric writer, `clear` - anything that changes what is being
+generated - leaves the sound you had under its own name and carries on
+under a new one, named after where it came from
+(`gym-grind-20260904-231500`). If the change is not an improvement,
+`load gym-grind` puts the old sound back and you can try something else
+from there. The acknowledgment names the session it kept, so you never
+have to go looking. Changes made before anything has been heard - three
+steers while the first track is still rendering - stay in one session
+rather than leaving a trail of sounds nobody heard.
+
+A session you named and one that was named for you work the same way in
+every respect: both resume, both can be loaded, both are listed. The one
+difference is that the generated ones accumulate - one per change - so
+there is a single gesture that clears them out: `delete autos` in the
+player, *Delete all* on the phone's **Auto-saved** band, or
+`./iar sessions delete-auto` from a shell. `delete autos 7` (or
+`--older-than-days 7`) keeps the recent ones. Whatever is playing, and
+anything you named, is never touched. `sessions` lists everything.
 
 Twenty-one presets ship built in, grouped by energy - pick a feeling first
 and steer the genre later. They behave like read-only sessions: starting
@@ -865,8 +885,11 @@ by hand.
 - `auto_retention_days`: sessions that were never given a name (the
   `session-...`, `prompt-...` and `<preset>-...` ones saved
   automatically) are deleted this many days after they last played, at
-  startup and every half hour while playing. `0` keeps them forever.
-  Named sessions, presets and the playing session are never touched.
+  startup and every half hour while playing. The default, `0`, keeps
+  them: they are the sounds you go back to when a change did not work
+  out, so clearing them is a decision (`delete autos`) rather than a
+  timer. Named sessions, presets and the playing session are never
+  touched.
 
 ### Environment variables
 

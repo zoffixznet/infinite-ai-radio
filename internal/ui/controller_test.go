@@ -175,7 +175,7 @@ func TestControllerSessionsListingIsGrouped(t *testing.T) {
 		t.Fatalf("group order wrong:\n%s", resp)
 	}
 	resp, _ = c.Handle("help")
-	if !strings.Contains(resp, "delete <name>") {
+	if !strings.Contains(resp, "delete <n|autos>") {
 		t.Fatalf("help lacks delete: %q", resp)
 	}
 	if n := strings.Count(resp, "\n") + 1; n > 10 {

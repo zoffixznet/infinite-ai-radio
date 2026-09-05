@@ -74,9 +74,17 @@ type Session struct {
 	History []Entry `json:"history"`
 
 	// Named is set once a user gave the session a name. Sessions that
-	// only ever had a generated name are swept after the retention
-	// window.
+	// only ever had a generated name are the ones the bulk delete
+	// offers to clear out.
 	Named bool `json:"named,omitempty"`
+	// ForkedFrom names the session this one branched off when something
+	// about the sound was changed, so the state before that change is
+	// still on disk to go back to.
+	ForkedFrom string `json:"forked_from,omitempty"`
+	// SeedExpanded records that the helper model has already fleshed
+	// out a prompt-seeded session's description. Without it every
+	// restart of that session asks again and quietly re-steers it.
+	SeedExpanded bool `json:"seed_expanded,omitempty"`
 	// LastPlayed is when the session was last the one playing (zero for
 	// files written by older versions; Updated stands in then).
 	LastPlayed time.Time `json:"last_played"`
@@ -100,6 +108,21 @@ func (s *Session) Played() time.Time {
 		return s.LastPlayed
 	}
 	return s.Updated
+}
+
+// stampRe matches the generated time stamp at the end of an auto name,
+// in both shapes the generators produce.
+var stampRe = regexp.MustCompile(`-\d{8}-\d{6}$|-\d{6}$`)
+
+// ForkName is the auto name for a session branched off base: base's own
+// name with its old time stamp replaced by now's, so the lineage reads
+// off the name and repeated forks do not grow it without end.
+func ForkName(base string, now time.Time) string {
+	stem := stampRe.ReplaceAllString(SanitizeName(base), "")
+	if stem == "" || stem == "unnamed" {
+		stem = "session"
+	}
+	return stem + "-" + now.Format("20060102-150405")
 }
 
 // New returns a fresh unnamed session with a pleasant default vibe.

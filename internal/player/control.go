@@ -19,9 +19,12 @@ import (
 // new context.
 func (o *Orchestrator) Steer(text string) string {
 	o.mu.Lock()
+	before := o.sess.Snapshot()
 	ack := prompting.Steer(o.sess, text)
 	musicMode := o.sess.Mode == session.ModeMusic
+	forked := false
 	if ack.ContextChanged {
+		forked = o.forkLocked(before)
 		o.epoch++
 		dropped := len(o.queue)
 		o.queue = nil
@@ -42,6 +45,7 @@ func (o *Orchestrator) Steer(text string) string {
 	sessPtr := o.sess
 	snap := o.sess.Snapshot()
 	o.mu.Unlock()
+	kept := o.afterFork(before, forked)
 	o.saveSession()
 	o.kickGen()
 	if ack.ContextChanged && musicMode {
@@ -68,6 +72,7 @@ func (o *Orchestrator) Steer(text string) string {
 			response += o.switchEstimateNote("sound")
 		}
 	}
+	response += kept
 	o.log.Info("steering accepted", "event", "steering", "input", text, "ack", response)
 	return response
 }
@@ -114,17 +119,20 @@ func (o *Orchestrator) steerContextNote(text string) string {
 // Clear wipes the accumulated steering context.
 func (o *Orchestrator) Clear() string {
 	o.mu.Lock()
+	before := o.sess.Snapshot()
 	o.sess.Clear()
+	forked := o.forkLocked(before)
 	o.epoch++
 	o.queue = nil
 	if o.sess.Mode == session.ModeMusic {
 		o.steerPending = true
 	}
 	o.mu.Unlock()
+	kept := o.afterFork(before, forked)
 	o.saveSession()
 	o.kickGen()
 	o.log.Info("steering cleared", "event", "steering_cleared")
-	return "steering context cleared; back to the session's base sound"
+	return "steering context cleared; back to the session's base sound" + kept
 }
 
 // LyricsGen shows or switches the lyric writer for vocal tracks. An
@@ -160,9 +168,11 @@ func (o *Orchestrator) LyricsGen(name string) string {
 		o.mu.Unlock()
 		return gen.Name() + " is already writing the lyrics"
 	}
+	before := o.sess.Snapshot()
 	o.sess.LyricsGenerator = gen.Name()
 	ack := "lyric writer: " + gen.Name()
 	o.sess.RecordOnly("lyrics "+gen.Name(), ack)
+	forked := o.forkLocked(before)
 	// Only vocal music tracks sound different under a new writer;
 	// drop the queue then so the change is heard soon.
 	refresh := o.sess.Vocal && o.sess.Mode == session.ModeMusic
@@ -172,6 +182,7 @@ func (o *Orchestrator) LyricsGen(name string) string {
 		o.steerPending = true
 	}
 	o.mu.Unlock()
+	kept := o.afterFork(before, forked)
 	o.saveSession()
 	o.kickGen()
 	if refresh {
@@ -180,7 +191,7 @@ func (o *Orchestrator) LyricsGen(name string) string {
 		ack += " (applies when vocals are on)"
 	}
 	o.log.Info("lyric writer switched", "event", "lyrics_generator", "name", gen.Name())
-	return ack
+	return ack + kept
 }
 
 // Skip jumps to the next source at the following mix iteration. The
@@ -382,6 +393,7 @@ func (o *Orchestrator) LoadPreset(name string) string {
 	fresh := session.FromPreset(p)
 	o.mu.Lock()
 	o.sess = fresh
+	o.heard = false // nothing of this one has been heard yet
 	o.epoch++
 	o.queue = nil
 	o.lastGood = nil
@@ -404,6 +416,9 @@ func (o *Orchestrator) LoadSession(name string) string {
 	o.saveSession()
 	o.mu.Lock()
 	o.sess = s
+	// A session that played before was heard before: changing it now
+	// keeps what it sounded like, rather than writing over it.
+	o.heard = !s.LastPlayed.IsZero()
 	o.epoch++
 	o.queue = nil
 	o.lastGood = nil
@@ -684,11 +699,17 @@ func (o *Orchestrator) SetLanguage(name string, on bool) string {
 		o.mu.Unlock()
 		return name + " is not one of the configured languages"
 	}
+	before := o.sess.Snapshot()
 	if o.sess.Languages == nil {
 		o.sess.Languages = map[string]bool{}
 	}
+	was := enabledSignature(o.languageStatesLocked())
 	o.sess.Languages[match] = on
 	states := o.languageStatesLocked()
+	forked := false
+	if enabledSignature(states) != was {
+		forked = o.forkLocked(before)
+	}
 	vocal := o.sess.Vocal
 	pinned := o.releasePinLocked()
 	refresh := vocal && o.sess.Mode == session.ModeMusic
@@ -699,9 +720,10 @@ func (o *Orchestrator) SetLanguage(name string, on bool) string {
 	}
 	save := o.saveLanguages
 	o.mu.Unlock()
+	kept := o.afterFork(before, forked)
 	o.saveSession()
 	o.kickGen()
-	ack := describeLanguages(states) + o.languageAckNote(vocal, pinned, refresh)
+	ack := describeLanguages(states) + o.languageAckNote(vocal, pinned, refresh) + kept
 	if save != nil {
 		if err := save(languageNames(states), switchedOff(states)); err != nil {
 			o.log.Error("saving the vocal languages failed", "event", "vocal_languages_failed", "error", err.Error())
@@ -776,7 +798,8 @@ func (o *Orchestrator) SetLanguages(names []string) string {
 	// thrown away by the epoch guard, which is a wasted minute of the
 	// graphics card exactly when the listener is waiting.
 	o.mu.Lock()
-	before := enabledSignature(o.languageStatesLocked())
+	was := enabledSignature(o.languageStatesLocked())
+	beforeSess := o.sess.Snapshot()
 	o.builder.SetLanguages(clean)
 	// Choices about languages that are gone would silently reappear if
 	// the same name were configured again later.
@@ -799,9 +822,11 @@ func (o *Orchestrator) SetLanguages(names []string) string {
 	// Saving the same list again must not cost the listener the audio
 	// already generated ahead; only a real change to what is sung is
 	// worth dropping the queue for.
-	changed := enabledSignature(states) != before
+	changed := enabledSignature(states) != was
+	forked := false
 	if changed {
 		pinned = o.releasePinLocked()
+		forked = o.forkLocked(beforeSess)
 	}
 	refresh := vocal && changed && o.sess.Mode == session.ModeMusic
 	if refresh {
@@ -810,11 +835,12 @@ func (o *Orchestrator) SetLanguages(names []string) string {
 		o.steerPending = true
 	}
 	o.mu.Unlock()
+	kept := o.afterFork(beforeSess, forked)
 	o.saveSession()
 	o.kickGen()
 	ack := describeLanguages(states)
 	if changed {
-		ack += o.languageAckNote(vocal, pinned, refresh)
+		ack += o.languageAckNote(vocal, pinned, refresh) + kept
 	} else {
 		ack += " (unchanged)"
 	}

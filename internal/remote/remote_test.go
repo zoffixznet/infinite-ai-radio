@@ -286,22 +286,23 @@ func TestStreamerEncodesRealMP3(t *testing.T) {
 
 // fakeCtl records control calls.
 type fakeCtl struct {
-	mu      sync.Mutex
-	steers  []string
-	skips   int
-	loops   int
-	holds   int
-	renames []string
-	news    []string
-	saves   [][2]string
-	lyrGens []string
-	langs   []player.LanguageState
-	langSet [][2]string
-	langAll [][]string
-	notes   []string
-	named   []string
-	loaded  []string
-	deleted []string
+	mu        sync.Mutex
+	steers    []string
+	skips     int
+	loops     int
+	holds     int
+	renames   []string
+	autoWipes []int
+	news      []string
+	saves     [][2]string
+	lyrGens   []string
+	langs     []player.LanguageState
+	langSet   [][2]string
+	langAll   [][]string
+	notes     []string
+	named     []string
+	loaded    []string
+	deleted   []string
 }
 
 func (f *fakeCtl) Steer(text string) string {
@@ -380,6 +381,13 @@ func (f *fakeCtl) ToggleStandby() string {
 	defer f.mu.Unlock()
 	f.holds++
 	return "the radio is on standby"
+}
+
+func (f *fakeCtl) DeleteAutoSessions(olderThanDays int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.autoWipes = append(f.autoWipes, olderThanDays)
+	return "deleted 3 automatic sessions"
 }
 
 func (f *fakeCtl) Retitle(which, title string) string {
@@ -848,27 +856,28 @@ func TestPermissionMatrix(t *testing.T) {
 		form         url.Values
 	}
 	calls := map[string]call{
-		"/":                {"GET", "/", nil},
-		"/me":              {"GET", "/me", nil},
-		"/state":           {"GET", "/state", nil},
-		"/api/chunks":      {"GET", "/api/chunks", nil},
-		"/account":         {"GET", "/account", nil},
-		"/steer":           {"POST", "/steer", url.Values{"text": {"calmer"}}},
-		"/lyrics-gen":      {"POST", "/lyrics-gen", url.Values{"name": {"smoothbrain"}}},
-		"/language":        {"POST", "/language", url.Values{"name": {"English"}, "on": {"1"}}},
-		"/languages":       {"POST", "/languages", url.Values{"names": {"English, Russian"}}},
-		"/next":            {"POST", "/next", nil},
-		"/loop":            {"POST", "/loop", nil},
-		"/standby":         {"POST", "/standby", nil},
-		"/new":             {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
-		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
-		"/retitle":         {"POST", "/retitle", url.Values{"id": {"t-1"}, "title": {"Steel In The Water"}}},
-		"/users":           {"GET", "/users", nil},
-		"/api/sessions":    {"GET", "/api/sessions", nil},
-		"/sessions/save":   {"POST", "/sessions/save", url.Values{"name": {"web-named"}}},
-		"/sessions/load":   {"POST", "/sessions/load", url.Values{"name": {"gym-grind"}}},
-		"/sessions/delete": {"POST", "/sessions/delete", url.Values{"name": {"gym-grind"}}},
-		"/users/link":      {"POST", "/users/link", url.Values{"email": {"target@example.com"}}},
+		"/":                     {"GET", "/", nil},
+		"/me":                   {"GET", "/me", nil},
+		"/state":                {"GET", "/state", nil},
+		"/api/chunks":           {"GET", "/api/chunks", nil},
+		"/account":              {"GET", "/account", nil},
+		"/steer":                {"POST", "/steer", url.Values{"text": {"calmer"}}},
+		"/lyrics-gen":           {"POST", "/lyrics-gen", url.Values{"name": {"smoothbrain"}}},
+		"/language":             {"POST", "/language", url.Values{"name": {"English"}, "on": {"1"}}},
+		"/languages":            {"POST", "/languages", url.Values{"names": {"English, Russian"}}},
+		"/next":                 {"POST", "/next", nil},
+		"/loop":                 {"POST", "/loop", nil},
+		"/standby":              {"POST", "/standby", nil},
+		"/new":                  {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
+		"/save":                 {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
+		"/retitle":              {"POST", "/retitle", url.Values{"id": {"t-1"}, "title": {"Steel In The Water"}}},
+		"/users":                {"GET", "/users", nil},
+		"/api/sessions":         {"GET", "/api/sessions", nil},
+		"/sessions/save":        {"POST", "/sessions/save", url.Values{"name": {"web-named"}}},
+		"/sessions/load":        {"POST", "/sessions/load", url.Values{"name": {"gym-grind"}}},
+		"/sessions/delete":      {"POST", "/sessions/delete", url.Values{"name": {"gym-grind"}}},
+		"/sessions/delete-auto": {"POST", "/sessions/delete-auto", nil},
+		"/users/link":           {"POST", "/users/link", url.Values{"email": {"target@example.com"}}},
 		"/users/update": {"POST", "/users/update", url.Values{
 			"email": {"target@example.com"}, "steer": {"1"}}},
 	}
@@ -886,26 +895,26 @@ func TestPermissionMatrix(t *testing.T) {
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
 			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/standby": auth, "/new": auth, "/save": auth, "/retitle": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
-			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth}},
+			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth, "/sessions/delete-auto": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
 			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
-			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
 			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/standby": ok, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
-			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
 			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": ok, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
-			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny}},
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
 			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": ok, "/retitle": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
-			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny}},
+			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
 			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": ok, "/users/link": see, "/users/update": see,
-			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok}},
+			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok, "/sessions/delete-auto": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
 			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/standby": ok, "/new": ok, "/save": ok, "/retitle": ok, "/users": ok, "/users/link": see, "/users/update": see,
-			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok}},
+			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok, "/sessions/delete-auto": ok}},
 	}
 	for who, row := range matrix {
 		for name, want := range row.want {
@@ -956,7 +965,10 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.renames) != 2 || h.ctl.renames[0] != "t-1=Steel In The Water" {
 		t.Fatalf("renames: %v", h.ctl.renames)
 	}
-	if len(h.ctl.notes) != 26 {
+	if len(h.ctl.autoWipes) != 2 {
+		t.Fatalf("bulk deletes of automatic sessions: %v", h.ctl.autoWipes)
+	}
+	if len(h.ctl.notes) != 28 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
 	}
 }

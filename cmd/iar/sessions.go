@@ -20,9 +20,11 @@ func sessionsCommand() *cobra.Command {
 		Short: "List your sessions, the presets and auto-saved sessions",
 		Long: `Lists everything you can start: your named sessions (most recently
 played first), the built-in presets, and sessions that were saved
-automatically under a generated name (newest first). Auto-saved
-sessions are removed after they have not played for a while
-(sessions.auto_retention_days in the config, default 2; 0 keeps them).`,
+automatically under a generated name (newest first). Every change to
+the sound branches the playing session into a new generated name, so
+the old sound is still there to go back to; they are kept until you
+clear them out with 'iar sessions delete-auto' (or set
+sessions.auto_retention_days in the config to sweep them on a timer).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := newApp(false)
@@ -39,13 +41,92 @@ sessions are removed after they have not played for a while
 			fmt.Println()
 			fmt.Println("start one:  iar --session NAME   or   iar --preset NAME")
 			fmt.Println("delete one: iar sessions delete NAME")
+			if len(l.Auto) > 0 {
+				fmt.Printf("clear the %d automatic one(s): iar sessions delete-auto\n", len(l.Auto))
+			}
 			if d := a.cfg.Sessions.AutoRetentionDays; d > 0 {
 				fmt.Printf("auto-saved sessions are removed %d day(s) after they last played; name one to keep it\n", d)
 			}
 			return nil
 		},
 	}
-	cmd.AddCommand(sessionsDeleteCommand(), sessionsRestoreCommand())
+	cmd.AddCommand(sessionsDeleteCommand(), sessionsDeleteAutoCommand(), sessionsRestoreCommand())
+	return cmd
+}
+
+// sessionsDeleteAutoCommand clears out the sessions nobody named.
+func sessionsDeleteAutoCommand() *cobra.Command {
+	var (
+		yes  bool
+		days int
+	)
+	cmd := &cobra.Command{
+		Use:   "delete-auto",
+		Short: "Delete the sessions with generated names",
+		Long: `Deletes every session that was never given a name, after asking for
+confirmation. These accumulate on purpose - each change to the sound
+branches the session that was playing, so the old states are there to
+go back to - and this is how they are cleared out. --older-than-days
+keeps the recent ones. The session playing right now is always kept;
+named sessions and presets are never touched.`,
+		Example: `  iar sessions delete-auto
+  iar sessions delete-auto --older-than-days 7 --yes`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := newApp(false)
+			if err != nil {
+				return err
+			}
+			defer a.close()
+			store := session.NewStore(a.paths.SessionsDir())
+			keep := ""
+			if cs, _ := a.stateD.ReadCurrentSession(); cs.Name != "" {
+				keep = cs.Name
+			}
+			window := time.Duration(days) * 24 * time.Hour
+			var doomed []string
+			all, err := store.List()
+			if err != nil {
+				return err
+			}
+			now := time.Now()
+			for _, s := range all {
+				if !s.AutoNamed() || s.Name == session.SanitizeName(keep) {
+					continue
+				}
+				if window > 0 && now.Sub(s.Played()) <= window {
+					continue
+				}
+				doomed = append(doomed, s.Name)
+			}
+			if len(doomed) == 0 {
+				fmt.Println("no automatic sessions to delete")
+				return nil
+			}
+			if !yes {
+				fmt.Printf("Delete %d automatic session(s)? [y/N] ", len(doomed))
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				switch strings.ToLower(strings.TrimSpace(line)) {
+				case "y", "yes":
+				default:
+					fmt.Println("cancelled")
+					return nil
+				}
+			}
+			removed, err := store.DeleteAuto(now, window, keep)
+			for _, name := range removed {
+				a.stateD.ForgetSession(name)
+			}
+			if err != nil {
+				return err
+			}
+			a.log.Info("automatic sessions deleted", "event", "sessions_auto_deleted", "count", len(removed))
+			fmt.Printf("%d automatic session(s) deleted\n", len(removed))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "delete without asking")
+	cmd.Flags().IntVar(&days, "older-than-days", 0, "only those not played in this many days (0: all of them)")
 	return cmd
 }
 

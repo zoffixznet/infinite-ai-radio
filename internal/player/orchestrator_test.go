@@ -1054,12 +1054,13 @@ func TestLanguageSwitchesSurviveAReload(t *testing.T) {
 		}
 	}
 	// And it reached the saved session, so it is not lost with the
-	// process.
+	// process. (A change to the sound may have branched the session
+	// into a new name; whichever one is playing must carry it.)
 	waitFor(t, 5*time.Second, "session saved", func() bool {
-		got, err := store.Load("keeper")
+		got, err := store.Load(o.CurrentName())
 		return err == nil && got.Languages != nil
 	})
-	got, err := store.Load("keeper")
+	got, err := store.Load(o.CurrentName())
 	if err != nil {
 		t.Fatal(err)
 	}

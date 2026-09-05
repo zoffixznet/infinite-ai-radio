@@ -455,6 +455,10 @@ details.grp > summary {
 }
 details.grp > summary::-webkit-details-marker { display: none; }
 details.grp > summary .count { color: var(--text-3); font-weight: 400; }
+/* The band's own action sits at the far end of its heading, clear of
+   the chevron, and never grows the row: these headings are 52px and a
+   full-height chip would make one band taller than the rest. */
+details.grp > summary .chip { margin-left: auto; min-height: 34px; padding: 0 var(--s3); font-size: 13px; }
 
 /* ---- chips ---------------------------------------------------------- */
 .chips { display: flex; flex-wrap: wrap; gap: var(--s2); }

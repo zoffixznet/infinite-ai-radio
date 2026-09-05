@@ -44,6 +44,7 @@ type Controls interface {
 	ToggleLoop() string
 	ToggleStandby() string
 	Retitle(which, title string) string
+	DeleteAutoSessions(olderThanDays int) string
 	SaveSnippet(which, tag string) string
 	NameSession(name string) string
 	LoadByName(name string) string
@@ -283,6 +284,7 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /sessions/save", s.apiPerm("save", permSave, s.handleSessionSave))
 	mux.HandleFunc("POST /sessions/load", s.apiPerm("new prompt", permNewPrompt, s.handleSessionLoad))
 	mux.HandleFunc("POST /sessions/delete", s.apiPerm("delete sessions", permAdmin, s.handleSessionDelete))
+	mux.HandleFunc("POST /sessions/delete-auto", s.apiPerm("delete sessions", permAdmin, s.handleSessionDeleteAuto))
 	// Admin.
 	mux.HandleFunc("GET /users", s.pagePerm("users", permAdmin, s.handleUsersPage))
 	mux.HandleFunc("POST /users/create", s.pagePerm("users", permAdmin, s.handleUserCreate))
@@ -925,6 +927,22 @@ func (s *Server) handleSessionLoad(w http.ResponseWriter, r *http.Request, u acc
 	}
 	ack := s.ctl.LoadByName(name)
 	s.ctl.Announce("remote load by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+// handleSessionDeleteAuto clears out the sessions nobody named. They
+// accumulate one per change to the sound, on purpose; this is the one
+// gesture that empties them. An optional days field keeps the recent
+// ones.
+func (s *Server) handleSessionDeleteAuto(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	days, _ := strconv.Atoi(textField(r, "days"))
+	if days < 0 {
+		days = 0
+	}
+	ack := s.ctl.DeleteAutoSessions(days)
+	s.log.Info("remote automatic session delete", "event", "remote_sessions_auto_delete",
+		"by", u.Email, "days", days, "ack", ack)
+	s.ctl.Announce("remote delete by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 

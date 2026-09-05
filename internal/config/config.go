@@ -100,8 +100,12 @@ type Buffer struct {
 // Sessions tunes session housekeeping.
 type Sessions struct {
 	// AutoRetentionDays is how long a session that was never given a
-	// name is kept after it last played before being swept; 0 disables
-	// the sweep. Named sessions and presets are never swept.
+	// name is kept after it last played before being swept. The default
+	// is 0, which keeps them: every change to the sound branches the
+	// playing session, so the sessions with generated names are the
+	// states a listener goes back to, and clearing them out is a
+	// decision ('delete autos') rather than a timer. Named sessions and
+	// presets are never swept.
 	AutoRetentionDays int `json:"auto_retention_days"`
 }
 
@@ -254,7 +258,7 @@ func Default() Config {
 			Enabled: false,
 			Port:    8246,
 		},
-		Sessions: Sessions{AutoRetentionDays: 2},
+		Sessions: Sessions{AutoRetentionDays: 0},
 	}
 }
 

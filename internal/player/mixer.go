@@ -40,6 +40,13 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 		}
 		o.mu.Lock()
 		cur := o.cur
+		// A noise session's bed is its whole output, and it plays from
+		// the first moment - so this session has been heard, which is
+		// what makes a change to it worth branching. Music sessions
+		// wait for a track (setCurrent); their bed is a stand-in.
+		if !o.heard && o.sess.Mode == session.ModeNoise {
+			o.heard = true
+		}
 		o.mu.Unlock()
 		wantSwitch := o.takeSwitch()
 
@@ -335,6 +342,11 @@ func (o *Orchestrator) setCurrent(s source) {
 	o.mu.Lock()
 	o.cur = s
 	ts, isTrack := s.(*trackSource)
+	// A song of this session's is now audible, so its sound is worth
+	// keeping if the listener changes it.
+	if isTrack {
+		o.heard = true
+	}
 	if isTrack && (o.curTrack == nil || o.curTrack != ts.track) {
 		o.prevTrack = o.curTrack
 		o.curTrack = ts.track

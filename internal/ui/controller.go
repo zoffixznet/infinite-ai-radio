@@ -22,9 +22,17 @@ type Controller struct {
 	ExportsDir string
 
 	// pendingDelete is a session awaiting the user's confirmation on
-	// the next input line.
+	// the next input line, or autoSessions for the bulk delete.
 	pendingDelete string
+	// pendingDeleteDays narrows a pending bulk delete to sessions not
+	// played in that many days; 0 means all of them.
+	pendingDeleteDays int
 }
+
+// autoSessions stands for "every session with a generated name" where a
+// session name is expected. It is not a legal session name, so it can
+// never collide with one.
+const autoSessions = "\x00autos"
 
 // Handle processes one input line. It returns the response to display and
 // whether the application should quit. Free text steers the music;
@@ -36,9 +44,17 @@ func (c *Controller) Handle(line string) (string, bool) {
 	}
 	if name := c.pendingDelete; name != "" {
 		c.pendingDelete = ""
+		days := c.pendingDeleteDays
+		c.pendingDeleteDays = 0
 		switch strings.ToLower(line) {
 		case "y", "yes":
+			if name == autoSessions {
+				return c.O.DeleteAutoSessions(days), false
+			}
 			return c.O.DeleteSession(name), false
+		}
+		if name == autoSessions {
+			return "delete cancelled; the automatic sessions are kept", false
 		}
 		return "delete cancelled; " + name + " kept", false
 	}
@@ -91,7 +107,27 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return c.O.Listing().Render(time.Now()), false
 	case "delete", "rm":
 		if rest == "" {
-			return "usage: delete <session-or-preset-name>", false
+			return "usage: delete <session-or-preset-name>, or: delete autos [days]", false
+		}
+		// Sessions with generated names pile up on purpose - one per
+		// change to the sound - so clearing them out is one command
+		// rather than a name at a time.
+		if head, arg, _ := strings.Cut(rest, " "); strings.EqualFold(head, "autos") || strings.EqualFold(head, "auto") {
+			days := 0
+			if arg = strings.TrimSpace(arg); arg != "" {
+				n, err := strconv.Atoi(arg)
+				if err != nil || n < 0 {
+					return "usage: delete autos [days]  (days: only ones not played in that long)", false
+				}
+				days = n
+			}
+			c.pendingDelete = autoSessions
+			c.pendingDeleteDays = days
+			what := "every automatic session"
+			if days > 0 {
+				what = "the automatic sessions not played in " + strconv.Itoa(days) + " day(s)"
+			}
+			return "Delete " + what + "? type y to confirm, anything else cancels", false
 		}
 		name := session.SanitizeName(rest)
 		if name == c.O.CurrentName() {
@@ -299,7 +335,7 @@ commands (leading / optional):
   new <prompt>      fresh session        sessions         list saved + presets
   save [prev] [tag] track -> MP3         load <name>      resume a session
   mp3 <min> [file]  export MP3           preset <name>    switch preset
-  skip | loop       next / repeat track  delete <name>    delete a session
+  skip | loop       next / repeat track  delete <n|autos> delete sessions
   pause | standby   mute / hold radio    volume <0-100>   set volume
   lyrics [name]     pick lyric writer    status | engine  show status
   languages [list]  sung languages       help | quit      this list / exit`

@@ -74,7 +74,20 @@ func runPlay(pf playFlags) error {
 			sess.Languages[name] = false
 		}
 	}
-	if a.cfg.Engine == "noise" && sess.Mode != session.ModeNoise {
+	// With no music engine this run can only make noise - a property of
+	// the run, not of the session. Branch it rather than rewriting what
+	// the listener saved, and keep the branch out of the record a
+	// restart resumes from, so a machine that grows an engine again
+	// comes back to music.
+	noiseOnly := a.cfg.Engine == "noise" && sess.Mode != session.ModeNoise
+	if noiseOnly {
+		if !sess.LastPlayed.IsZero() {
+			from := sess.Name
+			sess = sess.Snapshot()
+			sess.Name = session.ForkName(from, time.Now())
+			sess.Named = false
+			sess.ForkedFrom = from
+		}
 		sess.Mode = session.ModeNoise
 		sess.NoiseColor = sess.NoiseBed
 	}
@@ -119,6 +132,7 @@ func runPlay(pf playFlags) error {
 	// dig the path out of a save acknowledgment or the docs.
 	fmt.Fprintf(os.Stderr, "iar: saved tracks go to %s\n", orch.SnippetsDir)
 	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
+	orch.Ephemeral = noiseOnly
 	orch.StateDir = &a.stateD
 	orch.SetLanguageStore(func(names, off []string) error {
 		if err := config.SetVocalLanguages(a.paths, names); err != nil {

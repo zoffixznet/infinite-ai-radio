@@ -1988,6 +1988,27 @@
     count.className = "count";
     count.textContent = items.length;
     sum.appendChild(count);
+    // The generated-name band fills up one session per change to the
+    // sound, so it gets the one gesture that empties it; deleting them
+    // a row at a time is not a realistic option.
+    if (group === "auto" && me && me.admin && items.length) {
+      var wipe = document.createElement("button");
+      wipe.type = "button";
+      wipe.className = "chip tap danger";
+      wipe.id = "autowipe";
+      wipe.setAttribute("data-action", "Delete automatic");
+      wipe.textContent = "Delete all";
+      wipe.addEventListener("click", function (e) {
+        // Inside a summary, a click would otherwise fold the band.
+        e.preventDefault();
+        e.stopPropagation();
+        if (!window.confirm("Delete all " + items.length + " automatic sessions? The one playing is kept.")) return;
+        act(wipe, [stateEl, $("sessstatus")], "/sessions/delete-auto", "", "deleting…").then(function (d) {
+          if (d) loadSessions();
+        });
+      });
+      sum.appendChild(wipe);
+    }
     var chev = document.createElement("span");
     chev.className = "chev";
     chev.setAttribute("aria-hidden", "true");
@@ -2033,12 +2054,20 @@
     return frag;
   }
 
+  // lastSession is the session name the station list was drawn for; a
+  // change to it means the list is out of date.
+  var lastSession = "";
+  var sessionsLoaded = false;
   function loadSessions() {
+    sessionsLoaded = true;
     fetch("/api/sessions").then(function (r) {
       if (r.status === 401) { loggedOut(); return null; }
       return r.json();
     }).then(function (d) {
       if (!d) return;
+      // The list is now drawn for this session, so the next poll has
+      // nothing to catch up on.
+      lastSession = d.current || "";
       var box = $("sessions");
       box.innerHTML = "";
       // Presets first: they are what gets started, and the owner should
@@ -2079,6 +2108,14 @@
       pollFails = 0;
       setText($("conn"), "connected");
       paintNow(s);
+      // Every change to the sound branches the session, so the name in
+      // the status line is also how the station list learns that what
+      // is playing has moved - including when someone changed it from
+      // the machine itself.
+      if ((s.session || "") !== lastSession) {
+        lastSession = s.session || "";
+        if (sessionsLoaded) loadSessions();
+      }
       var srv = s.session || "";
       srv += (srv ? "  ·  " : "") + (s.ready || s.queued + " ready") + (s.generating ? " · generating" : "");
       setText($("srvline"), srv);

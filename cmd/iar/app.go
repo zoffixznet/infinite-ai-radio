@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -159,6 +160,21 @@ func (a *app) initialSessionPrompt(presetName, sessionName, prompt string) (*ses
 	case sessionName != "":
 		return store.Load(sessionName)
 	default:
+		// A restart picks up where the radio left off, named session or
+		// not: the sound someone settled on is the sound they expect to
+		// hear when the machine comes back, and every change to it is
+		// branched rather than overwritten, so there is always a
+		// session worth resuming.
+		switch s, err := resumeSession(store, a.stateD); {
+		case s != nil:
+			return s, nil
+		case err != nil && errors.Is(err, session.ErrNotFound):
+			a.log.Info("the last session is gone; starting fresh",
+				"event", "session_resume_missing", "error", err.Error())
+		case err != nil:
+			a.log.Warn("could not resume the last session",
+				"event", "session_resume_failed", "error", err.Error())
+		}
 		// A cold start plays the configured preset. A preset that has
 		// been hidden or renamed must not stop the radio booting, so a
 		// miss falls back to the built-in sound.
@@ -172,6 +188,23 @@ func (a *app) initialSessionPrompt(presetName, sessionName, prompt string) (*ses
 		}
 		return session.New(), nil
 	}
+}
+
+// resumeSession loads the session the last player was playing, so a
+// restart carries on with the sound someone settled on rather than
+// inventing a new one. A nil session with a nil error means there is
+// nothing recorded to resume - a first run, or a machine whose only
+// runs could not make music.
+func resumeSession(store *session.Store, stateD state.Dir) (*session.Session, error) {
+	cs, _ := stateD.ReadCurrentSession()
+	if cs.Name == "" {
+		return nil, nil
+	}
+	s, err := store.Load(cs.Name)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // isTerminal reports whether f is an interactive terminal.

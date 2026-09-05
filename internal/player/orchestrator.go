@@ -219,8 +219,15 @@ type Orchestrator struct {
 	Tap interface{ Write(p []byte) (int, error) }
 	// Retention is how long auto-named sessions are kept after they last
 	// played before the periodic sweep removes them; zero disables the
-	// sweep. Set before Start.
+	// sweep, which is the default: sessions branch on every change to
+	// the sound, so the old ones are what a listener goes back to, not
+	// litter. Set before Start.
 	Retention time.Duration
+	// Ephemeral keeps this run out of the record a restart resumes
+	// from: what it plays is a stand-in for what was asked for (a
+	// machine with no music engine can only make noise), and coming
+	// back to it later would be coming back to the wrong thing.
+	Ephemeral bool
 	// StateDir, when set, records which session is playing so other
 	// processes (the CLI's delete) can refuse to remove it.
 	StateDir *state.Dir
@@ -256,6 +263,11 @@ type Orchestrator struct {
 	switchReq    bool
 	steerPending bool
 	paused       bool
+	// heard reports that something from the playing session has
+	// actually come out of the speakers. A change to the sound branches
+	// the session only once it has been heard: a state nobody has heard
+	// is not one anyone wants to go back to.
+	heard bool
 	// standby holds the whole radio: the mixer stops taking songs out
 	// of the buffer and the generator stops putting them in. Distinct
 	// from paused, which only silences this room's speakers while the
@@ -369,6 +381,11 @@ func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store
 		bankRefs:    map[string]bankRef{},
 		bufFed:      map[string]string{},
 		retitleKick: make(chan struct{}, 1),
+		// A session that has played before was heard before: resuming
+		// one and changing it straight away must still keep what it
+		// sounded like. A session made moments ago has nothing behind
+		// it to keep.
+		heard: !sess.LastPlayed.IsZero(),
 	}
 	o.volume.Store(int32(cfg.Volume))
 	return o
@@ -401,7 +418,8 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	// helper enrich it in the background when it is available.
 	o.mu.Lock()
 	initial := o.sess
-	fromPrompt := strings.HasPrefix(initial.Name, "prompt-") && len(initial.Tweaks) == 0
+	fromPrompt := strings.HasPrefix(initial.Name, "prompt-") && len(initial.Tweaks) == 0 &&
+		!initial.SeedExpanded
 	o.mu.Unlock()
 	if fromPrompt {
 		o.expandSeedAsync(initial)
@@ -484,9 +502,13 @@ func (o *Orchestrator) expandSeedAsync(sess *session.Session) {
 		if o.sess == sess && o.epoch == epochAt && len(o.sess.Tweaks) == 0 {
 			changed = prompting.MergeUpdate(o.sess, u)
 		}
+		// Answered once is answered: a session that is resumed on every
+		// restart would otherwise be re-expanded - and quietly
+		// re-steered - each time.
+		o.sess.SeedExpanded = true
 		o.mu.Unlock()
+		o.saveSession()
 		if changed {
-			o.saveSession()
 			o.log.Info("seed prompt expanded by the helper model", "event", "seed_expanded", "prompt", snap.BasePrompt)
 		}
 	})

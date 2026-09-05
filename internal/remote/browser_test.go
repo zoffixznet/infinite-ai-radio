@@ -689,8 +689,12 @@ func TestRealBrowser(t *testing.T) {
 	// clipboard, which is what puts a system "copied" pill in front of
 	// a listener who only pressed play. Nothing may change in the DOM
 	// across polls while the radio's state is standing still.
-	w.exec(`window.__mutations = 0;
-		new MutationObserver(function (records) { window.__mutations += records.length; })
+	w.exec(`window.__mutations = 0; window.__mutlog = [];
+		new MutationObserver(function (records) { window.__mutations += records.length;
+			records.forEach(function (r) {
+				var t = r.target;
+				window.__mutlog.push(r.type + ':' + (t.id || (t.parentNode && t.parentNode.id) || t.nodeName));
+			}); })
 			.observe(document.body, {subtree: true, childList: true, characterData: true,
 				attributes: true, attributeFilter: ["class", "aria-pressed", "aria-label", "value"]});
 		return true;`, nil)
@@ -700,7 +704,9 @@ func TestRealBrowser(t *testing.T) {
 	// The clock in the seek row is allowed to advance; a handful of
 	// text updates a poll is that and nothing more.
 	if mutations > 12 {
-		t.Fatalf("the page mutated %d times over three idle polls; it should hold still", mutations)
+		var log []string
+		w.exec(`return window.__mutlog;`, &log)
+		t.Fatalf("the page mutated %d times over three idle polls; it should hold still: %v", mutations, log)
 	}
 
 	// The per-device settings a traveller depends on: hours of music
@@ -808,6 +814,61 @@ func TestRealBrowser(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(sb.dir, "data", "sessions", "road-trip.json")); err == nil {
 		t.Fatal("deleted session file still on disk")
 	}
+
+	// Sessions with generated names accumulate one per change to the
+	// sound, so their band has a single gesture that empties it - and
+	// that gesture never takes the session that is playing.
+	autoRows := func() int {
+		var n int
+		w.exec(`var bands = document.querySelectorAll('#sessions details.grp');
+			for (var i = 0; i < bands.length; i++) {
+				var head = bands[i].querySelector('summary');
+				if (head && head.textContent.indexOf('Auto-saved') === 0) {
+					return bands[i].querySelectorAll('.sess').length;
+				}
+			}
+			return -1;`, &n)
+		return n
+	}
+	// Changing the sound branches the session that was playing: it
+	// keeps its name and stays in the list, and the change carries on
+	// under a generated one. That is what makes going back possible,
+	// and what makes these accumulate.
+	var playingBefore string
+	w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &playingBefore)
+	w.exec(`document.getElementById('steercard').open = true; return true;`, nil)
+	w.typeInto("#text", "brown noise")
+	w.click("#steer")
+	waitFor(t, 20*time.Second, "the change to branch the session", func() bool {
+		var playingNow string
+		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &playingNow)
+		return autoRows() >= 2 && playingNow != "" && playingNow != playingBefore
+	})
+	if !strings.Contains(playingBefore, "pink-noise-") {
+		t.Fatalf("the session playing before the change was %q", playingBefore)
+	}
+	kept := strings.TrimSpace(strings.Split(playingBefore, "\u00b7")[0])
+	waitFor(t, 10*time.Second, "the session before the change to still be listed", func() bool {
+		var listed bool
+		w.exec(fmt.Sprintf(`var want = %q;
+			var rows = document.querySelectorAll('#sessions .sess .ctitle');
+			for (var i = 0; i < rows.length; i++) {
+				if (rows[i].textContent.indexOf(want) === 0) return true;
+			}
+			return false;`, kept), &listed)
+		return listed
+	})
+
+	w.click("#autowipe")
+	if text := w.alertText(); !strings.Contains(text, "automatic sessions") {
+		t.Fatalf("bulk delete confirmation = %q", text)
+	}
+	w.acceptAlert()
+	waitFor(t, 15*time.Second, "the automatic sessions to be cleared", func() bool {
+		w.exec(`return document.getElementById('sessstatus').textContent;`, &ackText)
+		return strings.Contains(ackText, "automatic session")
+	})
+	waitFor(t, 15*time.Second, "only the playing session left in the band", func() bool { return autoRows() == 1 })
 
 	// The whole live/saved/session stretch above played, skipped,
 	// switched tabs and reloaded state - with zero clipboard writes.

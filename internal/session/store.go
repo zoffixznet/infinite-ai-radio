@@ -104,6 +104,19 @@ func (st *Store) Sweep(now time.Time, retention time.Duration, keep string) ([]s
 	if retention <= 0 {
 		return nil, nil
 	}
+	return st.DeleteAuto(now, retention, keep)
+}
+
+// DeleteAuto removes the sessions that were never given a name: all of
+// them, or - with a positive olderThan - only those that have not
+// played within it. The session named keep is never removed, and the
+// names that were are returned.
+//
+// Every change to the sound branches the playing session, so these
+// accumulate on purpose: they are the states a listener can go back to.
+// Clearing them out is therefore a decision, not housekeeping, which is
+// why this is a command rather than a timer.
+func (st *Store) DeleteAuto(now time.Time, olderThan time.Duration, keep string) ([]string, error) {
 	sessions, err := st.List()
 	if err != nil {
 		return nil, err
@@ -111,7 +124,10 @@ func (st *Store) Sweep(now time.Time, retention time.Duration, keep string) ([]s
 	keep = SanitizeName(keep)
 	var removed []string
 	for _, s := range sessions {
-		if !s.AutoNamed() || s.Name == keep || now.Sub(s.Played()) <= retention {
+		if !s.AutoNamed() || s.Name == keep {
+			continue
+		}
+		if olderThan > 0 && now.Sub(s.Played()) <= olderThan {
 			continue
 		}
 		if err := st.Delete(s.Name); err != nil && !errors.Is(err, ErrNotFound) {
@@ -120,6 +136,12 @@ func (st *Store) Sweep(now time.Time, retention time.Duration, keep string) ([]s
 		removed = append(removed, s.Name)
 	}
 	return removed, nil
+}
+
+// Exists reports whether a session file of that name is already there.
+func (st *Store) Exists(name string) bool {
+	_, err := os.Stat(st.path(SanitizeName(name)))
+	return err == nil
 }
 
 // tombstoneFile lists deleted presets, one name per line. It has no

@@ -192,6 +192,7 @@ func (o *Orchestrator) NewSession(prompt string) string {
 	o.saveSession()
 	o.mu.Lock()
 	o.sess = fresh
+	o.heard = false // nothing of this one has been heard yet
 	o.epoch++
 	o.queue = nil
 	o.lastGood = nil
