@@ -66,10 +66,11 @@ type Config struct {
 	// choice to the music engine, which sings in whatever language it
 	// feels like.
 	VocalLanguages []string `json:"vocal_languages"`
-	// VocalLanguagesOff is no longer used: which of the languages above
-	// a session sings in belongs to the session, so that loading one
-	// sings in what it was saved with. It is read only to convert
-	// sessions written before that, and never written back.
+	// VocalLanguagesOff is what a session used to be steered by: the
+	// languages above that were switched off, standing across sessions
+	// and restarts. Which languages are sung belongs to the session
+	// now, so this is read only to convert sessions saved back then -
+	// those that carry no answer of their own - and never written.
 	VocalLanguagesOff []string `json:"vocal_languages_off,omitempty"`
 
 	ACEStep  ACEStep  `json:"acestep"`

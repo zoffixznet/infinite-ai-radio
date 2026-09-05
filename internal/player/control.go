@@ -703,28 +703,39 @@ func (o *Orchestrator) SetLanguage(name string, on bool) string {
 	if name == "" {
 		return "name a language to switch"
 	}
-	o.mu.Lock()
 	// The catalogue is where languages are offered from, but a session
 	// may already sing in one that has since been taken out of it -
 	// switching that one off has to work, or it can never be stopped.
-	var match string
-	for _, l := range o.languageStatesLocked() {
-		if strings.EqualFold(l.Name, name) {
-			match = l.Name
-			break
+	// Resolved inside the change, under the one lock: a session load
+	// landing between the two would otherwise switch a language on the
+	// session that had just arrived.
+	missing := false
+	ack := o.changeLanguages(func(s *session.Session) {
+		var match string
+		for _, l := range o.languageStatesLocked() {
+			if strings.EqualFold(l.Name, name) {
+				match = l.Name
+				break
+			}
 		}
-	}
-	o.mu.Unlock()
-	if match == "" {
+		if match == "" {
+			missing = true
+			return
+		}
+		s.SetSung(match, on)
+	}, "vocal_language", name)
+	if missing {
 		return name + " is not one of the configured languages"
 	}
-	return o.changeLanguages(func(s *session.Session) { s.SetSung(match, on) },
-		"vocal_language", match)
+	return ack
 }
 
 // SetSungLanguages replaces the languages this session sings in. An
 // empty list hands each song's language back to the music engine.
 func (o *Orchestrator) SetSungLanguages(names []string) string {
+	// Always a list, never nil: "no language in particular" is an
+	// answer this session gave, and one it has to keep giving after a
+	// reload.
 	clean := make([]string, 0, len(names))
 	for _, l := range prompting.ParseLanguages(names) {
 		clean = append(clean, l.Name)

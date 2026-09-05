@@ -127,3 +127,65 @@ func TestALanguageNoLongerConfiguredStaysSungUntilSwitchedOff(t *testing.T) {
 		}
 	}
 }
+
+// "No language in particular" is an answer, not the absence of one: it
+// has to survive a reload. The trap: most vocal presets name English of
+// their own, and a session that had been emptied looked exactly like a
+// session that had never been asked, so every load handed English back.
+func TestSwitchingEveryLanguageOffSurvivesAReload(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	b := prompting.NewBuilder(nil, testLogger())
+	b.SetLanguages([]string{"English", "Tagalog"})
+	o := New(testConfig(), enginetest.NewMock(), b, store, session.New(), &capturePlayer{}, testLogger())
+
+	o.LoadPreset("nu-metal") // declares English
+	o.NameSession("night-shift")
+	if ack := o.SetSungLanguages(nil); !strings.Contains(ack, "engine picks") {
+		t.Fatalf("clearing the languages = %q", ack)
+	}
+	name := o.CurrentName()
+
+	// Read back from disk, the way a restart does.
+	saved, err := store.Load(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.SungLanguages == nil {
+		t.Fatal("an answer of \"none\" was saved as no answer at all")
+	}
+	o.LoadSession(name)
+	for _, l := range o.Languages() {
+		if l.On {
+			t.Fatalf("%s came back on after a reload", l.Name)
+		}
+	}
+}
+
+// A session saved before languages belonged to sessions, with no map of
+// its own, was steered by the standing off-list in the configuration.
+// That is what it sang, so that is what it must go on singing.
+func TestASessionFromBeforeTheListTakesTheStandingChoice(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	b := prompting.NewBuilder(nil, testLogger())
+	b.SetLanguages([]string{"Russian", "Tagalog", "English"})
+	old := heardSession("nu-metal-20260903-140530")
+	old.Named = false
+	old.Vocal = true
+	old.Spec = &session.PromptSpec{VocalLanguage: "en"} // from the preset it came from
+	if err := store.Save(old); err != nil {
+		t.Fatal(err)
+	}
+
+	o := New(testConfig(), enginetest.NewMock(), b, store, session.New(), &capturePlayer{}, testLogger())
+	o.LegacyLanguagesOff = []string{"Russian", "English"}
+	o.LoadSession(old.Name)
+	var on []string
+	for _, l := range o.Languages() {
+		if l.On {
+			on = append(on, l.Name)
+		}
+	}
+	if len(on) != 1 || on[0] != "Tagalog" {
+		t.Fatalf("an old session came back singing %v, not what it was singing before", on)
+	}
+}

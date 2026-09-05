@@ -67,7 +67,7 @@ started (or reused) as needed.`,
 			// A session saved before the languages it sings in were
 			// part of it says only which were switched off; read that
 			// against the configured list.
-			sess.AdoptLanguages(a.cfg.VocalLanguages)
+			sess.AdoptLanguages(a.cfg.VocalLanguages, a.cfg.VocalLanguagesOff)
 			if err := pinLanguage(sess, language); err != nil {
 				return err
 			}

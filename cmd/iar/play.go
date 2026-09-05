@@ -68,7 +68,7 @@ func runPlay(pf playFlags) error {
 	// which of the then-configured ones were switched OFF; read that
 	// against today's catalogue and turn it into the list the session
 	// sings in.
-	sess.AdoptLanguages(a.cfg.VocalLanguages)
+	sess.AdoptLanguages(a.cfg.VocalLanguages, a.cfg.VocalLanguagesOff)
 	// With no music engine this run can only make noise - a property of
 	// the run, not of the session. Branch it rather than rewriting what
 	// the listener saved, and keep the branch out of the record a
@@ -128,6 +128,7 @@ func runPlay(pf playFlags) error {
 	fmt.Fprintf(os.Stderr, "iar: saved tracks go to %s\n", orch.SnippetsDir)
 	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
 	orch.Ephemeral = noiseOnly
+	orch.LegacyLanguagesOff = a.cfg.VocalLanguagesOff
 	orch.StateDir = &a.stateD
 	orch.SetLanguageStore(func(names []string) error {
 		return config.SetVocalLanguages(a.paths, names)

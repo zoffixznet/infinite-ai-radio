@@ -228,6 +228,11 @@ type Orchestrator struct {
 	// the sound, so the old ones are what a listener goes back to, not
 	// litter. Set before Start.
 	Retention time.Duration
+	// LegacyLanguagesOff is the standing off-list from the
+	// configuration as it was before the languages a session sings
+	// became the session's own. It is read only to convert sessions
+	// saved back then, and only those that carry no answer at all.
+	LegacyLanguagesOff []string
 	// Ephemeral keeps this run out of the record a restart resumes
 	// from: what it plays is a stand-in for what was asked for (a
 	// machine with no music engine can only make noise), and coming
@@ -408,19 +413,27 @@ func (o *Orchestrator) adoptLanguages(s *session.Session) {
 	if s == nil {
 		return
 	}
-	if s.Languages != nil {
-		cat := o.builder.Languages()
-		names := make([]string, 0, len(cat))
-		for _, l := range cat {
-			names = append(names, l.Name)
-		}
-		s.AdoptLanguages(names)
+	cat := o.builder.Languages()
+	names := make([]string, 0, len(cat))
+	for _, l := range cat {
+		names = append(names, l.Name)
 	}
-	if len(s.SungLanguages) == 0 && s.Spec != nil && !s.Spec.LanguagePinned && s.Spec.VocalLanguage != "" {
-		if name := prompting.LanguageName(s.Spec.VocalLanguage); name != "" {
-			s.SungLanguages = []string{name}
-		}
+	s.AdoptLanguages(names, o.LegacyLanguagesOff)
+	// Only a session that has never been asked takes the preset's
+	// answer. A session that says it sings in nothing said so on
+	// purpose, and must not have a language handed back to it on every
+	// load - which is what "empty" used to mean here.
+	if s.SungLanguages != nil || s.Spec == nil || s.Spec.LanguagePinned || s.Spec.VocalLanguage == "" {
+		return
 	}
+	name := prompting.LanguageName(s.Spec.VocalLanguage)
+	if name == "" || prompting.LanguageCode(name) == "" {
+		// A tag nobody can name back is no use as a language: it would
+		// be shown as a language called "ceb" and written in by that
+		// name. Leave the choice to the engine instead.
+		return
+	}
+	s.SungLanguages = []string{name}
 }
 
 // Events returns the stream of transient user-facing messages.

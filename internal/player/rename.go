@@ -204,9 +204,6 @@ func (o *Orchestrator) retitleLive(which, title string) string {
 		// that outlive it are not.
 		subtitle, retired := o.retired[which]
 		ref, banked := o.bankRefs[which]
-		if retired {
-			o.retired[which] = subtitle
-		}
 		o.mu.Unlock()
 		if !retired {
 			if which == "" {

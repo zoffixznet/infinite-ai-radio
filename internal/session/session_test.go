@@ -82,7 +82,7 @@ func TestOldLanguageMapBecomesTheListItSings(t *testing.T) {
 	s := &Session{Languages: map[string]bool{
 		"Russian": false, "English": false, "French": false, "Bisaya (Cebuano)": false,
 	}}
-	s.AdoptLanguages([]string{"Russian", "Tagalog", "Bisaya (Cebuano)", "English", "French"})
+	s.AdoptLanguages([]string{"Russian", "Tagalog", "Bisaya (Cebuano)", "English", "French"}, nil)
 	if len(s.SungLanguages) != 1 || s.SungLanguages[0] != "Tagalog" {
 		t.Fatalf("adopted %v, want just Tagalog", s.SungLanguages)
 	}
@@ -91,16 +91,33 @@ func TestOldLanguageMapBecomesTheListItSings(t *testing.T) {
 	}
 
 	// Every configured language switched off meant the engine's own
-	// choice, which is an empty list.
+	// choice: an answer of "none", not the absence of one.
 	off := &Session{Languages: map[string]bool{"English": false}}
-	off.AdoptLanguages([]string{"English"})
-	if len(off.SungLanguages) != 0 {
-		t.Fatalf("all-off adopted %v", off.SungLanguages)
+	off.AdoptLanguages([]string{"English"}, nil)
+	if off.SungLanguages == nil || len(off.SungLanguages) != 0 {
+		t.Fatalf("all-off adopted %v (nil=%v)", off.SungLanguages, off.SungLanguages == nil)
+	}
+
+	// A session saved with no map at all was steered by the standing
+	// off-list in the configuration; that is what it sang, so that is
+	// what it adopts.
+	standing := &Session{}
+	standing.AdoptLanguages([]string{"Russian", "Tagalog", "English"}, []string{"Russian", "English"})
+	if len(standing.SungLanguages) != 1 || standing.SungLanguages[0] != "Tagalog" {
+		t.Fatalf("a session with no map adopted %v, want Tagalog", standing.SungLanguages)
+	}
+
+	// With neither, it has never been asked - which is not the same as
+	// answering "none", and is the only state a preset may fill in.
+	fresh := &Session{}
+	fresh.AdoptLanguages([]string{"English"}, nil)
+	if fresh.SungLanguages != nil {
+		t.Fatalf("an unasked session was answered for: %v", fresh.SungLanguages)
 	}
 
 	// A session that already carries a list is left alone.
 	kept := &Session{SungLanguages: []string{"Japanese"}, Languages: map[string]bool{"English": false}}
-	kept.AdoptLanguages([]string{"English", "Japanese"})
+	kept.AdoptLanguages([]string{"English", "Japanese"}, []string{"Japanese"})
 	if len(kept.SungLanguages) != 1 || kept.SungLanguages[0] != "Japanese" {
 		t.Fatalf("an existing list was rewritten: %v", kept.SungLanguages)
 	}

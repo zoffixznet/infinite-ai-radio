@@ -58,12 +58,16 @@ type Session struct {
 	// ("scribe", "smoothbrain"); empty uses the configured default.
 	LyricsGenerator string `json:"lyrics_generator,omitempty"`
 	// SungLanguages lists the languages this session sings in, in the
-	// listener's own wording. Empty means no restriction: the music
-	// engine picks for each song. The list is part of what the session
-	// IS - loading one sings in exactly the languages it was saved
-	// with, whatever the configured catalogue holds now - and changing
-	// it branches the session, like any other change to the sound.
-	SungLanguages []string `json:"sung_languages,omitempty"`
+	// listener's own wording. The list is part of what the session IS -
+	// loading one sings in exactly the languages it was saved with,
+	// whatever the configured catalogue holds now - and changing it
+	// branches the session, like any other change to the sound.
+	//
+	// Empty and absent are different answers, which is why this is
+	// always written: empty is "no restriction, the engine picks",
+	// said by the listener, and absent is a session that has never been
+	// asked. Only the second may be filled in from a preset.
+	SungLanguages []string `json:"sung_languages"`
 	// Languages is the shape sessions were saved in before that: a map
 	// of the configured languages that were switched OFF, where a
 	// language the map said nothing about counted as on. Read once,
@@ -149,7 +153,11 @@ func (s *Session) Sings(name string) bool {
 // list in the order languages were added.
 func (s *Session) SetSung(name string, on bool) {
 	if !on {
+		// Kept non-nil even when it empties: "none" is an answer.
 		out := s.SungLanguages[:0]
+		if out == nil {
+			out = []string{}
+		}
 		for _, have := range s.SungLanguages {
 			if !strings.EqualFold(have, name) {
 				out = append(out, have)
@@ -163,20 +171,40 @@ func (s *Session) SetSung(name string, on bool) {
 	}
 }
 
-// AdoptLanguages converts a session saved in the old shape into the
-// list of languages it actually sings in. catalogue is what was
-// configured when it is read, because "every language the map does not
-// mention" is what the old shape meant by on. A session that already
-// carries a list is left alone.
-func (s *Session) AdoptLanguages(catalogue []string) {
-	if s.Languages == nil {
+// AdoptLanguages converts a session saved before the languages it sings
+// in were part of it into the list it sings. Both halves of the old
+// arrangement are needed to read one: catalogue is what is configured
+// now, because "every language the map does not mention" is what the
+// old shape meant by on, and wasOff is the standing off-list that used
+// to be applied at startup to a session that carried no map at all.
+// A session that already carries a list of its own is left alone.
+func (s *Session) AdoptLanguages(catalogue, wasOff []string) {
+	if s.SungLanguages != nil {
+		s.Languages = nil
 		return
 	}
-	if s.SungLanguages == nil {
-		for _, name := range catalogue {
-			if on, listed := s.Languages[name]; !listed || on {
-				s.SungLanguages = append(s.SungLanguages, name)
+	off := func(name string) bool { return false }
+	switch {
+	case s.Languages != nil:
+		off = func(name string) bool { on, listed := s.Languages[name]; return listed && !on }
+	case len(wasOff) > 0:
+		off = func(name string) bool {
+			for _, gone := range wasOff {
+				if strings.EqualFold(gone, name) {
+					return true
+				}
 			}
+			return false
+		}
+	default:
+		// Nothing to read: a session from before either arrangement, or
+		// a fresh one. It has never been asked, so leave it unasked.
+		return
+	}
+	s.SungLanguages = []string{}
+	for _, name := range catalogue {
+		if !off(name) {
+			s.SungLanguages = append(s.SungLanguages, name)
 		}
 	}
 	s.Languages = nil
@@ -271,7 +299,12 @@ func (s *Session) Snapshot() *Session {
 	cp.Spec = s.Spec.Clone()
 	cp.Tweaks = append([]Entry(nil), s.Tweaks...)
 	cp.History = append([]Entry(nil), s.History...)
-	cp.SungLanguages = append([]string(nil), s.SungLanguages...)
+	if s.SungLanguages != nil {
+		// Copied into an empty slice, not onto a nil one: appending
+		// nothing to nil gives nil back, and nil is a different answer
+		// from "no language in particular".
+		cp.SungLanguages = append([]string{}, s.SungLanguages...)
+	}
 	if s.Languages != nil {
 		cp.Languages = make(map[string]bool, len(s.Languages))
 		for k, v := range s.Languages {

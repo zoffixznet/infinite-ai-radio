@@ -199,11 +199,9 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 		return spec
 	}
 	// A language steered in by hand ("sing in french") pins the session
-	// to it; otherwise one of the switched-on languages is drawn at
-	// random. A language a preset happens to carry is only a default:
-	// it loses to a configured catalogue, or the list the listener is
-	// editing would quietly do nothing. With neither, the engine sings
-	// in whatever language it likes.
+	// to it; otherwise one of the languages this session sings in is
+	// drawn at random, and a session that names none leaves the choice
+	// to the engine.
 	if st, ok := b.buildLyrics(s, r); ok {
 		spec.Lyrics = st.Text
 		spec.VocalLanguage = st.Lang.Code
@@ -566,13 +564,6 @@ func (b *Builder) lyricsKey(gen LyricsGenerator, s *session.Session, r Rendered)
 	return "l|" + gen.Name() + "|" + r.Caption + "|" + s.LyricsTheme
 }
 
-// chooseLanguage picks the language the next song is sung in: a
-// steered-in language pins the session, otherwise one of the
-// switched-on languages is drawn at random. A language a preset
-// happens to carry is only a default: it loses to a configured
-// catalogue, or the list the listener is editing would quietly do
-// nothing. With neither, the engine sings in whatever language it
-// likes.
 // chooseLanguage picks the language for one song: the one steered in by
 // hand if there is one, otherwise a draw from the languages this session
 // sings in. A session that lists none sings in whatever the engine
