@@ -101,6 +101,12 @@ func (o *Orchestrator) retitlePass() {
 			continue
 		}
 		o.mu.Lock()
+		if !t.TitleProvisional {
+			// Named by a listener while this answer was being fetched.
+			// Theirs stands.
+			o.mu.Unlock()
+			continue
+		}
 		t.Title = title
 		if subtitle != "" {
 			t.Subtitle = subtitle
@@ -150,7 +156,9 @@ func (o *Orchestrator) retitlePass() {
 		// Answers are applied without limit; only NEW requests are
 		// rationed.
 		if title, subtitle, ok := o.builder.TitleForKey(key); ok {
-			if o.Buffer.SetTitle(epoch, e.Base, title, subtitle) {
+			// Guarded: a listener may have renamed this song since
+			// the listing above was read.
+			if o.Buffer.SetTitleIfUnnamed(epoch, e.Base, title, subtitle) {
 				o.log.Info("late title persisted", "event", "title_persisted",
 					"key", key, "title", title)
 			}

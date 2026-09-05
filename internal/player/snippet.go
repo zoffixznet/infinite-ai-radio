@@ -27,7 +27,7 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 		// An already-saved id is a no-op even after its audio has been
 		// evicted from memory.
 		o.mu.Lock()
-		already := o.saved[which]
+		already := o.saved[which] != ""
 		o.mu.Unlock()
 		if already {
 			return "already saved: that track is in your snippets"
@@ -50,7 +50,7 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			track = o.curTrack
 		}
 	}
-	already := track != nil && track.ID != "" && o.saved[track.ID]
+	already := track != nil && track.ID != "" && o.saved[track.ID] != ""
 	busy := o.saving
 	if track != nil && !already && !busy {
 		o.saving = true
@@ -124,9 +124,20 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 				o.log.Warn("lyrics sidecar not written", "event", "snippet_lyrics_failed", "error", err.Error())
 			}
 		}
-		o.markSaved(track.ID)
+		o.markSaved(track.ID, path)
 		o.log.Info("snippet saved", "event", "snippet_saved", "path", path, "prompt", prompt, "tag", slug)
 		o.emit("track saved: " + shown)
+		// The encode takes seconds and a rename takes none: a listener
+		// who renamed the song while it was being written would
+		// otherwise find the old name on disk forever.
+		o.mu.Lock()
+		latest := track.Title
+		o.mu.Unlock()
+		if latest != "" && latest != title {
+			if moved, ok := o.retitleSaved(track.ID, latest); ok {
+				o.emit("saved as: " + moved)
+			}
+		}
 	}()
 	return "saving this track to " + shown
 }
@@ -141,20 +152,21 @@ func isTrackID(which string) bool {
 // maxSavedIDs bounds the remembered saved-track set.
 const maxSavedIDs = 64
 
-// markSaved records that a track id was saved this run.
-func (o *Orchestrator) markSaved(id string) {
+// markSaved records that a track id was saved this run, and where the
+// file landed so a later rename can move it.
+func (o *Orchestrator) markSaved(id, path string) {
 	if id == "" {
 		return
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.saved == nil {
-		o.saved = map[string]bool{}
+		o.saved = map[string]string{}
 	}
-	if o.saved[id] {
+	if o.saved[id] != "" {
 		return
 	}
-	o.saved[id] = true
+	o.saved[id] = path
 	o.savedOrder = append(o.savedOrder, id)
 	for len(o.savedOrder) > maxSavedIDs {
 		delete(o.saved, o.savedOrder[0])

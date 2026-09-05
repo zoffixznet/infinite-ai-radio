@@ -227,6 +227,11 @@ func (w *webDriver) acceptAlert() {
 	wdCall(w.t, "POST", w.base+"/alert/accept", nil)
 }
 
+// typeIntoAlert fills the open prompt box before it is accepted.
+func (w *webDriver) typeIntoAlert(text string) {
+	wdCall(w.t, "POST", w.base+"/alert/text", map[string]string{"text": text})
+}
+
 // sessionButton is the XPath of an action button inside a session row.
 // sessionButton locates a station row's action by what the action does.
 // The row itself is the button that starts the station, so the match is
@@ -1624,6 +1629,40 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 		}
 		return true
 	})
+
+	// The pencil beside the headline renames THAT song - the one this
+	// device is playing - and leaves the machine's alone. Renaming from
+	// the saved list would mean leaving the live page, which stops the
+	// radio; this is the whole point of the control.
+	var machineBefore string
+	w.execAsync(`var cb = arguments[arguments.length - 1];
+		fetch('/state').then(function (r) { return r.json() }).then(function (st) {
+			cb((st.track && st.track.title) || "");
+		});`, &machineBefore)
+	w.click("#rename")
+	w.typeIntoAlert("Harbour Lights")
+	w.acceptAlert()
+	waitFor(t, 25*time.Second, "this device's song to take the new name", func() bool {
+		var v struct {
+			Now    string `json:"now"`
+			Card   string `json:"card"`
+			Server string `json:"server"`
+		}
+		w.execAsync(`var cb = arguments[arguments.length - 1];
+			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
+				var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
+				cb({now: (document.getElementById('now')||{}).textContent||"",
+				    card: m ? m.title : "",
+				    server: (st.track && st.track.title) || ""});
+			});`, &v)
+		if v.Server == "Harbour Lights" {
+			t.Fatalf("renaming this device's song renamed the machine's instead: %q", v.Server)
+		}
+		return v.Now == "Harbour Lights" && v.Card == "Harbour Lights"
+	})
+	if machineBefore == "Harbour Lights" {
+		t.Fatal("the machine was already playing a song by that name")
+	}
 
 	w.click("#next")
 

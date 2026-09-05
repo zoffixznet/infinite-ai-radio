@@ -403,13 +403,17 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, titleKey string, t
 }
 
 // NextTrack decodes and removes the oldest rendered song of the epoch,
-// returning its pending title key alongside. A song that cannot be
-// decoded is dropped and the next one tried.
-func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string, bool) {
+// returning its pending title key and the file base it came from. The
+// base is what a listener's copy of this song is still called: the
+// audio is gone from disk the moment it is fed, so anything that wants
+// to reach the song afterwards - a rename, say - has to follow it into
+// memory. A song that cannot be decoded is dropped and the next one
+// tried.
+func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string, string, bool) {
 	for {
 		base, ok := s.oldest(s.tracksDir(), epoch, ".json")
 		if !ok {
-			return nil, "", false
+			return nil, "", "", false
 		}
 		mp3 := filepath.Join(s.tracksDir(), base+".mp3")
 		metaPath := filepath.Join(s.tracksDir(), base+".json")
@@ -425,7 +429,7 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string
 		if ctx.Err() != nil {
 			// A cancelled context fails every decode; deleting on that
 			// would wipe the whole buffer during shutdown.
-			return nil, "", false
+			return nil, "", "", false
 		}
 		os.Remove(metaPath)
 		os.Remove(mp3)
@@ -443,7 +447,7 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string
 			GenTime:  meta.GenTime,
 			Title:    meta.Title,
 			Subtitle: meta.Subtitle,
-		}, meta.TitleKey, true
+		}, meta.TitleKey, base, true
 	}
 }
 
@@ -501,6 +505,17 @@ func (s *Store) DiskEpoch() (int, bool) {
 // removes the metadata again if the audio vanished mid-write (a steer
 // wiping the epoch), so no orphan survives the race.
 func (s *Store) SetTitle(epoch int, base, title, subtitle string) bool {
+	return s.setTitle(base, title, subtitle, false)
+}
+
+// SetTitleIfUnnamed is SetTitle for the late naming pass: it writes only
+// while the song still has no name of its own, so an answer that arrives
+// after a listener has typed one cannot displace theirs.
+func (s *Store) SetTitleIfUnnamed(epoch int, base, title, subtitle string) bool {
+	return s.setTitle(base, title, subtitle, true)
+}
+
+func (s *Store) setTitle(base, title, subtitle string, onlyIfUnnamed bool) bool {
 	metaPath := filepath.Join(s.tracksDir(), base+".json")
 	mp3Path := filepath.Join(s.tracksDir(), base+".mp3")
 	raw, err := os.ReadFile(metaPath)
@@ -509,6 +524,9 @@ func (s *Store) SetTitle(epoch int, base, title, subtitle string) bool {
 	}
 	var m trackMeta
 	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	if onlyIfUnnamed && m.Title != "" {
 		return false
 	}
 	m.Title, m.Subtitle = title, subtitle

@@ -560,7 +560,7 @@ func (o *Orchestrator) Status() Status {
 			st.TrackTitle = ts.track.Title
 			st.TrackSubtitle = ts.track.Subtitle
 			st.TrackNum = o.curTrackNum
-			st.TrackSaved = o.saved[ts.track.ID]
+			st.TrackSaved = o.saved[ts.track.ID] != ""
 			st.Looping = ts.loop
 			st.TrackLanguage = trackLanguage(ts.track)
 			st.TrackLyrics = trackLyrics(ts.track)
@@ -570,7 +570,7 @@ func (o *Orchestrator) Status() Status {
 		st.PrevTrackID = o.prevTrack.ID
 		st.PrevTrackPrompt = o.prevTrack.Prompt
 		st.PrevTrackTitle = o.prevTrack.Title
-		st.PrevTrackSaved = o.saved[o.prevTrack.ID]
+		st.PrevTrackSaved = o.saved[o.prevTrack.ID] != ""
 	}
 	st.SavedTrackIDs = append([]string(nil), o.savedOrder...)
 	st.Languages = o.languageStatesLocked()

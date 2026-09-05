@@ -184,7 +184,10 @@ func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 			ctx = context.Background()
 		}
 		t, ok := o.Buffer.Peek(ctx, epoch, base)
-		if ok {
+		// Only a nameless song gets a stand-in: the sidecar's own
+		// title is the answer, whether the helper wrote it or a
+		// listener typed it.
+		if ok && t.Title == "" {
 			o.fillTitle(t, specPromptForLog(t.Spec))
 		}
 		return t, ok

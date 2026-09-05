@@ -351,6 +351,11 @@ body.app .inner { max-width: 520px; margin: 0 auto; width: 100%; }
 
 /* ---- now playing ---------------------------------------------------- */
 .nowblock { padding-bottom: var(--s5); }
+/* The pencil sits with the name, not under it: it renames THAT song,
+   and a long title must push it nowhere. */
+.nowrow { display: flex; align-items: flex-start; gap: var(--s2); }
+.nowrow #now { flex: 1; min-width: 0; }
+.nowrow .iconbtn { margin: -6px -10px 0 0; }
 #now {
   font-size: 20px; line-height: 28px; font-weight: 700; letter-spacing: -0.01em;
   min-height: 56px;

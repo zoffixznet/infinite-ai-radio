@@ -1289,6 +1289,7 @@
   function paintNow(s) {
     var rec = pf.active && pf.playingId ? pf.have[pf.playingId] : null;
     if (rec) {
+      nowTitle = rec.title || "";
       setText($("now"), rec.title || rec.prompt || "...");
       setText($("nowprompt"), (rec.title && rec.prompt) || "");
       var m = "Track " + (pf.played || 0);
@@ -1300,6 +1301,7 @@
     // poll brings the machine's.
     if (!s) return;
     var t = s.track;
+    nowTitle = (t && t.title) || "";
     setText($("now"), (t && (t.title || t.prompt)) || s.source || s.state || "...");
     setText($("nowprompt"), (t && t.title && t.prompt) || "");
     var meta = t && t.number ? "Track " + t.number : "";
@@ -1307,6 +1309,55 @@
     if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
     setText($("meta"), meta);
   }
+
+  // ---- renaming what is playing ------------------------------------
+  // Names are written by a helper model that has only the words to go
+  // on, and the moment a listener knows it got one wrong is while the
+  // song is playing. The pencil renames it from here: the alternative
+  // is the saved list, which means leaving the live page and stopping
+  // the radio to fix a name. nowTitle is the song's own name as last
+  // painted - never the placeholder line - so the box opens on
+  // something worth editing.
+  var nowTitle = "";
+  function pfSetTitle(id, title) {
+    var rec = pf.have[id];
+    if (!rec) return;
+    rec.title = title;
+    // Typed by a person, so it is final: a later listing must not
+    // trade it back for the helper's.
+    rec.provisional = false;
+    idbReq(idbStore("readonly").get(id)).then(function (stored) {
+      if (!stored) return;
+      stored.title = title;
+      stored.provisional = false;
+      return idbReq(idbStore("readwrite").put(stored));
+    })["catch"](function () {});
+  }
+  $("rename").addEventListener("click", function () {
+    // A device playing its own banked copy renames that song, not
+    // whatever the machine happens to be playing.
+    var id = pf.active && pf.playingId ? pf.playingId : "";
+    var rec = id ? pf.have[id] : null;
+    var was = rec ? (rec.title || "") : nowTitle;
+    var name = window.prompt("New name for this song:", was);
+    if (name === null) return;
+    name = name.trim();
+    if (!name || name === was) return;
+    buzz();
+    act($("rename"), [stateEl, $("steerstatus")], "/retitle",
+      "id=" + encodeURIComponent(id) + "&title=" + encodeURIComponent(name),
+      "renaming…").then(function (d) {
+      if (!d || !rec) return;
+      // The server has no say over this device's own copy; rename it
+      // here so the screen and the lock screen change at once instead
+      // of at the next listing.
+      pfSetTitle(id, name);
+      lastNow = name;
+      paintNow(null);
+      applyMediaMetadata();
+      renderLyrics(null);
+    });
+  });
 
   function pfStatus() {
     // Nothing playing and nothing banked is its own state, and saying

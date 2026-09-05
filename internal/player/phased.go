@@ -657,12 +657,13 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			continue
 		}
 		epoch, sess := o.snapshotSession()
-		track, titleKey, ok := o.Buffer.NextTrack(ctx, epoch)
+		track, titleKey, base, ok := o.Buffer.NextTrack(ctx, epoch)
 		if !ok {
 			o.kickGen() // nothing on disk: the cycle loop should wake
 			continue
 		}
 		track.ID = newTrackID()
+		o.rememberFed(base, track.ID)
 		// The sidecar's stored key was computed from the words as
 		// submitted; deriving from the track's lyrics (the engine's
 		// echo) is the fallback for sidecars without one.
@@ -706,9 +707,9 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		// library when it is actually about to be heard, so a dropped
 		// buffer never churns the library. The banked copy is a
 		// snapshot taken under the lock - the retitle loop may rename
-		// the live track at any moment - and where the name is still
-		// provisional the banked location is remembered so the rename
-		// reaches the sidecar too.
+		// the live track at any moment - and the banked location is
+		// remembered so a rename, late or asked for, reaches the
+		// sidecar too.
 		key := library.Key(sess)
 		o.mu.Lock()
 		banked := *track // shallow: Samples are shared and immutable
@@ -721,11 +722,7 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 				o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
 				return
 			}
-			if banked.TitleProvisional && id != "" {
-				o.mu.Lock()
-				o.bankRefs[banked.ID] = bankRef{key: key, id: id}
-				o.mu.Unlock()
-			}
+			o.rememberBank(banked.ID, bankRef{key: key, id: id})
 		}()
 	}
 }

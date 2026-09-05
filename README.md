@@ -458,6 +458,15 @@ minutes, and switching it off in Settings is one tap.
 Saving from the phone captures what *you* are hearing - in buffered mode
 that is this device's track, which may trail the machine's speakers.
 
+The pencil beside the song's name renames it, so a name you disagree
+with can be fixed while the song is still playing instead of from the
+saved list, which means leaving the live page and stopping the radio.
+The new name is the last word: it replaces the name everywhere the song
+is kept - the queue other devices read, the copy banked for instant
+starts, the song still waiting on disk - and the automatic naming will
+not overwrite it later. If you had already saved that song, its file is
+renamed on disk too, tag and all.
+
 The page publishes media-session metadata, so lock screens, Bluetooth
 displays and car interfaces show the song's title and genre line with
 working play, pause and next buttons. Browsers refuse to autoplay on an
@@ -487,7 +496,9 @@ phone; the live stream and the machine's speakers are untouched. Tick
 the tags and sung languages you want and it loops through the checked
 songs forever; uncheck a song to skip it without deleting anything, or
 loop just one. Tapping a row opens the song's panel: full lyrics,
-details, and buttons to download, rename, move or delete it.
+details, and buttons to download, rename, move or delete it. Renaming
+here works the same way as the pencil on the live page: the file and
+its title tag both change.
 
 On disk, a saved song's file is named after its title with the sung
 language's tag before the extension

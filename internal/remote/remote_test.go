@@ -291,6 +291,7 @@ type fakeCtl struct {
 	skips   int
 	loops   int
 	holds   int
+	renames []string
 	news    []string
 	saves   [][2]string
 	lyrGens []string
@@ -379,6 +380,13 @@ func (f *fakeCtl) ToggleStandby() string {
 	defer f.mu.Unlock()
 	f.holds++
 	return "the radio is on standby"
+}
+
+func (f *fakeCtl) Retitle(which, title string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renames = append(f.renames, which+"="+title)
+	return "renamed to " + title
 }
 
 func (f *fakeCtl) NewSession(prompt string) string {
@@ -854,6 +862,7 @@ func TestPermissionMatrix(t *testing.T) {
 		"/standby":         {"POST", "/standby", nil},
 		"/new":             {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
 		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
+		"/retitle":         {"POST", "/retitle", url.Values{"id": {"t-1"}, "title": {"Steel In The Water"}}},
 		"/users":           {"GET", "/users", nil},
 		"/api/sessions":    {"GET", "/api/sessions", nil},
 		"/sessions/save":   {"POST", "/sessions/save", url.Values{"name": {"web-named"}}},
@@ -876,26 +885,26 @@ func TestPermissionMatrix(t *testing.T) {
 		want expect
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
-			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/standby": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
+			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/standby": auth, "/new": auth, "/save": auth, "/retitle": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
 			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/standby": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/standby": ok, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": ok, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": ok, "/retitle": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/standby": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/standby": ok, "/new": ok, "/save": ok, "/retitle": ok, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok}},
 	}
 	for who, row := range matrix {
@@ -944,7 +953,10 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.langAll) != 2 || strings.Join(h.ctl.langAll[0], "|") != "English|Russian" {
 		t.Fatalf("configured language lists: %v", h.ctl.langAll)
 	}
-	if len(h.ctl.notes) != 24 {
+	if len(h.ctl.renames) != 2 || h.ctl.renames[0] != "t-1=Steel In The Water" {
+		t.Fatalf("renames: %v", h.ctl.renames)
+	}
+	if len(h.ctl.notes) != 26 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
 	}
 }

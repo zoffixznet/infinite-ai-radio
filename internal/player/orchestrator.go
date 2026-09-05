@@ -300,10 +300,18 @@ type Orchestrator struct {
 	// retitleKick wakes the retitle loop out of turn (engine just
 	// hibernated: the card is free for the helper).
 	retitleKick chan struct{}
-	// bankRefs remembers where a still-provisional track's banked
-	// library copy lives (track ID -> key and library id), so a late
-	// name reaches the banked sidecar too. Pruned as tracks retire.
+	// bankRefs remembers where a live track's banked library copy lives
+	// (track ID -> key and library id), so a new name - the helper's,
+	// late, or a listener's - reaches the banked sidecar too. Pruned as
+	// tracks retire.
 	bankRefs map[string]bankRef
+	// bufFed maps a disk-buffer file base to the in-memory track it
+	// became. Feeding deletes the song from disk, so a listener still
+	// playing their own downloaded copy holds the only name anyone
+	// knows it by; this is how a rename of that name finds the song.
+	// Bounded by bufFedOrder, oldest dropped first.
+	bufFed      map[string]string
+	bufFedOrder []string
 	// properPlayedInEpoch counts played songs that carried written
 	// words (or were instrumental); the deep batch unlocks on these,
 	// not on the engine-worded openers a cold start may serve first.
@@ -323,10 +331,11 @@ type Orchestrator struct {
 	// curTrackNum is the playing track's number.
 	playCount   int
 	curTrackNum int
-	// saved remembers which track ids were saved as snippets this run
-	// (bounded by savedOrder), so save buttons can grey out and a
-	// repeat save is a no-op.
-	saved      map[string]bool
+	// saved maps the track ids saved as snippets this run to where they
+	// landed on disk (bounded by savedOrder), so save buttons can grey
+	// out, a repeat save is a no-op, and renaming a song that is
+	// already on disk can rename the files too.
+	saved      map[string]string
 	savedOrder []string
 	// saveLanguages persists an edited vocal-language catalogue and
 	// which of its languages are switched off. Nil means both only live
@@ -358,6 +367,7 @@ func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store
 		events:      make(chan Event, 16),
 		wake:        make(chan struct{}, 1),
 		bankRefs:    map[string]bankRef{},
+		bufFed:      map[string]string{},
 		retitleKick: make(chan struct{}, 1),
 	}
 	o.volume.Store(int32(cfg.Volume))
@@ -722,13 +732,22 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			// in the WaitGroup so shutdown never races a disk write
 			// (adding here is safe: genLoop itself holds the group).
 			key := library.Key(sess)
+			// A snapshot, not the live track: the retitle loop and a
+			// listener's rename both write Title under the lock while
+			// this write is still running.
+			o.mu.Lock()
+			banked := *track // shallow: Samples are shared and immutable
+			o.mu.Unlock()
 			o.wg.Add(1)
-			go func(t *engine.Track) {
+			go func() {
 				defer o.wg.Done()
-				if _, err := o.Library.Put(key, t); err != nil {
+				id, err := o.Library.Put(key, &banked)
+				if err != nil {
 					o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
+					return
 				}
-			}(track)
+				o.rememberBank(banked.ID, bankRef{key: key, id: id})
+			}()
 		}
 		o.log.Info("generation finished", "event", "generation_finished",
 			"elapsed_seconds", elapsed.Seconds(), "track_seconds", track.Duration().Seconds(),
@@ -1036,6 +1055,10 @@ func (o *Orchestrator) seedFromLibrary() {
 	o.queue = append(o.queue, track)
 	o.lastGood = track
 	o.lastGoodEpoch = o.epoch
+	// This one came out of the library rather than into it, but a
+	// rename has the same job to do: the file it was loaded from is
+	// where the name has to land.
+	o.bankRefs[track.ID] = bankRef{key: library.Key(sessCopy), id: libID}
 	// The same file must not also be offered as filler under its
 	// library id: a remote client would list and play it twice.
 	if o.seededLib == nil {

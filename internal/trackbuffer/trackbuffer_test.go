@@ -68,7 +68,7 @@ func TestTrackRoundTrip(t *testing.T) {
 	if count != 1 || secs < 1.9 || secs > 2.1 {
 		t.Fatalf("stats = %d, %v", count, secs)
 	}
-	got, titleKey, ok := s.NextTrack(context.Background(), 1)
+	got, titleKey, _, ok := s.NextTrack(context.Background(), 1)
 	if !ok || titleKey != "song:1-7" {
 		t.Fatal("NextTrack found nothing")
 	}
@@ -79,7 +79,7 @@ func TestTrackRoundTrip(t *testing.T) {
 	if d := math.Abs(float64(len(got.Samples)-len(samples))) / float64(audio.SampleRate*audio.Channels); d > 0.2 {
 		t.Fatalf("length drifted %vs", d)
 	}
-	if _, _, ok := s.NextTrack(context.Background(), 1); ok {
+	if _, _, _, ok := s.NextTrack(context.Background(), 1); ok {
 		t.Fatal("track not consumed")
 	}
 }

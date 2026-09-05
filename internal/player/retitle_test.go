@@ -105,7 +105,7 @@ func TestLateTitlePersistsToTheDiskBuffer(t *testing.T) {
 	}
 
 	// The persisted name rides the track out of the buffer.
-	got, key, ok := buf.NextTrack(context.Background(), 0)
+	got, key, _, ok := buf.NextTrack(context.Background(), 0)
 	if !ok || got.Title != "Steel In The Water" || key != prompting.SongKey(track.Lyrics) {
 		t.Fatalf("NextTrack = %+v key=%q ok=%v", got, key, ok)
 	}

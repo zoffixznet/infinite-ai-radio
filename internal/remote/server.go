@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"iar/internal/accounts"
 	"iar/internal/engine"
@@ -42,6 +43,7 @@ type Controls interface {
 	Skip() string
 	ToggleLoop() string
 	ToggleStandby() string
+	Retitle(which, title string) string
 	SaveSnippet(which, tag string) string
 	NameSession(name string) string
 	LoadByName(name string) string
@@ -271,6 +273,9 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /standby", s.apiPerm("steer", permSteer, s.handleStandby))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
+	// Renaming what is playing is the same act as renaming it in the
+	// saved list, and answers to the same permission.
+	mux.HandleFunc("POST /retitle", s.apiPerm("rename songs", permSave, s.handleRetitle))
 	// Sessions: listing for everyone; loading changes what everyone
 	// hears (new-prompt permission); naming is a save; deleting is
 	// admin-only.
@@ -735,10 +740,21 @@ func textFieldN(r *http.Request, name string, max int) string {
 		v = strings.TrimSpace(r.FormValue(name))
 	}
 	if len(v) > max {
-		v = v[:max]
+		// Song names are written in their own language's script, where
+		// one letter is several bytes: cutting on a byte would leave
+		// half a letter behind and the name would render as a replacement
+		// character.
+		for max > 0 && !utf8.RuneStart(v[max]) {
+			max--
+		}
+		v = strings.TrimSpace(v[:max])
 	}
 	return v
 }
+
+// maxTitleBytes bounds a song name. Generous in bytes because a name in
+// a non-Latin script costs three of them a letter.
+const maxTitleBytes = 240
 
 func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	text := textField(r, "text")
@@ -804,6 +820,20 @@ func (s *Server) handleLoop(w http.ResponseWriter, r *http.Request, u accounts.U
 func (s *Server) handleStandby(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.ToggleStandby()
 	s.ctl.Announce("remote standby by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+// handleRetitle renames the song a listener is hearing. id is the
+// track their own device is playing, when it has one of its own;
+// without it the machine's current song is renamed.
+func (s *Server) handleRetitle(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	title := textFieldN(r, "title", maxTitleBytes)
+	if title == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+	ack := s.ctl.Retitle(textField(r, "id"), title)
+	s.ctl.Announce("remote rename by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 
