@@ -256,27 +256,41 @@ thing that ever changes a name afterwards is you, with the pencil.
 
 ### Sung languages
 
-Left alone, the engine sings in whatever language it feels like. Name
-the languages you want and every song picks one of them at random:
+Left alone, the engine sings in whatever language it feels like. Two
+separate things decide otherwise:
 
 ```
-languages English, Russian, French, Bisaya (Cebuano)
-languages -Russian     # not in the mood for Russian right now
-languages +Russian
-languages none         # back to the engine's own choice
+languages English, Russian, French, Bisaya (Cebuano)   # what your radio offers
+languages +Russian     # this session sings Russian
+languages -Russian     # ...and now it does not
+languages none         # this session asks for no language; the engine picks
 ```
 
-The list is saved in the configuration, so it survives restarts and
-preset switches, and a language you switch off stays off when you start
-a preset or a new prompt - it is a standing preference about your radio
-rather than a property of one vibe. A saved session that carries its own
-answer keeps it. The phone remote shows one switch per language on its
-Live screen. Languages the engine has no tag for still work best-effort
-(the words are written in that language and sung without a language
-hint), and the `languages` listing says which ones those are. Steering
-a language by hand ("sing in French") pins the session to it; editing
-the list or flipping a switch releases the pin and drops the tracks
-queued ahead.
+The **offered list** is your radio's, saved in the configuration and
+unchanged by anything you play. **Which of them a session sings in**
+belongs to the session, exactly like its prompt: `gym-grind` can be
+Tagalog-only and `night-shift` Russian-only, and switching between them
+gives you each one's music. Editing the offered list therefore changes
+nothing that is playing - it only changes what you can switch on next.
+
+Because the languages are part of the session, changing them branches
+it, the same as a steer: what you had keeps its name, the change plays
+on under a new one. A session that names no language sings in whatever
+the engine picks - which is what you get from a preset that carries no
+language of its own; one that does (most of the vocal presets say
+English) starts its session singing that, and the switches show it.
+
+If you take a language out of the offered list while a session sings in
+it, the session goes on singing it: it was saved that way. That
+language's switch stays visible, marked as one your radio no longer
+offers, so you can turn it off - and once you do, it is gone from the
+list. The phone shows those in a different colour.
+
+Languages the engine has no tag for still work best-effort (the words
+are written in that language and sung without a language hint), and the
+`languages` listing says which ones those are. Steering a language by
+hand ("sing in French") pins the session to it; flipping a switch
+releases the pin and drops the tracks queued ahead.
 
 ### Terminal commands
 
@@ -302,7 +316,7 @@ typed at the same prompt. A leading slash is optional: `skip` and
 | `standby` | hold the whole radio: nothing plays, nothing is generated |
 | `volume <0-100>` | set output volume |
 | `lyrics [name]` | show or switch the lyric writer |
-| `languages [list]` | show, set or switch the sung languages |
+| `languages [list]` | show or set the offered languages; `+X`/`-X`/`none` switch this session's |
 | `status` | engine, buffer and session status |
 | `help` | list commands |
 | `quit` | exit |
@@ -701,17 +715,17 @@ everything else keeps its default. The complete set, with defaults:
   with no `--preset`, `--session` or prompt. Empty starts from the
   built-in fallback sound instead. A name that no longer exists is
   logged and falls back rather than stopping the radio.
-- `vocal_languages`: the languages sung vocals are sung in, written
-  the way you would say them: `["English", "Russian", "French",
-  "Bisaya (Cebuano)"]`. Every song picks one of them at random, so the
-  same language can come up twice in a row. Empty - the default -
-  leaves the choice to the music engine, which sings in whatever
-  language it likes. The `languages` command and the phone remote edit
-  this list, and both write it back here. Switching a single language
-  off (`languages -Russian`, or a tap on the remote's Live screen)
-  narrows the choice without editing the list itself; that narrowing is
-  saved as `vocal_languages_off` and carries across restarts and new
-  sessions.
+- `vocal_languages`: the languages your radio offers for sung vocals,
+  written the way you would say them: `["English", "Russian",
+  "French", "Bisaya (Cebuano)"]`. This is the list to pick from, not
+  the choice itself: which of them a session sings in is saved with the
+  session, so loading one sings what it was saved with. A session that
+  names none - and the default, an empty list - leaves the choice to
+  the music engine. Each song picks one of the session's languages at
+  random, so the same one can come up twice in a row. The `languages`
+  command and the phone remote's Settings edit this list and write it
+  back here; `languages +Russian` and the switches on the Live screen
+  change the session instead.
   The music engine publishes about fifty language tags but never checks
   a request against the list, and the model behind it knows more
   languages than the list names - Cebuano among them, asked for by its
@@ -720,15 +734,14 @@ everything else keeps its default. The complete set, with defaults:
   the words itself, the tag decides which language they are written in,
   so a near-miss tag gets a different language rather than an accent.
   A language steered in by hand ("sing in
-  French") pins the session to it and outranks the list; a preset that
-  names a language of its own does not. Editing the list releases that
-  pin, drops the tracks queued ahead and starts generating in the new
-  languages.
-- `vocal_languages_off`: which of the languages above are currently
-  switched off. Written by the `languages -Name` command and the phone
-  remote's per-language switches; it is a standing preference, so a
-  language you turn off stays off across restarts and new sessions.
-  Delete the key to switch everything back on.
+  French") pins the session to it and outranks its list; a preset that
+  names a language of its own seeds the list instead, so the switches
+  show it. Flipping a switch releases that pin, drops the tracks queued
+  ahead and starts generating in the new languages.
+- `vocal_languages_off` is no longer used. Which languages are sung
+  lives in the session now, so that loading one sings what it was saved
+  with; sessions written before that are converted the first time they
+  are loaded. The key can be deleted.
 
 ### remote
 

@@ -227,7 +227,16 @@ func TestControllerLanguagesCommand(t *testing.T) {
 	if out, _ := c.Handle("languages English, Russian, Bisaya (Cebuano), Klingon"); !strings.Contains(out, "English") {
 		t.Fatalf("configure = %q", out)
 	}
+	// Configuring offers them; this session sings in none of them yet,
+	// so the engine is still choosing.
 	out, _ := c.Handle("languages")
+	if strings.Contains(out, "\n * ") {
+		t.Fatalf("configuring a list switched languages on by itself:\n%s", out)
+	}
+	c.Handle("lang +English")
+	c.Handle("lang +Russian")
+	c.Handle("lang +Bisaya (Cebuano)")
+	out, _ = c.Handle("languages")
 	for _, want := range []string{"* English", "* Russian", "* Bisaya (Cebuano)"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("listing missing %q:\n%s", want, out)
@@ -248,21 +257,27 @@ func TestControllerLanguagesCommand(t *testing.T) {
 	if out, _ := c.Handle("lang +Russian"); !strings.Contains(out, "Russian") {
 		t.Fatalf("switching Russian back on = %q", out)
 	}
+	// "none" is about this session, not the machine's list: it stops
+	// asking for a language, and the engine picks per song.
 	if out, _ := c.Handle("languages none"); !strings.Contains(out, "whatever language the music engine picks") {
 		t.Fatalf("clearing = %q", out)
 	}
-	if out, _ := c.Handle("languages +English"); !strings.Contains(out, "not one of the configured") {
+	if out, _ := c.Handle("languages"); strings.Contains(out, "\n * ") {
+		t.Fatalf("none left a language switched on:\n%s", out)
+	}
+	if out, _ := c.Handle("languages +Elvish"); !strings.Contains(out, "not one of the configured") {
 		t.Fatalf("switching an unconfigured language = %q", out)
 	}
 	if out, _ := c.Handle("help"); !strings.Contains(out, "languages") {
 		t.Fatalf("help does not list the command:\n%s", out)
 	}
-	// status reports what is being sung when anything is configured,
-	// and says nothing when the engine is choosing.
+	// status reports what this session sings in, and says nothing while
+	// the engine is choosing.
 	if out, _ := c.Handle("status"); strings.Contains(out, "sung in:") {
-		t.Fatalf("status names languages with none configured:\n%s", out)
+		t.Fatalf("status names languages with none switched on:\n%s", out)
 	}
-	c.Handle("languages English, Russian")
+	c.Handle("lang +English")
+	c.Handle("lang +Russian")
 	if out, _ := c.Handle("status"); !strings.Contains(out, "sung in:  English, Russian") {
 		t.Fatalf("status does not report the languages:\n%s", out)
 	}

@@ -71,3 +71,57 @@ func TestDeleteAutoKeepsWhatMatters(t *testing.T) {
 		t.Fatal("the named or the playing session was deleted")
 	}
 }
+
+// Sessions used to record which of the configured languages were
+// switched OFF, so a language the machine gained later was silently
+// sung by every session that had never heard of it. They now carry the
+// list they sing, and an old file is read once against the catalogue it
+// was saved under.
+func TestOldLanguageMapBecomesTheListItSings(t *testing.T) {
+	// The shape on disk today: Tagalog unlisted (so, on), the rest off.
+	s := &Session{Languages: map[string]bool{
+		"Russian": false, "English": false, "French": false, "Bisaya (Cebuano)": false,
+	}}
+	s.AdoptLanguages([]string{"Russian", "Tagalog", "Bisaya (Cebuano)", "English", "French"})
+	if len(s.SungLanguages) != 1 || s.SungLanguages[0] != "Tagalog" {
+		t.Fatalf("adopted %v, want just Tagalog", s.SungLanguages)
+	}
+	if s.Languages != nil {
+		t.Fatal("the old map must be dropped once it is read")
+	}
+
+	// Every configured language switched off meant the engine's own
+	// choice, which is an empty list.
+	off := &Session{Languages: map[string]bool{"English": false}}
+	off.AdoptLanguages([]string{"English"})
+	if len(off.SungLanguages) != 0 {
+		t.Fatalf("all-off adopted %v", off.SungLanguages)
+	}
+
+	// A session that already carries a list is left alone.
+	kept := &Session{SungLanguages: []string{"Japanese"}, Languages: map[string]bool{"English": false}}
+	kept.AdoptLanguages([]string{"English", "Japanese"})
+	if len(kept.SungLanguages) != 1 || kept.SungLanguages[0] != "Japanese" {
+		t.Fatalf("an existing list was rewritten: %v", kept.SungLanguages)
+	}
+}
+
+// The list is the session's own, so switching is by name and a
+// snapshot does not share it.
+func TestSungLanguageSwitching(t *testing.T) {
+	s := New()
+	s.SetSung("Tagalog", true)
+	s.SetSung("tagalog", true) // same language, said differently
+	if len(s.SungLanguages) != 1 || !s.Sings("TAGALOG") {
+		t.Fatalf("switching on twice = %v", s.SungLanguages)
+	}
+	cp := s.Snapshot()
+	cp.SetSung("Russian", true)
+	if s.Sings("Russian") {
+		t.Fatal("a snapshot shares the caller's list")
+	}
+	s.SetSung("Tagalog", false)
+	if len(s.SungLanguages) != 0 || s.Sings("Tagalog") {
+		t.Fatalf("switching off left %v", s.SungLanguages)
+	}
+}

@@ -39,6 +39,11 @@ type LanguageState struct {
 	Engine bool
 	// On reports that the session currently sings in it.
 	On bool
+	// Configured reports that the language is in the machine's own
+	// list. One that is not comes from the session itself - it was
+	// saved singing in a language nobody has configured since - and
+	// interfaces say so rather than hiding it.
+	Configured bool
 }
 
 // Status is a point-in-time snapshot for status displays.
@@ -345,10 +350,11 @@ type Orchestrator struct {
 	// already on disk can rename the files too.
 	saved      map[string]string
 	savedOrder []string
-	// saveLanguages persists an edited vocal-language catalogue and
-	// which of its languages are switched off. Nil means both only live
-	// for this run.
-	saveLanguages func(names, off []string) error
+	// saveLanguages persists an edited vocal-language catalogue - the
+	// machine's list of what can be offered. Which of them a session
+	// sings in belongs to the session, not here. Nil means an edited
+	// catalogue lives only for this run.
+	saveLanguages func(names []string) error
 
 	volume atomic.Int32
 	events chan Event
@@ -383,7 +389,34 @@ func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store
 		heard: !sess.LastPlayed.IsZero(),
 	}
 	o.volume.Store(int32(cfg.Volume))
+	o.adoptLanguages(sess)
 	return o
+}
+
+// adoptLanguages settles which languages a session sings in as it
+// becomes the playing one. Two cases: a session saved before that was
+// part of the session at all (the old shape said which of the
+// then-configured languages were switched OFF, so it can only be read
+// against a catalogue - the machine's current one), and a preset that
+// names a language of its own, which becomes its session's list so the
+// pills show what the songs will actually be sung in.
+func (o *Orchestrator) adoptLanguages(s *session.Session) {
+	if s == nil {
+		return
+	}
+	if s.Languages != nil {
+		cat := o.builder.Languages()
+		names := make([]string, 0, len(cat))
+		for _, l := range cat {
+			names = append(names, l.Name)
+		}
+		s.AdoptLanguages(names)
+	}
+	if len(s.SungLanguages) == 0 && s.Spec != nil && !s.Spec.LanguagePinned && s.Spec.VocalLanguage != "" {
+		if name := prompting.LanguageName(s.Spec.VocalLanguage); name != "" {
+			s.SungLanguages = []string{name}
+		}
+	}
 }
 
 // Events returns the stream of transient user-facing messages.

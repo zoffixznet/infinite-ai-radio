@@ -63,6 +63,7 @@ func TestStockedSheetBringsItsLanguage(t *testing.T) {
 	b := probedBuilder(t, srv)
 	b.SetLanguages([]string{"French"})
 	s := wordsmithSession()
+	s.SungLanguages = []string{"French"}
 
 	if wrote := b.StockLyrics(context.Background(), s, 1, nil); wrote != 1 {
 		t.Fatalf("wrote %d", wrote)
@@ -82,13 +83,13 @@ func TestStaleLanguageSheetIsDropped(t *testing.T) {
 	b := probedBuilder(t, srv)
 	b.SetLanguages([]string{"French", "Spanish"})
 	s := wordsmithSession()
-	s.Languages = map[string]bool{"Spanish": false} // French on, Spanish off
+	s.SungLanguages = []string{"French"}
 
 	if wrote := b.StockLyrics(context.Background(), s, 1, nil); wrote != 1 {
 		t.Fatalf("wrote %d", wrote)
 	}
 	// The listener turns French off; the stocked French sheet is stale.
-	s.Languages = map[string]bool{"French": false, "Spanish": true}
+	s.SungLanguages = []string{"Spanish"}
 	f.reply = "[Verso]\nacero en el agua"
 	spec := b.BuildSpec(context.Background(), s, 150)
 	if spec.Lyrics == "[Couplet]\nl'acier dans l'eau" {

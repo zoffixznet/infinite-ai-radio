@@ -229,14 +229,17 @@ func (c *Controller) languages(rest string) string {
 				"use: languages English, Russian, French"
 		}
 		var b strings.Builder
-		b.WriteString("vocal languages (each song picks one at random):\n")
+		b.WriteString("vocal languages (* is sung by this session; each song picks one of them at random):\n")
 		for _, l := range states {
 			mark := " "
 			if l.On {
 				mark = "*"
 			}
 			note := ""
-			if !l.Engine {
+			switch {
+			case !l.Configured:
+				note = "   (not in this machine's list; this session was saved singing it)"
+			case !l.Engine:
 				note = "   (sung untagged: the engine has no voice tag for it)"
 			}
 			fmt.Fprintf(&b, " %s %s%s\n", mark, l.Name, note)
@@ -248,7 +251,9 @@ func (c *Controller) languages(rest string) string {
 	case strings.HasPrefix(rest, "-"):
 		return c.O.SetLanguage(strings.TrimSpace(rest[1:]), false)
 	case rest == "none", rest == "off":
-		return c.O.SetLanguages(nil)
+		// Not a change to the machine's list: this session stops asking
+		// for any particular language, and the engine picks per song.
+		return c.O.SetSungLanguages(nil)
 	default:
 		var names []string
 		for _, part := range strings.Split(rest, ",") {

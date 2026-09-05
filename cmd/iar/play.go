@@ -64,16 +64,11 @@ func runPlay(pf playFlags) error {
 	if err != nil {
 		return err
 	}
-	// A language switched off on the remote is a standing preference,
-	// not a property of one session: a fresh session must not quietly
-	// start singing in a language that was turned off. A saved session
-	// that says otherwise keeps its own answer.
-	if sess.Languages == nil && len(a.cfg.VocalLanguagesOff) > 0 {
-		sess.Languages = map[string]bool{}
-		for _, name := range a.cfg.VocalLanguagesOff {
-			sess.Languages[name] = false
-		}
-	}
+	// Sessions saved before languages were part of the session say only
+	// which of the then-configured ones were switched OFF; read that
+	// against today's catalogue and turn it into the list the session
+	// sings in.
+	sess.AdoptLanguages(a.cfg.VocalLanguages)
 	// With no music engine this run can only make noise - a property of
 	// the run, not of the session. Branch it rather than rewriting what
 	// the listener saved, and keep the branch out of the record a
@@ -134,11 +129,8 @@ func runPlay(pf playFlags) error {
 	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
 	orch.Ephemeral = noiseOnly
 	orch.StateDir = &a.stateD
-	orch.SetLanguageStore(func(names, off []string) error {
-		if err := config.SetVocalLanguages(a.paths, names); err != nil {
-			return err
-		}
-		return config.SetVocalLanguagesOff(a.paths, off)
+	orch.SetLanguageStore(func(names []string) error {
+		return config.SetVocalLanguages(a.paths, names)
 	})
 	// Saved tracks from before tags existed move into the untagged
 	// folder once.

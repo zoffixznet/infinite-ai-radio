@@ -390,8 +390,8 @@ func (o *Orchestrator) LoadPreset(name string) string {
 	}
 	o.saveSession()
 	fresh := session.FromPreset(p)
+	o.adoptLanguages(fresh)
 	o.mu.Lock()
-	o.carryLanguagesLocked(fresh)
 	o.sess = fresh
 	o.heard = false // nothing of this one has been heard yet
 	o.epoch++
@@ -413,9 +413,9 @@ func (o *Orchestrator) LoadSession(name string) string {
 	if err != nil {
 		return err.Error()
 	}
+	o.adoptLanguages(s)
 	o.saveSession()
 	o.mu.Lock()
-	o.carryLanguagesLocked(s)
 	o.sess = s
 	// A session that played before was heard before: changing it now
 	// keeps what it sounded like, rather than writing over it.
@@ -431,22 +431,6 @@ func (o *Orchestrator) LoadSession(name string) string {
 	o.kickGen()
 	o.log.Info("session loaded", "event", "session_loaded", "session", s.Name)
 	return "session " + s.Name + " loaded: " + s.Describe()
-}
-
-// carryLanguagesLocked hands the languages a listener switched off to
-// the session replacing this one. Which languages are sung is a
-// standing preference about their radio, not a property of one vibe:
-// starting a preset used to lose it, and the radio would quietly sing
-// in a language they had turned off. A session that carries its own
-// answer keeps it. Callers hold o.mu.
-func (o *Orchestrator) carryLanguagesLocked(fresh *session.Session) {
-	if fresh == nil || fresh.Languages != nil || len(o.sess.Languages) == 0 {
-		return
-	}
-	fresh.Languages = make(map[string]bool, len(o.sess.Languages))
-	for name, on := range o.sess.Languages {
-		fresh.Languages[name] = on
-	}
 }
 
 // LoadByName switches to a preset or a saved session, whichever the
@@ -670,20 +654,35 @@ func (o *Orchestrator) Announce(text string) {
 // SetLanguageStore installs the sink that persists the vocal-language
 // catalogue and which of its languages are switched off. Without one
 // both still work, they just do not survive a restart.
-func (o *Orchestrator) SetLanguageStore(save func(names, off []string) error) {
+func (o *Orchestrator) SetLanguageStore(save func(names []string) error) {
 	o.mu.Lock()
 	o.saveLanguages = save
 	o.mu.Unlock()
 }
 
 // languageStatesLocked pairs the configured catalogue with the
-// session's choices; callers hold o.mu.
+// session's own list. A session may sing in a language that has since
+// been taken out of the catalogue - it was saved that way, and it still
+// sings in it - so those come after the configured ones, marked as not
+// configured. Without them the only way to stop singing a language you
+// no longer have configured would be to edit a file. Callers hold o.mu.
 func (o *Orchestrator) languageStatesLocked() []LanguageState {
 	cat := o.builder.Languages()
-	out := make([]LanguageState, 0, len(cat))
+	out := make([]LanguageState, 0, len(cat)+len(o.sess.SungLanguages))
+	seen := map[string]bool{}
 	for _, l := range cat {
-		on, ok := o.sess.Languages[l.Name]
-		out = append(out, LanguageState{Name: l.Name, Engine: l.Engine(), On: !ok || on})
+		seen[strings.ToLower(l.Name)] = true
+		out = append(out, LanguageState{
+			Name: l.Name, Engine: l.Engine(), On: o.sess.Sings(l.Name), Configured: true,
+		})
+	}
+	for _, name := range o.sess.SungLanguages {
+		if seen[strings.ToLower(name)] {
+			continue
+		}
+		out = append(out, LanguageState{
+			Name: name, Engine: prompting.LanguageCode(name) != "", On: true,
+		})
 	}
 	return out
 }
@@ -705,70 +704,73 @@ func (o *Orchestrator) SetLanguage(name string, on bool) string {
 		return "name a language to switch"
 	}
 	o.mu.Lock()
+	// The catalogue is where languages are offered from, but a session
+	// may already sing in one that has since been taken out of it -
+	// switching that one off has to work, or it can never be stopped.
 	var match string
-	for _, l := range o.builder.Languages() {
+	for _, l := range o.languageStatesLocked() {
 		if strings.EqualFold(l.Name, name) {
 			match = l.Name
 			break
 		}
 	}
+	o.mu.Unlock()
 	if match == "" {
-		o.mu.Unlock()
 		return name + " is not one of the configured languages"
 	}
-	before := o.sess.Snapshot()
-	if o.sess.Languages == nil {
-		o.sess.Languages = map[string]bool{}
+	return o.changeLanguages(func(s *session.Session) { s.SetSung(match, on) },
+		"vocal_language", match)
+}
+
+// SetSungLanguages replaces the languages this session sings in. An
+// empty list hands each song's language back to the music engine.
+func (o *Orchestrator) SetSungLanguages(names []string) string {
+	clean := make([]string, 0, len(names))
+	for _, l := range prompting.ParseLanguages(names) {
+		clean = append(clean, l.Name)
 	}
+	return o.changeLanguages(func(s *session.Session) { s.SungLanguages = clean },
+		"vocal_languages_sung", strings.Join(clean, ", "))
+}
+
+// changeLanguages applies an edit to the languages the playing session
+// sings in. Which languages are sung is part of what the session is, so
+// a real change branches it and drops what was queued ahead in the old
+// ones, exactly like a steer.
+func (o *Orchestrator) changeLanguages(apply func(*session.Session), event, detail string) string {
+	o.mu.Lock()
+	before := o.sess.Snapshot()
 	was := enabledSignature(o.languageStatesLocked())
-	o.sess.Languages[match] = on
+	apply(o.sess)
 	states := o.languageStatesLocked()
+	changed := enabledSignature(states) != was
 	forked := false
-	if enabledSignature(states) != was {
+	if changed {
 		forked = o.forkLocked(before)
 	}
 	vocal := o.sess.Vocal
-	pinned := o.releasePinLocked()
-	refresh := vocal && o.sess.Mode == session.ModeMusic
+	pinned := false
+	if changed {
+		pinned = o.releasePinLocked()
+	}
+	refresh := vocal && changed && o.sess.Mode == session.ModeMusic
 	if refresh {
 		o.epoch++
 		o.queue = nil
 		o.steerPending = true
 	}
-	save := o.saveLanguages
 	o.mu.Unlock()
 	kept := o.afterFork(before, forked)
 	o.saveSession()
 	o.kickGen()
-	ack := describeLanguages(states) + o.languageAckNote(vocal, pinned, refresh) + kept
-	if save != nil {
-		if err := save(languageNames(states), switchedOff(states)); err != nil {
-			o.log.Error("saving the vocal languages failed", "event", "vocal_languages_failed", "error", err.Error())
-			ack += " (this run only: " + err.Error() + ")"
-		}
+	ack := describeLanguages(states)
+	if changed {
+		ack += o.languageAckNote(vocal, pinned, refresh) + kept
+	} else {
+		ack += " (unchanged)"
 	}
-	o.log.Info("vocal language switched", "event", "vocal_language", "name", match, "on", on)
+	o.log.Info("sung languages changed", "event", event, "detail", detail)
 	return ack
-}
-
-// languageNames lists the configured languages in order.
-func languageNames(states []LanguageState) []string {
-	out := make([]string, 0, len(states))
-	for _, l := range states {
-		out = append(out, l.Name)
-	}
-	return out
-}
-
-// switchedOff lists the configured languages not currently being sung.
-func switchedOff(states []LanguageState) []string {
-	var out []string
-	for _, l := range states {
-		if !l.On {
-			out = append(out, l.Name)
-		}
-	}
-	return out
 }
 
 // releasePinLocked drops a language pinned earlier by hand ("sing in
@@ -810,59 +812,29 @@ func (o *Orchestrator) SetLanguages(names []string) string {
 	for _, l := range langs {
 		clean = append(clean, l.Name)
 	}
-	// The swap and the epoch bump happen together: a generation that
-	// starts between them is built from the new catalogue and then
-	// thrown away by the epoch guard, which is a wasted minute of the
-	// graphics card exactly when the listener is waiting.
 	o.mu.Lock()
-	was := enabledSignature(o.languageStatesLocked())
-	beforeSess := o.sess.Snapshot()
 	o.builder.SetLanguages(clean)
-	// Choices about languages that are gone would silently reappear if
-	// the same name were configured again later.
-	for name := range o.sess.Languages {
-		keep := false
-		for _, l := range langs {
-			if l.Name == name {
-				keep = true
-				break
-			}
-		}
-		if !keep {
-			delete(o.sess.Languages, name)
-		}
-	}
+	// The catalogue is the machine's list of what can be offered; what
+	// a session sings in is the session's own and is not touched here.
+	// Editing the list therefore changes nothing that is playing: no
+	// dropped queue, no branch. A language taken out of the list keeps
+	// being sung by any session that names it, and shows up in the
+	// pills as one the machine no longer offers.
 	states := o.languageStatesLocked()
 	save := o.saveLanguages
-	vocal := o.sess.Vocal
-	pinned := false
-	// Saving the same list again must not cost the listener the audio
-	// already generated ahead; only a real change to what is sung is
-	// worth dropping the queue for.
-	changed := enabledSignature(states) != was
-	forked := false
-	if changed {
-		pinned = o.releasePinLocked()
-		forked = o.forkLocked(beforeSess)
-	}
-	refresh := vocal && changed && o.sess.Mode == session.ModeMusic
-	if refresh {
-		o.epoch++
-		o.queue = nil
-		o.steerPending = true
-	}
 	o.mu.Unlock()
-	kept := o.afterFork(beforeSess, forked)
 	o.saveSession()
-	o.kickGen()
-	ack := describeLanguages(states)
-	if changed {
-		ack += o.languageAckNote(vocal, pinned, refresh) + kept
-	} else {
-		ack += " (unchanged)"
+	// The acknowledgment is about the list that was just edited, and
+	// then about what this session actually sings - two different
+	// things now, and a listener who cannot see both would think the
+	// edit did nothing.
+	ack := "no languages offered"
+	if len(clean) > 0 {
+		ack = "offering " + strings.Join(clean, ", ")
 	}
+	ack += "; " + describeLanguages(states)
 	if save != nil {
-		if err := save(clean, switchedOff(states)); err != nil {
+		if err := save(clean); err != nil {
 			o.log.Error("saving the vocal languages failed", "event", "vocal_languages_failed", "error", err.Error())
 			return ack + " (this run only: " + err.Error() + ")"
 		}

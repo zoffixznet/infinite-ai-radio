@@ -850,7 +850,7 @@ func TestLanguageEditReleasesAHandSteeredPin(t *testing.T) {
 	// The chips are the newest and most explicit thing said about
 	// language, and on the phone they are the only thing that can be
 	// said, so they release the older steer instead of being ignored.
-	ack := o.SetLanguage("Russian", false)
+	ack := o.SetLanguage("Russian", true)
 	o.mu.Lock()
 	spec := o.sess.Spec
 	o.mu.Unlock()
@@ -885,9 +885,9 @@ func TestSavingTheSameLanguagesKeepsTheQueue(t *testing.T) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.epoch != epoch {
-		t.Fatalf("an unchanged list dropped the queue: epoch %d->%d", epoch, o.epoch)
+		t.Fatalf("editing the offered list dropped the queue: epoch %d->%d", epoch, o.epoch)
 	}
-	if !strings.Contains(ack, "unchanged") {
+	if !strings.Contains(ack, "offering English, Russian") {
 		t.Fatalf("ack = %q", ack)
 	}
 }
@@ -1044,28 +1044,32 @@ func TestLanguageSwitchesSurviveAReload(t *testing.T) {
 	sess.Vocal = true
 	o, _ := newTestOrchestratorWithStore(t, enginetest.NewMock(), sess, store)
 	o.SetLanguages([]string{"English", "Russian", "French"})
-	o.SetLanguage("Russian", false)
+	o.SetLanguage("Russian", true)
 
 	// Within the run, every reader sees the same thing (a browser
 	// reload just re-reads this).
+	var on []string
 	for _, l := range o.Status().Languages {
-		if l.Name == "Russian" && l.On {
-			t.Fatal("Russian still reads as on straight after switching it off")
+		if l.On {
+			on = append(on, l.Name)
 		}
+	}
+	if len(on) != 1 || on[0] != "Russian" {
+		t.Fatalf("switched-on languages read back as %v", on)
 	}
 	// And it reached the saved session, so it is not lost with the
 	// process. (A change to the sound may have branched the session
 	// into a new name; whichever one is playing must carry it.)
 	waitFor(t, 5*time.Second, "session saved", func() bool {
 		got, err := store.Load(o.CurrentName())
-		return err == nil && got.Languages != nil
+		return err == nil && len(got.SungLanguages) > 0
 	})
 	got, err := store.Load(o.CurrentName())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if on, ok := got.Languages["Russian"]; !ok || on {
-		t.Fatalf("saved session languages = %+v", got.Languages)
+	if len(got.SungLanguages) != 1 || got.SungLanguages[0] != "Russian" {
+		t.Fatalf("saved session languages = %+v", got.SungLanguages)
 	}
 }
 
@@ -1362,18 +1366,20 @@ func TestLyricsGenSwitching(t *testing.T) {
 	}
 }
 
-// The vocal-language catalogue is configured once, switched per session
-// and persisted; every capability the phone remote drives is here.
-func TestVocalLanguagesConfigureSwitchAndPersist(t *testing.T) {
+// The catalogue is the machine's list of languages that can be offered;
+// which of them a session sings in belongs to the session, because
+// loading a session has to sing what it was saved with. A language
+// taken out of the catalogue is still sung by a session that names it,
+// and says it is no longer configured so it can be switched off.
+func TestVocalLanguagesAreConfiguredOnceAndChosenPerSession(t *testing.T) {
 	eng := enginetest.NewMock()
 	sess := session.New()
 	sess.Vocal = true
 	o, _ := newTestOrchestrator(t, eng, sess)
 
-	var saved, savedOff [][]string
-	o.SetLanguageStore(func(names, off []string) error {
+	var saved [][]string
+	o.SetLanguageStore(func(names []string) error {
 		saved = append(saved, append([]string(nil), names...))
-		savedOff = append(savedOff, append([]string(nil), off...))
 		return nil
 	})
 
@@ -1390,13 +1396,15 @@ func TestVocalLanguagesConfigureSwitchAndPersist(t *testing.T) {
 		t.Fatalf("catalogue was not persisted: %v", saved)
 	}
 
+	// Configuring offers them; it does not decide for this session,
+	// which still sings in whatever the engine picks.
 	states := o.Languages()
 	if len(states) != 3 {
 		t.Fatalf("configured languages: %+v", states)
 	}
 	for _, l := range states {
-		if !l.On {
-			t.Errorf("%s should start switched on", l.Name)
+		if l.On || !l.Configured {
+			t.Errorf("%s should be offered, not switched on: %+v", l.Name, l)
 		}
 	}
 	// Cebuano is not on the engine's published list, but it accepts the
@@ -1406,52 +1414,50 @@ func TestVocalLanguagesConfigureSwitchAndPersist(t *testing.T) {
 		t.Errorf("Cebuano should carry an engine tag: %+v", states[2])
 	}
 
-	// A switch is a standing preference, so it is written down beside
-	// the list rather than left in the session: a fresh session must
-	// not start singing a language that was turned off.
-	o.SetLanguage("Russian", false)
-	if len(savedOff) == 0 || strings.Join(savedOff[len(savedOff)-1], "|") != "Russian" {
-		t.Fatalf("switched-off languages were not persisted: %v", savedOff)
-	}
+	// Switching one on is this session's choice.
 	o.SetLanguage("Russian", true)
-	if got := savedOff[len(savedOff)-1]; len(got) != 0 {
-		t.Fatalf("switching back on left it recorded as off: %v", got)
-	}
-
-	// Switching one off leaves the rest alone.
-	o.SetLanguage("Russian", false)
 	states = o.Languages()
-	if states[0].On != true || states[1].On != false || states[2].On != true {
-		t.Fatalf("switching Russian off changed the wrong ones: %+v", states)
+	if states[0].On || !states[1].On || states[2].On {
+		t.Fatalf("switching Russian on changed the wrong ones: %+v", states)
 	}
-	if got := o.Status().Languages; len(got) != 3 || got[1].On {
+	if got := o.Status().Languages; len(got) != 3 || !got[1].On {
 		t.Fatalf("status does not carry the language choices: %+v", got)
 	}
 
-	// A language nobody configured cannot be switched.
+	// A language nobody configured, and that no session sings, cannot
+	// be switched.
 	if ack := o.SetLanguage("Klingon", true); !strings.Contains(ack, "not one of the configured") {
 		t.Errorf("unknown language ack: %q", ack)
 	}
 
-	// An edit that keeps a language keeps its switch too.
-	o.SetLanguages([]string{"English", "Russian", "Bisaya (Cebuano)", "French"})
-	if got := o.Languages(); len(got) != 4 || got[1].On {
-		t.Fatalf("an edit that keeps Russian must keep it switched off: %+v", got)
-	}
-	// Dropping a language forgets its switch, so configuring the same
-	// name again does not resurrect an old off.
+	// Editing the catalogue leaves the session alone: taking Russian
+	// out does not stop it being sung, but says it is not configured,
+	// which is what lets a listener switch it off.
 	o.SetLanguages([]string{"English", "Bisaya (Cebuano)"})
-	if got := o.Languages(); len(got) != 2 {
-		t.Fatalf("catalogue after the edit: %+v", got)
+	states = o.Languages()
+	if len(states) != 3 {
+		t.Fatalf("the session's own language should still be listed: %+v", states)
 	}
-	o.SetLanguages([]string{"English", "Russian", "Bisaya (Cebuano)"})
-	if got := o.Languages(); !got[1].On {
-		t.Errorf("Russian's old off switch survived being dropped: %+v", got)
+	var russian LanguageState
+	for _, l := range states {
+		if l.Name == "Russian" {
+			russian = l
+		}
+	}
+	if !russian.On || russian.Configured {
+		t.Fatalf("Russian should still be sung and marked unconfigured: %+v", russian)
+	}
+	// And it can be switched off, which is the only way back.
+	o.SetLanguage("Russian", false)
+	for _, l := range o.Languages() {
+		if l.Name == "Russian" {
+			t.Fatalf("Russian is still listed after being switched off: %+v", l)
+		}
 	}
 
-	// Switching them all off hands the choice back to the engine.
-	for _, name := range []string{"English", "Russian", "Bisaya (Cebuano)"} {
-		o.SetLanguage(name, false)
+	// Nothing on hands the choice back to the engine.
+	if ack := o.SetLanguage("English", true); !strings.Contains(ack, "singing in English") {
+		t.Errorf("single-language ack: %q", ack)
 	}
 	if ack := o.SetLanguage("English", false); !strings.Contains(ack, "whatever language the music engine picks") {
 		t.Errorf("all-off ack: %q", ack)
@@ -1463,12 +1469,12 @@ func TestVocalLanguagesConfigureSwitchAndPersist(t *testing.T) {
 func TestVocalLanguagesSurviveAFailedWrite(t *testing.T) {
 	eng := enginetest.NewMock()
 	o, _ := newTestOrchestrator(t, eng, session.New())
-	o.SetLanguageStore(func(names, off []string) error { return errors.New("read-only file system") })
+	o.SetLanguageStore(func(names []string) error { return errors.New("read-only file system") })
 	ack := o.SetLanguages([]string{"English"})
 	if !strings.Contains(ack, "this run only") || !strings.Contains(ack, "read-only file system") {
 		t.Fatalf("a failed write must be reported honestly: %q", ack)
 	}
-	if got := o.Languages(); len(got) != 1 || !got[0].On {
+	if got := o.Languages(); len(got) != 1 || !got[0].Configured {
 		t.Fatalf("the catalogue should still be live: %+v", got)
 	}
 }

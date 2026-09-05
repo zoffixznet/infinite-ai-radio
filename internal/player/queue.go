@@ -131,21 +131,13 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 // session currently sings in, or nil when the listener has not narrowed
 // it down and anything banked is fair game. Callers hold o.mu.
 func (o *Orchestrator) enabledLanguageNamesLocked() map[string]bool {
-	if !o.sess.Vocal {
-		return nil
-	}
-	states := o.languageStatesLocked()
-	if len(states) == 0 {
+	if !o.sess.Vocal || len(o.sess.SungLanguages) == 0 {
+		// No list means the engine chooses, so anything banked goes.
 		return nil
 	}
 	on := map[string]bool{}
-	for _, l := range states {
-		if l.On {
-			on[l.Name] = true
-		}
-	}
-	if len(on) == 0 {
-		return nil // every language off: the engine chooses, so anything goes
+	for _, name := range o.sess.SungLanguages {
+		on[name] = true
 	}
 	return on
 }

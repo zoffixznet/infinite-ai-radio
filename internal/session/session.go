@@ -57,10 +57,18 @@ type Session struct {
 	// LyricsGenerator names the lyric writer for vocal tracks
 	// ("scribe", "smoothbrain"); empty uses the configured default.
 	LyricsGenerator string `json:"lyrics_generator,omitempty"`
-	// Languages says which of the configured vocal languages this
-	// session sings in. A language the map says nothing about counts as
-	// on, so adding one to the configuration starts using it right
-	// away; switching them all off hands the choice back to the engine.
+	// SungLanguages lists the languages this session sings in, in the
+	// listener's own wording. Empty means no restriction: the music
+	// engine picks for each song. The list is part of what the session
+	// IS - loading one sings in exactly the languages it was saved
+	// with, whatever the configured catalogue holds now - and changing
+	// it branches the session, like any other change to the sound.
+	SungLanguages []string `json:"sung_languages,omitempty"`
+	// Languages is the shape sessions were saved in before that: a map
+	// of the configured languages that were switched OFF, where a
+	// language the map said nothing about counted as on. Read once,
+	// when such a session is loaded, and converted; nothing else may
+	// use it, and it is never written back.
 	Languages map[string]bool `json:"languages,omitempty"`
 
 	// Spec is the structured steering state derived from the tweaks.
@@ -123,6 +131,55 @@ func ForkName(base string, now time.Time) string {
 		stem = "session"
 	}
 	return stem + "-" + now.Format("20060102-150405")
+}
+
+// Sings reports whether this session sings in a language. With no
+// languages listed it sings in whatever the engine picks, which is not
+// any particular language: the pills all read as off.
+func (s *Session) Sings(name string) bool {
+	for _, have := range s.SungLanguages {
+		if strings.EqualFold(have, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetSung switches a language on or off for this session, keeping the
+// list in the order languages were added.
+func (s *Session) SetSung(name string, on bool) {
+	if !on {
+		out := s.SungLanguages[:0]
+		for _, have := range s.SungLanguages {
+			if !strings.EqualFold(have, name) {
+				out = append(out, have)
+			}
+		}
+		s.SungLanguages = out
+		return
+	}
+	if !s.Sings(name) {
+		s.SungLanguages = append(s.SungLanguages, name)
+	}
+}
+
+// AdoptLanguages converts a session saved in the old shape into the
+// list of languages it actually sings in. catalogue is what was
+// configured when it is read, because "every language the map does not
+// mention" is what the old shape meant by on. A session that already
+// carries a list is left alone.
+func (s *Session) AdoptLanguages(catalogue []string) {
+	if s.Languages == nil {
+		return
+	}
+	if s.SungLanguages == nil {
+		for _, name := range catalogue {
+			if on, listed := s.Languages[name]; !listed || on {
+				s.SungLanguages = append(s.SungLanguages, name)
+			}
+		}
+	}
+	s.Languages = nil
 }
 
 // New returns a fresh unnamed session with a pleasant default vibe.
@@ -214,6 +271,7 @@ func (s *Session) Snapshot() *Session {
 	cp.Spec = s.Spec.Clone()
 	cp.Tweaks = append([]Entry(nil), s.Tweaks...)
 	cp.History = append([]Entry(nil), s.History...)
+	cp.SungLanguages = append([]string(nil), s.SungLanguages...)
 	if s.Languages != nil {
 		cp.Languages = make(map[string]bool, len(s.Languages))
 		for k, v := range s.Languages {

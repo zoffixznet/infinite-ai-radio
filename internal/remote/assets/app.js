@@ -1696,10 +1696,18 @@
     list.forEach(function (l) {
       var chip = document.createElement("button");
       chip.type = "button";
-      chip.className = "chip tap" + (l.on ? " on" : " off");
+      chip.className = "chip tap" + (l.on ? " on" : " off") +
+        (l.configured ? "" : " foreign");
       chip.textContent = l.name;
       chip.setAttribute("aria-pressed", l.on ? "true" : "false");
-      if (!l.engine) {
+      if (!l.configured) {
+        // This session was saved singing in it, and still does, but the
+        // machine's own list no longer offers it. Marked rather than
+        // hidden: switching it off is the only way back to the list,
+        // and it takes a session of its own, like any other change.
+        chip.title = l.name + " is not in this machine's list of languages; " +
+          "this session was saved singing in it.";
+      } else if (!l.engine) {
         chip.title = "The music engine has no voice for " + l.name +
           "; the words are written in it and sung untagged.";
       }
@@ -1733,9 +1741,11 @@
       ? "The music engine has no voice for " + untagged.join(", ") +
         ": the words are written in it and sung untagged."
       : "";
-    // The editor shows the same list, as the line it was typed on.
+    // The editor shows the machine's own list, as the line it was typed
+    // on - never a language that only this session sings, or saving
+    // would quietly adopt it.
     var names = [];
-    list.forEach(function (l) { names.push(l.name); });
+    list.forEach(function (l) { if (l.configured) names.push(l.name); });
     var field = $("langnames");
     if (document.activeElement !== field) setValue(field, names.join(", "));
   }

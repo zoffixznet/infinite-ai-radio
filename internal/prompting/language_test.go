@@ -68,20 +68,37 @@ func TestParseLanguagesIsBounded(t *testing.T) {
 	}
 }
 
-func TestEnabledLanguagesDefaultsToOn(t *testing.T) {
-	cat := ParseLanguages([]string{"English", "Russian", "French"})
-	// A language the session says nothing about is on, so adding one to
-	// the configuration starts using it straight away.
-	if got := EnabledLanguages(cat, nil); len(got) != 3 {
-		t.Fatalf("unset session should sing in all three, got %+v", got)
+// A session sings in the languages it lists, and only those: a list is
+// what the listener chose, and an empty one hands the choice to the
+// engine. The shape before this said the opposite - it listed what was
+// switched OFF, so a language added to the machine's settings started
+// being sung by every session that had never heard of it.
+func TestASessionSingsWhatItLists(t *testing.T) {
+	s := session.New()
+	s.Vocal = true
+	b := NewBuilder(nil, nil)
+	b.SetLanguages([]string{"English", "Russian", "French"})
+
+	// Listing nothing means no restriction: the engine picks, which is
+	// the empty language.
+	if got := b.chooseLanguage(s, Render(s)); got != (Language{}) {
+		t.Fatalf("a session with no list drew %+v", got)
 	}
-	got := EnabledLanguages(cat, map[string]bool{"Russian": false, "English": true})
-	if len(got) != 2 || got[0].Name != "English" || got[1].Name != "French" {
-		t.Fatalf("switched-off language still enabled: %+v", got)
+	if ok := b.langAcceptable(s, Render(s)); !ok(Language{}) || ok(Language{Code: "ru", Name: "Russian"}) {
+		t.Fatal("with no list, only the engine's own choice fits")
 	}
-	off := EnabledLanguages(cat, map[string]bool{"English": false, "Russian": false, "French": false})
-	if len(off) != 0 {
-		t.Fatalf("all switched off should leave nothing: %+v", off)
+
+	// Listing one means exactly that one, whatever the catalogue holds.
+	s.SungLanguages = []string{"Tagalog"}
+	if got := b.chooseLanguage(s, Render(s)); got.Name != "Tagalog" {
+		t.Fatalf("drew %+v, want the listed Tagalog", got)
+	}
+	acceptable := b.langAcceptable(s, Render(s))
+	if !acceptable(Language{Code: "tl", Name: "Tagalog"}) {
+		t.Fatal("a sheet in the listed language was rejected")
+	}
+	if acceptable(Language{Code: "en", Name: "English"}) {
+		t.Fatal("a sheet in an unlisted language was accepted")
 	}
 }
 
@@ -128,6 +145,7 @@ func TestBuildSpecDrawsAConfiguredLanguagePerTrack(t *testing.T) {
 	s := session.New()
 	s.BasePrompt = "island pop"
 	s.Vocal = true
+	s.SungLanguages = []string{"English", "Russian", "Bisaya (Cebuano)"}
 
 	seen := map[string]int{}
 	for i := 0; i < 300; i++ {
@@ -151,6 +169,7 @@ func TestCebuanoAsksForCebuano(t *testing.T) {
 	s := session.New()
 	s.BasePrompt = "island pop"
 	s.Vocal = true
+	s.SungLanguages = []string{"Bisaya (Cebuano)"}
 	spec := b.BuildSpec(context.Background(), s, 150)
 	// The engine's published list has no Cebuano, but it never checks a
 	// requested tag against that list, and the model behind it does
@@ -178,13 +197,15 @@ func TestCebuanoAsksForCebuano(t *testing.T) {
 
 func TestPresetLanguageDoesNotOverrideTheList(t *testing.T) {
 	// Several presets carry vocal_language "en" of their own. That is a
-	// default, not a choice the listener made, so a configured list
-	// must still be heard - otherwise editing it does nothing at all.
+	// default, not a choice the listener made, so the languages the
+	// session lists must still be heard - otherwise setting them does
+	// nothing at all.
 	b := NewBuilder(nil, nil)
 	b.SetLanguages([]string{"Russian", "French", "Japanese"})
 	s := session.New()
 	s.BasePrompt = "hard rock"
 	s.Vocal = true
+	s.SungLanguages = []string{"Russian", "French", "Japanese"}
 	s.Spec = &session.PromptSpec{VocalLanguage: "en"}
 
 	seen := map[string]int{}
@@ -207,6 +228,7 @@ func TestBuildSpecCarriesTheLanguageName(t *testing.T) {
 	s := session.New()
 	s.BasePrompt = "island pop"
 	s.Vocal = true
+	s.SungLanguages = []string{"Bisaya (Cebuano)"}
 	spec := b.BuildSpec(context.Background(), s, 150)
 	// The engine has no tag for it, so the readable name is the only
 	// record of what the track was sung in.
@@ -221,6 +243,7 @@ func TestBuildSpecNamesTheLanguageForTheEnginePlanner(t *testing.T) {
 	s := session.New()
 	s.BasePrompt = "island pop"
 	s.Vocal = true
+	s.SungLanguages = []string{"Bisaya (Cebuano)"}
 	spec := b.BuildSpec(context.Background(), s, 150)
 	// With no lyrics ready the engine plans them from the query, so the
 	// language has to be said in words there too.
@@ -262,7 +285,7 @@ func TestSessionOffSwitchesSilenceALanguage(t *testing.T) {
 	s := session.New()
 	s.BasePrompt = "punk"
 	s.Vocal = true
-	s.Languages = map[string]bool{"Russian": false}
+	s.SungLanguages = []string{"English"} // Russian switched off
 	for i := 0; i < 6; i++ {
 		if got := b.BuildSpec(context.Background(), s, 150).VocalLanguage; got != "en" {
 			t.Fatalf("draw %d = %q; the only language left on is English", i, got)

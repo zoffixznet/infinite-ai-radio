@@ -66,11 +66,10 @@ type Config struct {
 	// choice to the music engine, which sings in whatever language it
 	// feels like.
 	VocalLanguages []string `json:"vocal_languages"`
-	// VocalLanguagesOff names the vocal languages currently switched
-	// off, out of the ones listed above. The list is what may be sung;
-	// this is what is not being sung at the moment, and it is here
-	// rather than in the session so that starting a new session does
-	// not quietly bring back a language you turned off.
+	// VocalLanguagesOff is no longer used: which of the languages above
+	// a session sings in belongs to the session, so that loading one
+	// sings in what it was saved with. It is read only to convert
+	// sessions written before that, and never written back.
 	VocalLanguagesOff []string `json:"vocal_languages_off,omitempty"`
 
 	ACEStep  ACEStep  `json:"acestep"`
@@ -412,13 +411,6 @@ func writeOwnerOnly(path string, data []byte) error {
 // stays the single place the choice lives.
 func SetVocalLanguages(p Paths, names []string) error {
 	return setLanguageKey(p, "vocal_languages", names)
-}
-
-// SetVocalLanguagesOff rewrites the vocal_languages_off setting the same
-// way, so a language switched off on the remote stays off across a
-// restart.
-func SetVocalLanguagesOff(p Paths, names []string) error {
-	return setLanguageKey(p, "vocal_languages_off", names)
 }
 
 func setLanguageKey(p Paths, key string, names []string) error {

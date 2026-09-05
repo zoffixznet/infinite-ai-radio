@@ -188,9 +188,9 @@ func snippetComment(t *engine.Track) string {
 // seeded from a free-text prompt (the in-app `new` command).
 func (o *Orchestrator) NewSession(prompt string) string {
 	fresh := prompting.SessionFromPrompt(prompt)
+	o.adoptLanguages(fresh)
 	o.saveSession()
 	o.mu.Lock()
-	o.carryLanguagesLocked(fresh)
 	o.sess = fresh
 	o.heard = false // nothing of this one has been heard yet
 	o.epoch++

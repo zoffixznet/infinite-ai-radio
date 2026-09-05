@@ -340,7 +340,12 @@ func TestPresetSpecReachesEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec = b.BuildSpec(context.Background(), session.FromPreset(nu), 120)
+	// The preset names English; the player turns that into the
+	// session's language list as it starts one (see adoptLanguages), so
+	// here the list is what decides.
+	nuSess := session.FromPreset(nu)
+	nuSess.SungLanguages = []string{"English"}
+	spec = b.BuildSpec(context.Background(), nuSess, 120)
 	if spec.BPM != 0 || spec.VocalLanguage != "en" {
 		t.Fatalf("nu-metal fields: bpm=%d lang=%q", spec.BPM, spec.VocalLanguage)
 	}
@@ -437,9 +442,10 @@ func TestPinnedLanguageOutranksTheConfiguredList(t *testing.T) {
 	s := session.New()
 	s.Vocal = true
 
-	// Unpinned: the catalogue decides.
+	// Unpinned: the session's own list decides.
+	s.SungLanguages = []string{"Tagalog"}
 	if got := b.chooseLanguage(s, Render(s)); got.Name != "Tagalog" {
-		t.Fatalf("unpinned language = %q, want the configured Tagalog", got.Name)
+		t.Fatalf("unpinned language = %q, want the session's Tagalog", got.Name)
 	}
 
 	// Pinned: the named language wins, and only sheets in it are kept.

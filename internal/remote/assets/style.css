@@ -486,6 +486,11 @@ details.grp > summary .chip { margin-left: auto; min-height: 34px; padding: 0 va
   min-height: 32px; font-size: 13px; padding: 0 var(--s3);
 }
 .chip.off { color: var(--text-3); border-color: var(--edge); background: transparent; }
+/* A language this session sings that the machine's list no longer
+   offers: shown, so it can be switched off, and marked, so it is clear
+   why it is there. */
+.chip.foreign { border-style: dashed; color: var(--warn); border-color: var(--warn); }
+.chip.foreign.on::before { background: var(--warn); }
 .chiprow { display: flex; gap: var(--s2); overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
 .chiprow::-webkit-scrollbar { display: none; }
 .chiprow .chip { flex: none; }

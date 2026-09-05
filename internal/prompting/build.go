@@ -482,21 +482,6 @@ func (b *Builder) Languages() []Language {
 	return append([]Language(nil), b.languages...)
 }
 
-// nextLanguage draws the language for the next track from the ones the
-// session has switched on. configured reports that a catalogue exists at
-// all: with one, the listener's switches are the whole story, and
-// switching every language off means the engine chooses. Without one, a
-// language the session carries from a preset stands.
-func (b *Builder) nextLanguage(picked map[string]bool) (lang Language, ok, configured bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if len(b.languages) == 0 {
-		return Language{}, false, false
-	}
-	l, ok := pickLanguage(EnabledLanguages(b.languages, picked))
-	return l, ok, true
-}
-
 // SetDefaultGenerator picks the lyric generator used when the session
 // does not name one. The caller validates the name.
 func (b *Builder) SetDefaultGenerator(name string) {
@@ -566,17 +551,19 @@ func (b *Builder) lyricsKey(gen LyricsGenerator, s *session.Session, r Rendered)
 // catalogue, or the list the listener is editing would quietly do
 // nothing. With neither, the engine sings in whatever language it
 // likes.
+// chooseLanguage picks the language for one song: the one steered in by
+// hand if there is one, otherwise a draw from the languages this session
+// sings in. A session that lists none sings in whatever the engine
+// picks, which is what an empty language is.
 func (b *Builder) chooseLanguage(s *session.Session, r Rendered) Language {
-	lang := Language{Code: r.VocalLanguage, Name: LanguageName(r.VocalLanguage)}
-	if !r.LanguagePinned {
-		switch drawn, ok, configured := b.nextLanguage(s.Languages); {
-		case ok:
-			lang = drawn
-		case configured:
-			lang = Language{}
-		}
+	if r.LanguagePinned {
+		return Language{Code: r.VocalLanguage, Name: LanguageName(r.VocalLanguage)}
 	}
-	return lang
+	drawn, ok := pickLanguage(ParseLanguages(s.SungLanguages))
+	if !ok {
+		return Language{}
+	}
+	return drawn
 }
 
 // langAcceptable returns a predicate for whether a stocked sheet's
@@ -586,17 +573,11 @@ func (b *Builder) langAcceptable(s *session.Session, r Rendered) func(Language) 
 	if r.LanguagePinned {
 		return func(l Language) bool { return l.Code == r.VocalLanguage }
 	}
-	b.mu.Lock()
-	configured := len(b.languages) > 0
-	enabled := EnabledLanguages(b.languages, s.Languages)
-	b.mu.Unlock()
-	if !configured {
-		return func(Language) bool { return true }
-	}
+	enabled := ParseLanguages(s.SungLanguages)
 	if len(enabled) == 0 {
-		// Every language is switched off: the listener asked for the
-		// engine's own choice, and sheets written under that choice
-		// (an empty language) are exactly what fits.
+		// The session names no language: the listener left the choice
+		// to the engine, and sheets written under that choice (an empty
+		// language) are exactly what fits.
 		return func(l Language) bool { return l == Language{} }
 	}
 	return func(lang Language) bool {

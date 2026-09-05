@@ -163,20 +163,6 @@ func ParseLanguages(names []string) []Language {
 	return out
 }
 
-// EnabledLanguages narrows a catalogue to the languages a session sings
-// in. A language the session says nothing about counts as on, so adding
-// one to the configuration starts using it straight away.
-func EnabledLanguages(catalogue []Language, picked map[string]bool) []Language {
-	var out []Language
-	for _, l := range catalogue {
-		if on, ok := picked[l.Name]; ok && !on {
-			continue
-		}
-		out = append(out, l)
-	}
-	return out
-}
-
 // pickLanguage chooses the language for one track: an independent
 // uniform draw from the languages currently switched on. The same
 // language can follow itself - that is what drawing at random means,

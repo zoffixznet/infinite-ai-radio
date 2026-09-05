@@ -574,6 +574,11 @@ type langJSON struct {
 	// others are sung from lyrics written in them, untagged.
 	Engine bool `json:"engine"`
 	On     bool `json:"on"`
+	// Configured reports the language is in the machine's own list. One
+	// that is not comes from the session, which was saved singing in
+	// it; the page marks those so a listener can see why a language
+	// they no longer have configured is being sung, and switch it off.
+	Configured bool `json:"configured"`
 }
 
 // genJSON is one selectable lyric writer as the page renders it.
@@ -669,7 +674,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 	}
 	out.Languages = []langJSON{}
 	for _, l := range st.Languages {
-		out.Languages = append(out.Languages, langJSON{Name: l.Name, Engine: l.Engine, On: l.On})
+		out.Languages = append(out.Languages, langJSON{
+			Name: l.Name, Engine: l.Engine, On: l.On, Configured: l.Configured,
+		})
 	}
 	out.Looping = st.Looping
 	out.LoopOn = st.LoopOn
