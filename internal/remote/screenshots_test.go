@@ -328,6 +328,10 @@ func seedSessions(t *testing.T, sb *sandbox) {
 		s.Name = d.name
 		s.BasePrompt = d.prompt
 		s.Named = true
+		s.Vocal = true
+		// A station sings in the languages it was saved with; the demo
+		// ones say English, which is what the pills should show.
+		s.SungLanguages = []string{"English"}
 		s.Created = played.Add(-72 * time.Hour)
 		s.Updated = played
 		s.LastPlayed = played

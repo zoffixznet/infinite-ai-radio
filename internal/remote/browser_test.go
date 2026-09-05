@@ -951,6 +951,27 @@ func TestRealBrowser(t *testing.T) {
 
 // --- fake ACE-Step engine daemon ---
 
+// fakeCaptions read like the per-song descriptions a real planner
+// returns, and the player derives a display name from the first of
+// them, so a sandbox with no helper model still shows song-like names.
+var fakeCaptions = []string{
+	"Harbour lights", "Steel in the water", "Neon rain", "Ash and anchor",
+	"Long way down", "Paper boats", "Hold the line", "Wire and glass",
+}
+
+// fakeCaption picks one deterministically from a task id, so a shoot
+// and a test see stable names and neighbours differ.
+func fakeCaption(id string) string {
+	sum := 0
+	for _, r := range id {
+		sum = sum*31 + int(r)
+	}
+	if sum < 0 {
+		sum = -sum
+	}
+	return fakeCaptions[sum%len(fakeCaptions)]
+}
+
 // fakeEngine serves the slice of the ACE-Step API the app uses,
 // producing short sine tracks instantly. Recording it in the engine
 // daemon state file makes the app adopt it like a real daemon.
@@ -1037,10 +1058,14 @@ func (f *fakeEngine) handler() http.Handler {
 				lyrics = f.lyrics
 			}
 			// A real engine echoes the description it actually used,
-			// which differs per song; the player names a song from it
-			// when no helper wrote one. Keep them distinguishable.
+			// which differs per song and reads like a song rather than
+			// a tag list; the player names a song from it when no
+			// helper wrote one, and the pictures in the README are
+			// taken from a machine with no helper. Rotate so no two
+			// songs in a row share a name.
 			row := map[string]any{
-				"status": 1, "prompt": id + ", " + task.prompt, "seed_value": "7", "lyrics": lyrics,
+				"status": 1, "prompt": fakeCaption(id) + ", " + task.prompt,
+				"seed_value": "7", "lyrics": lyrics,
 			}
 			if task.planOnly {
 				// A planning job answers with audio codes and the
