@@ -1092,6 +1092,43 @@ func TestRealBrowserResilience(t *testing.T) {
 		w.exec(`return document.getElementById('lyrics').textContent;`, &lyr)
 		return strings.Contains(lyr, "the words for task-") && strings.Contains(lyr, "[Chorus]")
 	})
+	// The words carry the name of the song they belong to, both on the
+	// page and in what the Copy button hands over - a sheet of lyrics
+	// with no name on it is a puzzle once it is in a notes app. Read
+	// the two together so a track change between reads cannot make
+	// them look mismatched.
+	waitFor(t, 15*time.Second, "the lyrics to be headed by the song's name", func() bool {
+		var v struct {
+			Title string `json:"title"`
+			Now   string `json:"now"`
+		}
+		w.exec(`return {title: (document.getElementById('lyrtitle')||{}).textContent||"",
+		                now: (document.getElementById('now')||{}).textContent||""};`, &v)
+		return v.Title != "" && v.Title == v.Now
+	})
+	w.exec(`window.__copied = null;
+		navigator.clipboard = navigator.clipboard || {};
+		navigator.clipboard.writeText = function (t) { window.__copied = t; return Promise.resolve(); };
+		return true;`, nil)
+	w.click("#lyrcopy")
+	waitFor(t, 10*time.Second, "the copied sheet to carry the title", func() bool {
+		var v struct {
+			Copied string `json:"copied"`
+			Title  string `json:"title"`
+			Words  string `json:"words"`
+		}
+		w.exec(`return {copied: window.__copied || "",
+		                title: (document.getElementById('lyrtitle')||{}).textContent||"",
+		                words: (document.getElementById('lyrics')||{}).textContent||""};`, &v)
+		if v.Copied == "" {
+			return false
+		}
+		if !strings.HasPrefix(v.Copied, v.Title) {
+			t.Fatalf("copied sheet does not start with the song's name %q: %q", v.Title, v.Copied[:min(80, len(v.Copied))])
+		}
+		return strings.Contains(v.Copied, "[Chorus]")
+	})
+
 	waitFor(t, 20*time.Second, "steer reached generation", func() bool {
 		return strings.Contains(fe.lastPrompt(), "synths")
 	})
@@ -1314,42 +1351,6 @@ func TestRealBrowserResilience(t *testing.T) {
 		return strings.HasPrefix(md.Artist, "Track ") && md.Title != "Infinite AI Radio"
 	})
 
-	// The page's own headline must name the song THIS device is
-	// playing, not the machine's. In buffered mode the phone plays its
-	// own bank at its own pace, so the two drift apart constantly -
-	// and painting the machine's track is what renamed the song under
-	// a listener who was only looping one. The lock screen has always
-	// followed the device; wait for a moment when the machine is
-	// demonstrably elsewhere, and require the headline to side with
-	// the device.
-	var sawDivergence bool
-	waitFor(t, 40*time.Second, "the machine and this device to name different songs", func() bool {
-		var v struct {
-			Now    string `json:"now"`
-			Card   string `json:"card"`
-			Server string `json:"server"`
-		}
-		w.execAsync(`var cb = arguments[arguments.length - 1];
-			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
-				var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
-				cb({now: (document.getElementById('now')||{}).textContent||"",
-				    card: m ? m.title : "",
-				    server: (st.track && (st.track.title || st.track.prompt)) || ""});
-			});`, &v)
-		if v.Card == "" || v.Server == "" || v.Card == v.Server {
-			return false
-		}
-		sawDivergence = true
-		if v.Now != v.Card {
-			t.Fatalf("the headline named the machine's song, not this device's: headline %q, device %q, machine %q",
-				v.Now, v.Card, v.Server)
-		}
-		return true
-	})
-	if !sawDivergence {
-		t.Fatal("never caught the machine and the device on different songs; the check proved nothing")
-	}
-
 	// --- the car's previous-track button saves what the driver hears ---
 	// The media-session action is dispatched exactly as Chrome would;
 	// buffered mode must save the DEVICE's playing track, flash "Saved:"
@@ -1536,6 +1537,36 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 		return st.Playing == 1 && strings.Contains(pill, "1 ahead")
 	})
 	before := readState()
+
+	// The headline must name the song THIS device is playing. Skipping
+	// the MACHINE moves it on without touching the phone's bank, which
+	// is exactly the state that renamed the song under a listener who
+	// was only looping one: two different songs, one headline. The
+	// lock screen has always followed the device, so they must agree.
+	w.execAsync(`var cb = arguments[arguments.length - 1];
+		fetch('/next', {method: 'POST', headers: {'X-IAR-Remote': '1'}}).then(function () { cb(true) });`, nil)
+	waitFor(t, 25*time.Second, "the headline to name this device's song, not the machine's", func() bool {
+		var v struct {
+			Now    string `json:"now"`
+			Card   string `json:"card"`
+			Server string `json:"server"`
+		}
+		w.execAsync(`var cb = arguments[arguments.length - 1];
+			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
+				var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
+				cb({now: (document.getElementById('now')||{}).textContent||"",
+				    card: m ? m.title : "",
+				    server: (st.track && (st.track.title || st.track.prompt)) || ""});
+			});`, &v)
+		if v.Card == "" || v.Server == "" || v.Card == v.Server {
+			return false // not yet on different songs
+		}
+		if v.Now != v.Card {
+			t.Fatalf("the headline named the machine's song, not this device's: headline %q, device %q, machine %q",
+				v.Now, v.Card, v.Server)
+		}
+		return true
+	})
 
 	w.click("#next")
 

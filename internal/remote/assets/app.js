@@ -1513,23 +1513,32 @@
   // words anyone sings, so they are set back rather than dropped.
   var lyricsSig = null;
   var lyricsText = "";
+  var lyricsTitle = "";
   // Buffered playback runs on this device's own copy, which is rarely
   // the track the machine is on: the words have to follow what is
   // coming out of THIS phone, or they arrive a track late.
-  function playingLyrics(s) {
+  // playingSong is the song whose words the panel is showing: this
+  // device's own record while it plays its bank, the machine's track
+  // otherwise. Returning the song rather than just its words lets the
+  // panel head the lyrics with the name they belong to.
+  function playingSong(s) {
     if (pf.active) {
-      if (!pf.playingId) return "";
-      var rec = pf.have[pf.playingId];
-      return (rec && rec.lyrics) || "";
+      if (!pf.playingId) return null;
+      return pf.have[pf.playingId] || null;
     }
     // Not playing this device's own bank: the panel follows the radio
     // itself. The room's speakers are singing these words right now,
     // so they show whether or not this device also streams the audio.
-    return (s.track && s.track.lyrics) || "";
+    return (s && s.track) || null;
   }
   function renderLyrics(s) {
-    var text = playingLyrics(s);
+    var song = playingSong(s);
+    var text = (song && song.lyrics) || "";
     lyricsText = text;
+    lyricsTitle = (song && song.title) || "";
+    // The name is its own element, so it repaints with the song even
+    // when the words happen to be unchanged.
+    setText($("lyrtitle"), text ? lyricsTitle : "");
     if (text === lyricsSig) return;
     lyricsSig = text;
     var box = $("lyrics");
@@ -1673,7 +1682,9 @@
       return;
     }
     buzz();
-    copyText(lyricsText).then(function () {
+    // A sheet of words with no name on it is a puzzle once it is out
+    // of the page and in a notes app.
+    copyText(lyricsTitle ? lyricsTitle + "\n\n" + lyricsText : lyricsText).then(function () {
       setStatus($("lyrcopystatus"), "copied", "ok");
     })["catch"](function () {
       setStatus($("lyrcopystatus"), "could not copy - select the words and copy by hand", "err");

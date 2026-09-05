@@ -561,6 +561,16 @@ details[open] #baseprompt { -webkit-line-clamp: none; }
    The words are the one thing on this screen worth reading rather than
    scanning, so they get their own measure and keep the writer's own
    line breaks and section markers. */
+/* The song's name over its words, so a copied sheet says what it is
+   and the panel is readable on its own. Hidden by CSS rather than a
+   timed paint: an empty name simply takes no room. */
+.lyrtitle {
+  font-size: 15px; line-height: 24px; font-weight: 600;
+  color: var(--text); margin-bottom: var(--s2);
+  overflow-wrap: anywhere;
+}
+.lyrtitle:empty { display: none; }
+
 .lyrics {
   white-space: pre-wrap; overflow-wrap: anywhere;
   font-size: 15px; line-height: 24px; color: var(--text);
