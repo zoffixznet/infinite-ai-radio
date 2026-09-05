@@ -654,7 +654,7 @@ everything else keeps its default. The complete set, with defaults:
     "model": ""
   },
   "sessions": {
-    "auto_retention_days": 2
+    "auto_retention_days": 0
   }
 }
 ```
