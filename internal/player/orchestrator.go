@@ -69,6 +69,10 @@ type Status struct {
 	Volume int
 	// Paused reports whether output is paused.
 	Paused bool
+	// Standby reports the radio is held: nothing is consumed from the
+	// buffer and nothing is generated, so a machine left on stops
+	// making music nobody is there to hear.
+	Standby bool
 	// Underruns counts output buffer underruns since start.
 	Underruns int64
 	// GenCount and LastGenTime describe generation throughput.
@@ -252,8 +256,13 @@ type Orchestrator struct {
 	switchReq    bool
 	steerPending bool
 	paused       bool
-	genBusy      bool
-	genCount     int
+	// standby holds the whole radio: the mixer stops taking songs out
+	// of the buffer and the generator stops putting them in. Distinct
+	// from paused, which only silences this room's speakers while the
+	// station carries on.
+	standby  bool
+	genBusy  bool
+	genCount int
 	// Phased-generation state: the epoch the buffer currently belongs
 	// to, the last handed-out file sequence number, and how many tracks
 	// of this epoch have been fed to playback (drives the batch ramp).
@@ -367,7 +376,16 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	o.mu.Lock()
 	o.started = now
 	o.phaseStart = now
+	// A hold survives a restart on purpose: the machine is left on for
+	// days, and a radio that resumed on its own would start spending
+	// the card again with nobody there.
+	if o.StateDir != nil && o.StateDir.Standby() {
+		o.standby = true
+	}
 	o.mu.Unlock()
+	if o.standbyNow() {
+		o.log.Info("starting on standby", "event", "standby_restored")
+	}
 	o.seedFromLibrary()
 	// Prompt-seeded sessions carry a raw user description; let the
 	// helper enrich it in the background when it is available.
@@ -746,6 +764,9 @@ func (o *Orchestrator) fillTitle(t *engine.Track, requestPrompt string) {
 // wantGeneration reports whether the generate-ahead worker should produce
 // another track right now.
 func (o *Orchestrator) wantGeneration() bool {
+	if o.standbyNow() {
+		return false
+	}
 	if o.eng == nil || !o.eng.Ready() {
 		return false
 	}

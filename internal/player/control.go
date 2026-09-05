@@ -262,6 +262,46 @@ func (o *Orchestrator) ToggleLoop() string {
 	return "looping " + name + " until the loop is turned off"
 }
 
+// standbyNow reports whether the radio is held.
+func (o *Orchestrator) standbyNow() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.standby
+}
+
+// ToggleStandby holds the whole radio, or lets it go again. Held, the
+// mixer takes nothing out of the buffer and the generator puts nothing
+// in: a machine left running stops spending its graphics card, its
+// electricity and its fans on music nobody is there to hear. The hold
+// is remembered on disk, because a radio that quietly resumed after a
+// restart would defeat the point of leaving the machine on.
+func (o *Orchestrator) ToggleStandby() string {
+	o.mu.Lock()
+	on := !o.standby
+	o.standby = on
+	o.mu.Unlock()
+	o.rememberStandby(on)
+	o.log.Info("standby toggled", "event", "standby", "on", on)
+	if on {
+		return "the radio is on standby - nothing plays and nothing is generated until you wake it"
+	}
+	// Waking has to prod both producers: they sleep on a timer, and
+	// the listener is standing there waiting for music.
+	o.kickGen()
+	o.kickRetitle()
+	return "awake - playing again, and generating when the buffer runs down"
+}
+
+// rememberStandby records the hold so a restart honours it.
+func (o *Orchestrator) rememberStandby(on bool) {
+	if o.StateDir == nil {
+		return
+	}
+	if err := o.StateDir.SetStandby(on); err != nil {
+		o.log.Warn("could not record the standby state", "event", "standby_record_failed", "error", err.Error())
+	}
+}
+
 // Pause silences output without stopping generation.
 func (o *Orchestrator) Pause() string {
 	o.mu.Lock()
@@ -474,6 +514,7 @@ func (o *Orchestrator) Status() Status {
 		LyricsGenerator: o.builder.GeneratorName(o.sess),
 		Volume:          int(o.volume.Load()),
 		Paused:          o.paused,
+		Standby:         o.standby,
 		Underruns:       o.ring.Underruns(),
 		GenCount:        o.genCount,
 		LastGenTime:     o.lastGen,
@@ -569,7 +610,9 @@ func (o *Orchestrator) stateLocked() string {
 // desktop integration surfaces.
 func (o *Orchestrator) Snapshot() (paused bool, volume int, title string) {
 	o.mu.Lock()
-	paused = o.paused
+	// A held radio reads as paused to the desktop: no sound is coming
+	// out of it, whichever of the two switches stopped it.
+	paused = o.paused || o.standby
 	title = o.sess.Describe()
 	if o.curTrack != nil {
 		if o.curTrack.Title != "" {

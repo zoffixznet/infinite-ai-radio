@@ -715,6 +715,63 @@ func TestRealBrowser(t *testing.T) {
 		t.Fatal("audio cues for trouble were not on by default")
 	}
 	w.click("#sheetclose")
+
+	// The radio can be held from the phone, and a held radio says so
+	// where it cannot be scrolled past - the case that matters is the
+	// listener who forgot, whose device carries on playing songs it
+	// already has until they run out.
+	w.click("#more")
+	w.exec(`document.getElementById('standby').click(); return true;`, nil)
+	w.click("#sheetclose")
+	waitFor(t, 15*time.Second, "the standby banner to appear", func() bool {
+		var v struct {
+			Hidden bool   `json:"hidden"`
+			Text   string `json:"text"`
+		}
+		w.exec(`var b=document.getElementById('standbybar');
+			return {hidden: !!b.hidden, text: (document.getElementById('standbytext')||{}).textContent||""};`, &v)
+		return !v.Hidden && strings.Contains(v.Text, "standby")
+	})
+	// Pressing play into a held radio is allowed, and the banner
+	// switches to the wording for someone who is listening anyway:
+	// what they get ends in silence, whether it is this device's own
+	// banked songs running out or a stream carrying nothing.
+	w.click("#play")
+	waitFor(t, 15*time.Second, "the banner to warn a listener about the silence", func() bool {
+		var text string
+		w.exec(`return (document.getElementById('standbytext')||{}).textContent||"";`, &text)
+		return strings.Contains(text, "silen") && !strings.Contains(text, "wake it to start again")
+	})
+	// Waking clears it for everyone.
+	w.click("#standbywake")
+	waitFor(t, 15*time.Second, "the banner to clear on waking", func() bool {
+		var v struct {
+			Hidden bool `json:"hidden"`
+			Held   bool `json:"held"`
+		}
+		w.execAsync(`var cb = arguments[arguments.length - 1];
+			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
+				cb({hidden: !!document.getElementById('standbybar').hidden, held: !!st.standby});
+			});`, &v)
+		return v.Hidden && !v.Held
+	})
+	// Leave listening off again: this device only asked for songs to
+	// prove the warning, and a page that remembers wanting them would
+	// start playing by itself on every later load.
+	waitFor(t, 20*time.Second, "the device to stop asking for songs", func() bool {
+		var v struct {
+			Playing bool `json:"playing"`
+			Wants   bool `json:"wants"`
+		}
+		w.exec(`var a = document.getElementById('liveaudio');
+			return {playing: !!(a && !a.paused),
+				wants: localStorage.getItem('iar.wasplaying') === 'true'};`, &v)
+		if !v.Playing && !v.Wants {
+			return true
+		}
+		w.exec(`document.getElementById('play').click(); return true;`, nil)
+		return false
+	})
 	// Station bands are collapsible; open them all so the target row is
 	// clickable.
 	w.exec(`document.querySelectorAll('#sessions details').forEach(function (d) { d.open = true; }); return true;`, nil)

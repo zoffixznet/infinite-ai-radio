@@ -243,7 +243,13 @@ func (o *Orchestrator) wantCycle(epoch int) bool {
 	o.mu.Lock()
 	mode := o.sess.Mode
 	cooldown := o.cycleCooldown
+	held := o.standby
 	o.mu.Unlock()
+	if held {
+		// The hold outranks an empty buffer: a radio nobody is
+		// listening to has no work worth waking the card for.
+		return false
+	}
 	if mode != session.ModeMusic {
 		return false
 	}
@@ -305,6 +311,12 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 // warm only when more work is already due.
 func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	pe := o.eng.(phasedEngine)
+	// Checked again here, before the wordsmith takes the card: the
+	// hold can arrive between wanting a cycle and starting one, and
+	// writing a deep batch's words is tens of minutes of work.
+	if o.standbyNow() {
+		return
+	}
 	o.wordsmithPhase(ctx)
 	// lyricStarved is set when planning runs out of written words; the
 	// defer hands the card back to the wordsmith instead of staying

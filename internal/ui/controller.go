@@ -300,6 +300,6 @@ commands (leading / optional):
   save [prev] [tag] track -> MP3         load <name>      resume a session
   mp3 <min> [file]  export MP3           preset <name>    switch preset
   skip | loop       next / repeat track  delete <name>    delete a session
-  pause | resume    pause / continue     volume <0-100>   set volume
+  pause | standby   mute / hold radio    volume <0-100>   set volume
   lyrics [name]     pick lyric writer    status | engine  show status
   languages [list]  sung languages       help | quit      this list / exit`

@@ -26,7 +26,18 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 	// deliberate noise).
 	o.setCurrent(o.startupSource())
 
+	// Held, the mixer feeds the output silence instead of songs. It
+	// deliberately does NOT advance the source: the whole point of the
+	// hold is that the buffer is still there, unspent, when the
+	// listener comes back.
+	hold := make([]byte, audio.FramesToBytes(chunkFrames))
 	for ctx.Err() == nil {
+		if o.standbyNow() {
+			if _, err := o.ring.Write(hold); err != nil {
+				return // ring closed: shutting down
+			}
+			continue
+		}
 		o.mu.Lock()
 		cur := o.cur
 		o.mu.Unlock()

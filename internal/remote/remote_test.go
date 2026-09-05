@@ -290,6 +290,7 @@ type fakeCtl struct {
 	steers  []string
 	skips   int
 	loops   int
+	holds   int
 	news    []string
 	saves   [][2]string
 	lyrGens []string
@@ -371,6 +372,13 @@ func (f *fakeCtl) ToggleLoop() string {
 	defer f.mu.Unlock()
 	f.loops++
 	return "looping this track until the loop is turned off"
+}
+
+func (f *fakeCtl) ToggleStandby() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holds++
+	return "the radio is on standby"
 }
 
 func (f *fakeCtl) NewSession(prompt string) string {
@@ -843,6 +851,7 @@ func TestPermissionMatrix(t *testing.T) {
 		"/languages":       {"POST", "/languages", url.Values{"names": {"English, Russian"}}},
 		"/next":            {"POST", "/next", nil},
 		"/loop":            {"POST", "/loop", nil},
+		"/standby":         {"POST", "/standby", nil},
 		"/new":             {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
 		"/save":            {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
 		"/users":           {"GET", "/users", nil},
@@ -867,26 +876,26 @@ func TestPermissionMatrix(t *testing.T) {
 		want expect
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
-			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
+			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/standby": auth, "/new": auth, "/save": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
 			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/standby": ok, "/new": deny, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": ok, "/save": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/standby": ok, "/new": ok, "/save": ok, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok}},
 	}
 	for who, row := range matrix {
@@ -909,8 +918,8 @@ func TestPermissionMatrix(t *testing.T) {
 	// Only the permitted calls reached the controller.
 	h.ctl.mu.Lock()
 	defer h.ctl.mu.Unlock()
-	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || h.ctl.loops != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
-		t.Fatalf("controller calls: steers=%v skips=%d loops=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.loops, h.ctl.news, h.ctl.saves)
+	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || h.ctl.loops != 2 || h.ctl.holds != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
+		t.Fatalf("controller calls: steers=%v skips=%d loops=%d holds=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.loops, h.ctl.holds, h.ctl.news, h.ctl.saves)
 	}
 	// The lyric-writer switch rides the steer permission (steerer +
 	// full admin).
@@ -935,7 +944,7 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.langAll) != 2 || strings.Join(h.ctl.langAll[0], "|") != "English|Russian" {
 		t.Fatalf("configured language lists: %v", h.ctl.langAll)
 	}
-	if len(h.ctl.notes) != 22 {
+	if len(h.ctl.notes) != 24 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
 	}
 }

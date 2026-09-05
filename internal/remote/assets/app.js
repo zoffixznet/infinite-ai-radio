@@ -72,6 +72,52 @@
     try { navigator.vibrate(10); } catch (e) {}
   }
 
+  // ---- standby ------------------------------------------------------
+  // The radio can be held: nothing played, nothing generated. It is
+  // easy to forget, because a phone holding an hour of songs carries
+  // on regardless - so the page says so in a bar that cannot be
+  // scrolled away, and says it loudest to someone who just pressed
+  // play into a radio that is not running.
+  var radioStandby = false;
+  function paintStandby(on) {
+    var box = $("standby");
+    if (box) {
+      if (box.checked !== !!on) box.checked = !!on;
+    }
+    syncStandbyBanner();
+  }
+  function syncStandbyBanner() {
+    var bar = $("standbybar");
+    if (!bar) return;
+    // Worth saying whenever the radio is held; worth saying urgently
+    // to a device playing anyway - on borrowed songs, or on a stream
+    // that is carrying nothing.
+    var msg = "The radio is on standby. It is not making music; wake it to start again.";
+    if (pf.active) {
+      msg = "The radio is on standby. You are hearing songs already on this device, and it will fall silent when they run out.";
+    } else if (wantStream) {
+      msg = "The radio is on standby. The stream is carrying silence until you wake it.";
+    }
+    if (bar.hidden !== !radioStandby) bar.hidden = !radioStandby;
+    setText($("standbytext"), msg);
+  }
+  $("standbywake").addEventListener("click", function () {
+    buzz();
+    act($("standbywake"), [stateEl, $("steerstatus")], "/standby", "", "waking the radio…");
+  });
+  $("standby").addEventListener("change", function () {
+    // The checkbox reports what the radio IS; the server decides. A
+    // failed call leaves it painted wrong until the next poll fixes
+    // it, which is a second away.
+    act(null, [stateEl, $("steerstatus")], "/standby", "",
+      $("standby").checked ? "putting the radio on standby…" : "waking the radio…");
+    if ($("standby").checked) {
+      // Holding the radio stops this device too: otherwise the
+      // listener walks away believing music is still being made.
+      stopListening("stopped - the radio is on standby");
+    }
+  });
+
   // ---- audio cue for trouble ---------------------------------------
   // A radio that quietly repeats itself looks exactly like a radio
   // that is working. Three soft beeps in a hole in the music say
@@ -1309,10 +1355,14 @@
   function startListening() {
     store.set("iar.wasplaying", true);
     if (transport === "buffered" && idbSupported) startBuffered(); else startStream();
+    // Pressing play into a held radio is exactly when the warning has
+    // to change from "it is not making music" to "and this will stop".
+    syncStandbyBanner();
   }
   function stopListening(msg) {
     if (pf.active) stopBuffered(msg === undefined ? "stopped" : msg, "");
     if (wantStream) stopStream(msg === undefined ? "stopped" : msg, "");
+    syncStandbyBanner();
   }
 
   playBtn.addEventListener("click", function () {
@@ -2005,6 +2055,8 @@
         loopClock = -1;
       }
       setText($("phase"), phaseText);
+      radioStandby = !!s.standby;
+      paintStandby(radioStandby);
       paintLoop(pf.active ? pf.loop : !!s.loop_on);
       renderSound(s);
       renderLyrics(s);

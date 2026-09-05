@@ -68,6 +68,11 @@ func (o *Orchestrator) kickRetitle() {
 // retitlePass runs one round of late-name resolution. Split from the
 // loop so tests can drive it without the timer.
 func (o *Orchestrator) retitlePass() {
+	// A held radio leaves the helper model alone too; names resolve
+	// when it wakes, which prods this loop.
+	if o.standbyNow() {
+		return
+	}
 	o.mu.Lock()
 	var cands []*engine.Track
 	add := func(t *engine.Track) {

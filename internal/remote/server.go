@@ -41,6 +41,7 @@ type Controls interface {
 	NewSession(prompt string) string
 	Skip() string
 	ToggleLoop() string
+	ToggleStandby() string
 	SaveSnippet(which, tag string) string
 	NameSession(name string) string
 	LoadByName(name string) string
@@ -265,6 +266,9 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /languages", s.apiPerm("languages", permAdmin, s.handleLanguages))
 	mux.HandleFunc("POST /next", s.apiPerm("steer", permSteer, s.handleNext))
 	mux.HandleFunc("POST /loop", s.apiPerm("steer", permSteer, s.handleLoop))
+	// Holding the whole radio is a steering-level act: it decides what
+	// everyone hears, or stops hearing.
+	mux.HandleFunc("POST /standby", s.apiPerm("steer", permSteer, s.handleStandby))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
 	// Sessions: listing for everyone; loading changes what everyone
@@ -547,6 +551,10 @@ type stateJSON struct {
 	// LoopOn reports a listener asked the radio to repeat the playing
 	// track, so every client's loop button shows the same state.
 	LoopOn bool `json:"loop_on,omitempty"`
+	// Standby reports the radio is held: nothing playing, nothing
+	// generating. Every client says so, and warns a listener still
+	// hearing their own banked songs.
+	Standby bool `json:"standby,omitempty"`
 	// Switching reports a steering or language change whose first fresh
 	// track is still generating.
 	Switching bool `json:"switching,omitempty"`
@@ -658,6 +666,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 	}
 	out.Looping = st.Looping
 	out.LoopOn = st.LoopOn
+	out.Standby = st.Standby
 	out.Switching = st.Switching
 	if st.Phase != "" && st.Phase != "playing" {
 		out.Phase = st.Phase
@@ -789,6 +798,12 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request, u accounts.U
 func (s *Server) handleLoop(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.ToggleLoop()
 	s.ctl.Announce("remote loop by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+func (s *Server) handleStandby(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	ack := s.ctl.ToggleStandby()
+	s.ctl.Announce("remote standby by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 

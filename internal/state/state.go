@@ -42,6 +42,28 @@ func (d Dir) heartbeatFile() string { return filepath.Join(d.path, "heartbeat") 
 // about to stop the daemon needs to know.
 func (d Dir) beatsDir() string { return filepath.Join(d.path, "heartbeats") }
 
+// standbyFile marks the radio as held. It outlives the process on
+// purpose: a machine left on overnight must not quietly go back to
+// making music nobody asked for because something restarted.
+func (d Dir) standbyFile() string { return filepath.Join(d.path, "standby") }
+
+// SetStandby records or clears the hold.
+func (d Dir) SetStandby(on bool) error {
+	if !on {
+		if err := os.Remove(d.standbyFile()); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return touch(d.standbyFile())
+}
+
+// Standby reports whether the radio was left holding.
+func (d Dir) Standby() bool {
+	_, err := os.Stat(d.standbyFile())
+	return err == nil
+}
+
 // EngineState describes a running (or starting) engine daemon.
 type EngineState struct {
 	// PID is the daemon process id.

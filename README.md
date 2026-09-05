@@ -287,12 +287,32 @@ typed at the same prompt. A leading slash is optional: `skip` and
 | `skip` | jump to the next track |
 | `loop` | repeat the playing track until toggled off |
 | `pause` / `resume` | pause or continue output |
+| `standby` | hold the whole radio: nothing plays, nothing is generated |
 | `volume <0-100>` | set output volume |
 | `lyrics [name]` | show or switch the lyric writer |
 | `languages [list]` | show, set or switch the sung languages |
 | `status` | engine, buffer and session status |
 | `help` | list commands |
 | `quit` | exit |
+
+### Standby
+
+`standby` puts the radio to sleep without stopping it. Nothing plays,
+and - the point of it - nothing is generated: the buffer stops being
+consumed and stops being refilled, so a machine left running overnight
+sits idle with a full buffer instead of rendering songs nobody is
+awake to hear. `standby` again wakes it, playing from exactly where it
+left off and generating again once the buffer runs down. The hold is
+remembered across restarts, so a radio put on standby comes back up on
+standby.
+
+The phone remote has the same switch under **Settings -> The radio
+itself**, and a held radio says so in a banner across the top of the
+page that cannot be scrolled past. Ticking it also stops that device
+listening. A phone in buffered mode holds songs of its own, so pressing
+play into a held radio is allowed but warns, in the banner, that the
+music runs out when this device's own songs do; the banner's *Wake*
+button clears the hold for everyone.
 
 ## Sessions and presets
 
@@ -864,7 +884,8 @@ Inside the data directory:
 - `exports/` - MP3 exports
 - `logs/iar.log` - structured JSON log of the player
 - `logs/engine-daemon.log` - the shared engine daemon's log
-- `state/` - engine daemon state, locks, and phase-duration records
+- `state/` - engine daemon state, locks, phase-duration records, and
+  the `standby` marker when the radio was left held
 
 ## Models and licensing
 
