@@ -1314,6 +1314,42 @@ func TestRealBrowserResilience(t *testing.T) {
 		return strings.HasPrefix(md.Artist, "Track ") && md.Title != "Infinite AI Radio"
 	})
 
+	// The page's own headline must name the song THIS device is
+	// playing, not the machine's. In buffered mode the phone plays its
+	// own bank at its own pace, so the two drift apart constantly -
+	// and painting the machine's track is what renamed the song under
+	// a listener who was only looping one. The lock screen has always
+	// followed the device; wait for a moment when the machine is
+	// demonstrably elsewhere, and require the headline to side with
+	// the device.
+	var sawDivergence bool
+	waitFor(t, 40*time.Second, "the machine and this device to name different songs", func() bool {
+		var v struct {
+			Now    string `json:"now"`
+			Card   string `json:"card"`
+			Server string `json:"server"`
+		}
+		w.execAsync(`var cb = arguments[arguments.length - 1];
+			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
+				var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
+				cb({now: (document.getElementById('now')||{}).textContent||"",
+				    card: m ? m.title : "",
+				    server: (st.track && (st.track.title || st.track.prompt)) || ""});
+			});`, &v)
+		if v.Card == "" || v.Server == "" || v.Card == v.Server {
+			return false
+		}
+		sawDivergence = true
+		if v.Now != v.Card {
+			t.Fatalf("the headline named the machine's song, not this device's: headline %q, device %q, machine %q",
+				v.Now, v.Card, v.Server)
+		}
+		return true
+	})
+	if !sawDivergence {
+		t.Fatal("never caught the machine and the device on different songs; the check proved nothing")
+	}
+
 	// --- the car's previous-track button saves what the driver hears ---
 	// The media-session action is dispatched exactly as Chrome would;
 	// buffered mode must save the DEVICE's playing track, flash "Saved:"

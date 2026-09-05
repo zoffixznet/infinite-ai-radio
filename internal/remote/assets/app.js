@@ -716,7 +716,7 @@
           if (!pf.have[rec.id]) {
             // epoch left undefined: the first queue listing decides
             // whether the record is still current and restamps it.
-            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "" };
+            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "", provisional: rec.provisional };
           }
         });
         pf.wantPlay = true;
@@ -799,23 +799,32 @@
         if (pf.have[row.id] && !pf.have[row.id].dur) pf.have[row.id].dur = row.duration_s;
       });
       // Songs are often downloaded before the server has settled on
-      // their name; when a fresh listing carries a better one, adopt
-      // it - in the record, in the store, and on the lock screen if
-      // that song is the one playing.
+      // their name; when a fresh listing carries the song's real one,
+      // adopt it - in the record, in the store, and on the lock screen
+      // if that song is the one playing. Exactly once: a name this
+      // device already holds as final is never traded for a later one,
+      // and a listing's stand-in never displaces anything.
       pf.rows.forEach(function (row) {
         var rec = pf.have[row.id];
-        if (!rec || !row.title || (rec.title === row.title && rec.subtitle === row.subtitle)) return;
+        if (!rec || !row.title || row.title_provisional || rec.provisional === false) return;
+        if (rec.title === row.title && rec.subtitle === row.subtitle) {
+          rec.provisional = false;
+          return;
+        }
         rec.title = row.title;
         rec.subtitle = row.subtitle;
+        rec.provisional = false;
         idbReq(idbStore("readonly").get(row.id)).then(function (stored) {
           if (!stored) return;
           stored.title = row.title;
           stored.subtitle = row.subtitle;
+          stored.provisional = false;
           return idbReq(idbStore("readwrite").put(stored));
         })["catch"](function () {});
         if (row.id === pf.playingId) {
           lastNow = rec.title || rec.prompt || "buffered track";
           msArtist = "Track " + (pf.played || 0) + (rec.subtitle ? " \u00b7 " + rec.subtitle : "");
+          paintNow(null);
           applyMediaMetadata();
           pfStatus();
         }
@@ -916,8 +925,8 @@
       return r.blob();
     }).then(function (blob) {
       pf.ctrl = null;
-      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "" };
-      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", blob: blob, saved: Date.now() }))
+      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", provisional: !!row.title_provisional };
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", provisional: !!row.title_provisional, blob: blob, saved: Date.now() }))
         .then(function () { pf.storeFull = false; })
         ["catch"](function () {
           // Out of room on the device: the song plays from memory this
@@ -1094,6 +1103,7 @@
       pf.played = (pf.played || 0) + 1;
       lastNow = rec.title || rec.prompt || "buffered track";
       msArtist = "Track " + pf.played + (rec.subtitle ? " · " + rec.subtitle : "");
+      paintNow(null);
       applyMediaMetadata();
       mediaPlaybackState("playing");
       updateSaveButtons(null);
@@ -1222,6 +1232,34 @@
     }
     setStatus([stateEl, $("steerstatus")], "skipped on this device only", "ok");
     pfAdvance();
+  }
+
+  // paintNow names the song THIS listener is hearing. In buffered
+  // playback that is the device's own banked track, not the machine's:
+  // the phone plays its bank at its own pace, so painting the laptop's
+  // track here renamed the song under a listener who was looping one.
+  // The lyrics and the seek row already follow the device; the
+  // now-block was the part left behind.
+  function paintNow(s) {
+    var rec = pf.active && pf.playingId ? pf.have[pf.playingId] : null;
+    if (rec) {
+      setText($("now"), rec.title || rec.prompt || "...");
+      setText($("nowprompt"), (rec.title && rec.prompt) || "");
+      var m = "Track " + (pf.played || 0);
+      if (rec.subtitle) m += "  ·  " + rec.subtitle;
+      setText($("meta"), m);
+      return;
+    }
+    // Without a device track there is nothing to say until the next
+    // poll brings the machine's.
+    if (!s) return;
+    var t = s.track;
+    setText($("now"), (t && (t.title || t.prompt)) || s.source || s.state || "...");
+    setText($("nowprompt"), (t && t.title && t.prompt) || "");
+    var meta = t && t.number ? "Track " + t.number : "";
+    if (t && t.subtitle) meta += (meta ? "  ·  " : "") + t.subtitle;
+    if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
+    setText($("meta"), meta);
   }
 
   function pfStatus() {
@@ -1928,13 +1966,7 @@
       if (!s) return;
       pollFails = 0;
       setText($("conn"), "connected");
-      var t = s.track;
-      setText($("now"), (t && (t.title || t.prompt)) || s.source || s.state || "...");
-      setText($("nowprompt"), (t && t.title && t.prompt) || "");
-      var meta = t && t.number ? "Track " + t.number : "";
-      if (t && t.subtitle) meta += (meta ? "  ·  " : "") + t.subtitle;
-      if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
-      setText($("meta"), meta);
+      paintNow(s);
       var srv = s.session || "";
       srv += (srv ? "  ·  " : "") + (s.ready || s.queued + " ready") + (s.generating ? " · generating" : "");
       setText($("srvline"), srv);
