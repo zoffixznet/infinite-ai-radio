@@ -58,8 +58,8 @@ codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of
 dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$mp3")
 awk -v d="$dur" 'BEGIN { exit !(d >= 58 && d <= 62) }' || fail "export duration $dur not ~60s"
 
-# A stale auto-saved session from long ago must be swept at the next
-# start; the named one must survive.
+# A session with a generated name is kept, however old: every change to
+# the sound branches into one, so they are the states to go back to.
 cat > "$IAR_DATA_DIR/sessions/session-20260101-000000.json" <<'JSON'
 {"name":"session-20260101-000000","created":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z",
  "last_played":"2026-01-01T00:00:00Z","mode":"music","base_prompt":"old stale prompt","noise_bed":"pink"}
@@ -74,9 +74,8 @@ resume_out="$SANDBOX/resume.txt"
   echo "quit"
 } | "$BIN" --session smoke-session --player null --plain > "$resume_out" 2>&1 || fail "resume run exited non-zero"
 grep -q "brown noise" "$resume_out" || fail "resumed session lost its steering context"
-[ ! -f "$IAR_DATA_DIR/sessions/session-20260101-000000.json" ] || fail "stale auto-saved session not swept"
-grep -q '"event":"sessions_swept"' "$log" || fail "sweep not logged"
-[ -f "$IAR_DATA_DIR/sessions/smoke-session.json" ] || fail "named session swept"
+[ -f "$IAR_DATA_DIR/sessions/session-20260101-000000.json" ] || fail "an old automatic session was deleted by itself"
+[ -f "$IAR_DATA_DIR/sessions/smoke-session.json" ] || fail "named session lost"
 
 # Session management from the CLI: grouped listing, delete with and
 # without --yes, preset tombstones and their restore.
@@ -91,6 +90,13 @@ grep -qE "^  smoke-session +brown noise +[0-9]+[smh] ago|^  smoke-session +brown
   || fail "named row lacks summary/last played: $(grep smoke-session "$list")"
 grep -qE "^    jazz-club +Late-night jazz combo" "$list" || fail "preset row format"
 grep -qE "^  high-energy:" "$list" || fail "preset group header missing"
+
+# Clearing out the automatic sessions is a command, not a timer: it
+# takes the generated names and leaves the named one alone.
+echo y | "$BIN" sessions delete-auto | grep -qE "[0-9]+ automatic session\(s\) deleted" || fail "delete-auto failed"
+[ ! -f "$IAR_DATA_DIR/sessions/session-20260101-000000.json" ] || fail "delete-auto left the automatic session"
+[ -f "$IAR_DATA_DIR/sessions/smoke-session.json" ] || fail "delete-auto took the named session"
+"$BIN" sessions delete-auto --yes | grep -q "no automatic sessions" || fail "a second delete-auto is not a no-op"
 
 echo n | "$BIN" sessions delete smoke-session | grep -q "cancelled" || fail "delete without confirmation did not cancel"
 [ -f "$IAR_DATA_DIR/sessions/smoke-session.json" ] || fail "cancelled delete removed the session"
