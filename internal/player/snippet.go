@@ -71,10 +71,9 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 	}
 
 	slug := snippets.Slug(tag)
-	// Copy the display fields under the lock: the retitle loop may
-	// still be replacing a provisional name on this very track. The
-	// save then uses one consistent name throughout, whichever side of
-	// the rename it caught.
+	// Copy the display fields under the lock: a listener may be
+	// renaming this very track. The save then uses one consistent name
+	// throughout, whichever side of the rename it caught.
 	o.mu.Lock()
 	title, subtitle := track.Title, track.Subtitle
 	o.mu.Unlock()

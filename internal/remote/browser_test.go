@@ -1036,8 +1036,11 @@ func (f *fakeEngine) handler() http.Handler {
 			if f.lyrics != "" {
 				lyrics = f.lyrics
 			}
+			// A real engine echoes the description it actually used,
+			// which differs per song; the player names a song from it
+			// when no helper wrote one. Keep them distinguishable.
 			row := map[string]any{
-				"status": 1, "prompt": task.prompt, "seed_value": "7", "lyrics": lyrics,
+				"status": 1, "prompt": id + ", " + task.prompt, "seed_value": "7", "lyrics": lyrics,
 			}
 			if task.planOnly {
 				// A planning job answers with audio codes and the
@@ -1661,25 +1664,34 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 	})
 	before := readState()
 
-	// The headline must name the song THIS device is playing. Skipping
-	// the MACHINE moves it on without touching the phone's bank, which
-	// is exactly the state that renamed the song under a listener who
-	// was only looping one: two different songs, one headline. The
-	// lock screen has always followed the device, so they must agree.
+	// The page must follow the song THIS device is playing. Skipping the
+	// MACHINE moves it on without touching the phone's bank, which is
+	// exactly the state that renamed the song under a listener who was
+	// only looping one: two different songs, one headline. The lock
+	// screen has always followed the device, so they must agree - and
+	// the words on screen must be this device's song's, not the ones
+	// the speakers are singing. (Songs here share a name, because the
+	// sandbox has no helper model to write per-song ones; the ids and
+	// the lyrics are what tell them apart.)
 	w.execAsync(`var cb = arguments[arguments.length - 1];
 		fetch('/next', {method: 'POST', headers: {'X-IAR-Remote': '1'}}).then(function () { cb(true) });`, nil)
-	waitFor(t, 25*time.Second, "the headline to name this device's song, not the machine's", func() bool {
+	waitFor(t, 25*time.Second, "the page to follow this device's song, not the machine's", func() bool {
 		var v struct {
 			Now    string `json:"now"`
 			Card   string `json:"card"`
 			Server string `json:"server"`
+			SrvLyr string `json:"srvlyr"`
+			Lyrics string `json:"lyrics"`
 		}
 		w.execAsync(`var cb = arguments[arguments.length - 1];
 			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
 				var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
+				var words = ((st.track && st.track.lyrics) || "").split("\n");
 				cb({now: (document.getElementById('now')||{}).textContent||"",
 				    card: m ? m.title : "",
-				    server: (st.track && (st.track.title || st.track.prompt)) || ""});
+				    server: (st.track && (st.track.title || st.track.prompt)) || "",
+				    srvlyr: words.length > 1 ? words[1] : "",
+				    lyrics: (document.getElementById('lyrics')||{}).textContent||""});
 			});`, &v)
 		if v.Card == "" || v.Server == "" || v.Card == v.Server {
 			return false // not yet on different songs
@@ -1687,6 +1699,11 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 		if v.Now != v.Card {
 			t.Fatalf("the headline named the machine's song, not this device's: headline %q, device %q, machine %q",
 				v.Now, v.Card, v.Server)
+		}
+		// The words follow the device too - they are what the listener
+		// is actually hearing.
+		if v.SrvLyr == "" || strings.Contains(v.Lyrics, v.SrvLyr) {
+			t.Fatalf("the words on screen are the machine's, not this device's: %q in %q", v.SrvLyr, v.Lyrics)
 		}
 		return true
 	})

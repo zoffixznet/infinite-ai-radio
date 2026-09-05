@@ -22,6 +22,17 @@ import (
 // kept for instant starts, and - if this song was already saved - the
 // file and its ID3 tag in the snippets folder.
 
+// bankRef locates a track's banked library copy so a rename can be
+// written into its sidecar as well.
+type bankRef struct {
+	key string
+	id  string
+}
+
+// maxBankRefs bounds the remembered banked-copy locations; the oldest
+// are pruned when the map outgrows it and their tracks are gone.
+const maxBankRefs = 96
+
 // maxBufFed bounds how many fed-from-disk songs are remembered. A
 // listener's own copy of a song outlives the disk original by however
 // far ahead they are buffered; a couple of hours' worth is plenty.
@@ -54,8 +65,36 @@ func (o *Orchestrator) rememberBank(id string, ref bankRef) {
 		return
 	}
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	o.bankRefs[id] = ref
+	over := len(o.bankRefs) > maxBankRefs
+	o.mu.Unlock()
+	if over {
+		o.pruneBankRefs()
+	}
+}
+
+// pruneBankRefs drops banked-copy locations whose tracks are no longer
+// anywhere a rename could still find them.
+func (o *Orchestrator) pruneBankRefs() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	live := map[string]bool{}
+	for _, t := range o.queue {
+		live[t.ID] = true
+	}
+	if ts, ok := o.cur.(*trackSource); ok {
+		live[ts.track.ID] = true
+	}
+	for _, t := range []*engine.Track{o.prevTrack, o.lastGood, o.curTrack} {
+		if t != nil {
+			live[t.ID] = true
+		}
+	}
+	for id := range o.bankRefs {
+		if !live[id] {
+			delete(o.bankRefs, id)
+		}
+	}
 }
 
 // Retitle renames a song. which selects it exactly as saving does:
@@ -139,23 +178,14 @@ func (o *Orchestrator) retitleLive(which, title string) string {
 	}
 	var (
 		id       = hits[0].ID
-		key      = hits[0].TitleKey
 		subtitle = hits[0].Subtitle
 	)
 	for _, t := range hits {
 		t.Title = title
-		// A name someone typed is never a stand-in: the late naming
-		// pass must not come along later and replace it.
-		t.TitleProvisional = false
 	}
 	ref, banked := o.bankRefs[id]
 	o.mu.Unlock()
 
-	// Prime the cache the late pass reads, so another copy of the same
-	// song - a listing row, a restart reading the sidecar - agrees.
-	if key != "" {
-		o.builder.PrimeTitle(key, title, subtitle)
-	}
 	if banked {
 		o.Library.SetTitle(ref.key, ref.id, title, subtitle)
 	}
@@ -172,20 +202,17 @@ func (o *Orchestrator) retitleOnDisk(base, title string) string {
 	o.mu.Lock()
 	epoch := o.epoch
 	o.mu.Unlock()
-	var subtitle, key string
+	var subtitle string
 	var found bool
 	for _, e := range o.Buffer.List(epoch) {
 		if e.Base != base {
 			continue
 		}
-		subtitle, key, found = e.Subtitle, e.TitleKey, true
+		subtitle, found = e.Subtitle, true
 		break
 	}
 	if !found || !o.Buffer.SetTitle(epoch, base, title, subtitle) {
 		return "that song is no longer here to rename"
-	}
-	if key != "" {
-		o.builder.PrimeTitle(key, title, subtitle)
 	}
 	o.log.Info("song renamed", "event", "track_renamed", "id", bufTrackPrefix+base, "title", title)
 	return o.renameAck(bufTrackPrefix+base, title)

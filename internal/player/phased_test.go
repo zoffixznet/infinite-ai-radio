@@ -165,7 +165,7 @@ func TestRestartAdoptsThePreviousRunsBuffer(t *testing.T) {
 			Lyrics:  fmt.Sprintf("[Verse]\nsong %d", seq),
 			Samples: make([]int16, 9600),
 		}
-		if err := prev.PutTrack(context.Background(), 3, seq, "", track); err != nil {
+		if err := prev.PutTrack(context.Background(), 3, seq, track); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,7 +195,7 @@ func TestAdoptionRefusesAnotherContextsBuffer(t *testing.T) {
 	prev := trackbuffer.New(dir, 0, testLogger())
 	prev.SetContext("some-other-station")
 	track := &engine.Track{Lyrics: "[Verse]\nx", Samples: make([]int16, 9600)}
-	if err := prev.PutTrack(context.Background(), 7, 1, "", track); err != nil {
+	if err := prev.PutTrack(context.Background(), 7, 1, track); err != nil {
 		t.Fatal(err)
 	}
 
@@ -262,7 +262,7 @@ func TestAnotherBuildsBufferIsCleared(t *testing.T) {
 	prev.SetBuild("old-commit")
 	prev.SetContext(library.Key(session.New()))
 	track := &engine.Track{Lyrics: "[Verse]\nx", Samples: make([]int16, 9600)}
-	if err := prev.PutTrack(context.Background(), 0, 1, "", track); err != nil {
+	if err := prev.PutTrack(context.Background(), 0, 1, track); err != nil {
 		t.Fatal(err)
 	}
 

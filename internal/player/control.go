@@ -296,10 +296,9 @@ func (o *Orchestrator) ToggleStandby() string {
 	if on {
 		return "the radio is on standby - nothing plays and nothing is generated until you wake it"
 	}
-	// Waking has to prod both producers: they sleep on a timer, and
-	// the listener is standing there waiting for music.
+	// Waking has to prod the generator: it sleeps on a timer, and the
+	// listener is standing there waiting for music.
 	o.kickGen()
-	o.kickRetitle()
 	return "awake - playing again, and generating when the buffer runs down"
 }
 

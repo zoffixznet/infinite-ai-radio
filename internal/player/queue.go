@@ -28,11 +28,6 @@ type QueueTrack struct {
 	// Kind is "queue" for freshly generated upcoming tracks and
 	// "library" for same-vibe banked filler.
 	Kind string
-	// TitleProvisional marks a stand-in name the helper may still
-	// replace. A client that has already been handed a real name must
-	// not adopt anything later, or a song renames itself under a
-	// listener who is doing nothing but listening to it.
-	TitleProvisional bool
 }
 
 // libFillerPrefix marks track ids that resolve to the on-disk library.
@@ -62,7 +57,6 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 		out = append(out, QueueTrack{
 			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
 			Seconds: t.Duration().Seconds(), Kind: "queue", Lyrics: trackLyrics(t),
-			TitleProvisional: t.TitleProvisional,
 		})
 	}
 	buffered := o.Buffer != nil && o.cfg.Buffer.Phased
@@ -72,23 +66,12 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 		// prefetch these exactly like the in-memory queue; the feeder
 		// consumes them in the same order.
 		for _, e := range o.Buffer.List(epoch) {
-			// resolved tracks whether this name is the song's own or a
-			// stand-in read off its prompt: a client that adopts the
-			// latter would later swap it for the real one mid-play.
+			// The name was written with the song's words and stored
+			// beside its audio; only a song the engine worded itself
+			// needs the deterministic stand-in.
 			title, subtitle := e.Title, e.Subtitle
-			resolved := title != ""
-			if title == "" {
-				key := e.TitleKey
-				if key == "" {
-					key = prompting.SongKey(e.Lyrics)
-				}
-				if key != "" {
-					title, subtitle, resolved = o.builder.TitleForKey(key)
-				}
-			}
 			if title == "" {
 				title, subtitle = prompting.TrackTitle(e.Prompt)
-				resolved = false
 			}
 			lyr := e.Lyrics
 			if lyr == engine.InstrumentalLyrics {
@@ -97,7 +80,6 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 			out = append(out, QueueTrack{
 				ID: bufTrackPrefix + e.Base, Prompt: e.Prompt, Title: title, Subtitle: subtitle,
 				Seconds: e.Seconds, Kind: "queue", Lyrics: lyr,
-				TitleProvisional: !resolved,
 			})
 		}
 	}
@@ -185,10 +167,10 @@ func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 		}
 		t, ok := o.Buffer.Peek(ctx, epoch, base)
 		// Only a nameless song gets a stand-in: the sidecar's own
-		// title is the answer, whether the helper wrote it or a
-		// listener typed it.
+		// title is the answer, whether it was written with the words or
+		// typed by a listener.
 		if ok && t.Title == "" {
-			o.fillTitle(t, specPromptForLog(t.Spec))
+			o.fillTitle(t)
 		}
 		return t, ok
 	}

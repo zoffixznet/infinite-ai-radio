@@ -397,39 +397,33 @@ func TestTrackTitleDeterministicFallback(t *testing.T) {
 	if title, _ := TrackTitle(""); title == "" {
 		t.Fatal("empty prompt produced an empty title")
 	}
-	// A builder with no helper returns no model title; the fallback is
-	// what ships.
+	// A builder with no helper names nothing; the fallback is what
+	// ships.
 	b := NewBuilder(nil, nil)
-	b.TitleAsync("dark techno") // must be a no-op, not a panic
-	if _, _, ok := b.TitleFor("dark techno"); ok {
-		t.Fatal("helperless builder produced a model title")
+	if title, _ := b.titleSong(context.Background(), "dark techno", "[Verse]\nrain on the wire"); title != "" {
+		t.Fatalf("helperless builder produced a model title: %q", title)
 	}
 }
 
-// TestTitleAsyncSchemaConstrained: the helper's short name arrives via
-// the schema-constrained JSON path, sanitized and cached.
-func TestTitleAsyncSchemaConstrained(t *testing.T) {
+// The song's name arrives through the schema-constrained JSON path,
+// sanitized - and it arrives while the words are being written, in the
+// same call sequence, so a song is never handed to a listener nameless
+// and never renamed under one.
+func TestSongIsNamedWhereItsWordsAreWritten(t *testing.T) {
 	f := &fakeOllama{jsonReply: `{"title":"  \"Neon Rain\"  ","subtitle":"dark driving techno"}`}
 	srv := f.server(t)
 	defer srv.Close()
 	b := probedBuilder(t, srv)
-	b.TitleAsync("dark techno, driving")
-	waitCond(t, "title ready", func() bool {
-		_, _, ok := b.TitleFor("dark techno, driving")
-		return ok
-	})
-	title, subtitle, ok := b.TitleFor("dark techno, driving")
-	if !ok || title != "Neon Rain" || subtitle != "dark driving techno" {
-		t.Fatalf("model title = %q / %q (ok=%v)", title, subtitle, ok)
+	title, subtitle := b.titleSong(context.Background(), "dark techno, driving", "[Verse]\nneon rain on the wire")
+	if title != "Neon Rain" || subtitle != "dark driving techno" {
+		t.Fatalf("model title = %q / %q", title, subtitle)
 	}
 	if f.jsonCalls.Load() != 1 {
 		t.Fatalf("json calls = %d; want 1", f.jsonCalls.Load())
 	}
-	// Repeated asks reuse the cache: still one call.
-	b.TitleAsync("dark techno, driving")
-	time.Sleep(50 * time.Millisecond)
-	if f.jsonCalls.Load() != 1 {
-		t.Fatalf("cache miss on repeat: %d calls", f.jsonCalls.Load())
+	// An instrumental has no words to name from.
+	if got, _ := b.titleSong(context.Background(), "dark techno", engine.InstrumentalLyrics); got != "" {
+		t.Fatalf("instrumental named %q", got)
 	}
 }
 

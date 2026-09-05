@@ -21,9 +21,6 @@ type queueTrackJSON struct {
 	DurationS float64 `json:"duration_s"`
 	Kind      string  `json:"kind"`
 	Lyrics    string  `json:"lyrics,omitempty"`
-	// TitleProvisional marks a stand-in name that may still be
-	// replaced, so a client knows when NOT to adopt a later one.
-	TitleProvisional bool `json:"title_provisional,omitempty"`
 	// URL is the authenticated, range-capable MP3 route for the track.
 	URL string `json:"url"`
 }
@@ -41,8 +38,7 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 		out.Tracks = append(out.Tracks, queueTrackJSON{
 			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
 			DurationS: t.Seconds, Kind: t.Kind, Lyrics: t.Lyrics,
-			TitleProvisional: t.TitleProvisional,
-			URL:              "/queue/" + url.PathEscape(t.ID) + ".mp3",
+			URL: "/queue/" + url.PathEscape(t.ID) + ".mp3",
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

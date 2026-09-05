@@ -43,6 +43,13 @@ type Spec struct {
 	// language, kept for display: languages the engine has no tag for
 	// are still sung, and only this field remembers which one it was.
 	VocalLanguageName string
+	// Title and Subtitle are the song's display names, decided when its
+	// words were written and carried here so they reach the plan, the
+	// rendered file and every interface without anything having to name
+	// the song later. Empty for engine-invented words and instrumental
+	// pieces, which take a deterministic name from the prompt instead.
+	Title    string
+	Subtitle string
 	// NegativePrompt lists what the music must avoid; it drives the
 	// engine's planner-side negative conditioning.
 	NegativePrompt string
@@ -71,15 +78,11 @@ type Track struct {
 	Lyrics string
 	// Title and Subtitle are the short display names shown on lock
 	// screens and car displays (a 2-4 word name and a genre/mood line).
-	// The player fills them before the track enters the stream.
+	// They are set once, before the track enters the stream, from the
+	// name written with its words; nothing renames a track afterwards
+	// except a listener asking for it.
 	Title    string
 	Subtitle string
-	// TitleKey names the helper's title slot for this song, and
-	// TitleProvisional marks a fallback name a late helper answer may
-	// still replace: the helper can run minutes behind the music, so
-	// names are re-checked while the song is queued and playing.
-	TitleKey         string
-	TitleProvisional bool
 	// Seed reports the seed(s) used, when known.
 	Seed string
 	// GenTime is how long generation took.

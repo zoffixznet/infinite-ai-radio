@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"iar/internal/engine"
 	"iar/internal/session"
 )
 
@@ -37,27 +36,22 @@ func TestStockLyricsWritesAheadAndNamesEachSong(t *testing.T) {
 		t.Fatalf("StockLyrics wrote %d sheets, want 2", wrote)
 	}
 
-	// The songs were named from their own words, keyed by their words.
-	key := SongKey(f.reply)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if title, _, ok := b.TitleForKey(key); ok {
-			if title != "Steel In The Water" {
-				t.Fatalf("title = %q", title)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the stocked song was never named")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The name is part of the sheet by the time the sheet counts as
+	// written - not a request left in flight for someone to pick up
+	// later.
+	if spec := b.BuildSpec(context.Background(), s, 150); spec.Lyrics != f.reply ||
+		spec.Title != "Steel In The Water" || spec.Subtitle != "nu-metal, driving" {
+		t.Fatalf("BuildSpec: lyrics %q title %q subtitle %q",
+			firstLine(spec.Lyrics), spec.Title, spec.Subtitle)
 	}
+}
 
-	// BuildSpec consumes a stocked sheet instead of writing anything.
-	spec := b.BuildSpec(context.Background(), s, 150)
-	if spec.Lyrics != f.reply {
-		t.Fatalf("BuildSpec did not use the stocked sheet: %q", spec.Lyrics[:40])
+// firstLine keeps a failure message short.
+func firstLine(s string) string {
+	if i := len(s); i > 40 {
+		return s[:40]
 	}
+	return s
 }
 
 // A stocked sheet carries the language it was written in, and BuildSpec
@@ -99,24 +93,6 @@ func TestStaleLanguageSheetIsDropped(t *testing.T) {
 	spec := b.BuildSpec(context.Background(), s, 150)
 	if spec.Lyrics == "[Couplet]\nl'acier dans l'eau" {
 		t.Fatal("a switched-off language's sheet was consumed")
-	}
-}
-
-// SongKey is derived from the words alone: stable, and absent for
-// instrumentals.
-func TestSongKeyProperties(t *testing.T) {
-	a := SongKey("[Verse]\nwords")
-	if a == "" || a != SongKey("[Verse]\nwords") {
-		t.Fatalf("key not stable: %q", a)
-	}
-	if b := SongKey("[Verse]\nother words"); b == a {
-		t.Fatal("different words, same key")
-	}
-	if SongKey("") != "" {
-		t.Fatal("empty lyrics must have no key")
-	}
-	if SongKey(engine.InstrumentalLyrics) != "" {
-		t.Fatal("instrumentals must have no key")
 	}
 }
 

@@ -762,7 +762,7 @@
           if (!pf.have[rec.id]) {
             // epoch left undefined: the first queue listing decides
             // whether the record is still current and restamps it.
-            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "", provisional: rec.provisional };
+            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "" };
           }
         });
         pf.wantPlay = true;
@@ -844,27 +844,21 @@
       pf.rows.forEach(function (row) {
         if (pf.have[row.id] && !pf.have[row.id].dur) pf.have[row.id].dur = row.duration_s;
       });
-      // Songs are often downloaded before the server has settled on
-      // their name; when a fresh listing carries the song's real one,
-      // adopt it - in the record, in the store, and on the lock screen
-      // if that song is the one playing. Exactly once: a name this
-      // device already holds as final is never traded for a later one,
-      // and a listing's stand-in never displaces anything.
+      // A song is named where its words are written, so the name a
+      // listing carries never changes on its own. When it does change,
+      // somebody renamed that song deliberately - adopt it, in the
+      // record, in the store, and on the lock screen if that song is
+      // the one playing.
       pf.rows.forEach(function (row) {
         var rec = pf.have[row.id];
-        if (!rec || !row.title || row.title_provisional || rec.provisional === false) return;
-        if (rec.title === row.title && rec.subtitle === row.subtitle) {
-          rec.provisional = false;
-          return;
-        }
+        if (!rec || !row.title) return;
+        if (rec.title === row.title && rec.subtitle === row.subtitle) return;
         rec.title = row.title;
         rec.subtitle = row.subtitle;
-        rec.provisional = false;
         idbReq(idbStore("readonly").get(row.id)).then(function (stored) {
           if (!stored) return;
           stored.title = row.title;
           stored.subtitle = row.subtitle;
-          stored.provisional = false;
           return idbReq(idbStore("readwrite").put(stored));
         })["catch"](function () {});
         if (row.id === pf.playingId) {
@@ -971,8 +965,8 @@
       return r.blob();
     }).then(function (blob) {
       pf.ctrl = null;
-      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", provisional: !!row.title_provisional };
-      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", provisional: !!row.title_provisional, blob: blob, saved: Date.now() }))
+      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "" };
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", blob: blob, saved: Date.now() }))
         .then(function () { pf.storeFull = false; })
         ["catch"](function () {
           // Out of room on the device: the song plays from memory this
@@ -1323,13 +1317,9 @@
     var rec = pf.have[id];
     if (!rec) return;
     rec.title = title;
-    // Typed by a person, so it is final: a later listing must not
-    // trade it back for the helper's.
-    rec.provisional = false;
     idbReq(idbStore("readonly").get(id)).then(function (stored) {
       if (!stored) return;
       stored.title = title;
-      stored.provisional = false;
       return idbReq(idbStore("readwrite").put(stored));
     })["catch"](function () {});
   }

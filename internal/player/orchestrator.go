@@ -309,13 +309,9 @@ type Orchestrator struct {
 	// the graphics card; the retitle loop asks for more names at once
 	// while it is free.
 	engineBusy atomic.Bool
-	// retitleKick wakes the retitle loop out of turn (engine just
-	// hibernated: the card is free for the helper).
-	retitleKick chan struct{}
 	// bankRefs remembers where a live track's banked library copy lives
-	// (track ID -> key and library id), so a new name - the helper's,
-	// late, or a listener's - reaches the banked sidecar too. Pruned as
-	// tracks retire.
+	// (track ID -> key and library id), so a listener renaming a song
+	// reaches the banked sidecar too. Pruned as tracks retire.
 	bankRefs map[string]bankRef
 	// bufFed maps a disk-buffer file base to the in-memory track it
 	// became. Feeding deletes the song from disk, so a listener still
@@ -368,19 +364,18 @@ type Orchestrator struct {
 // engine (noise only, with clear messaging).
 func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store *session.Store, sess *session.Session, pl audio.Player, log *slog.Logger) *Orchestrator {
 	o := &Orchestrator{
-		cfg:         cfg,
-		eng:         eng,
-		builder:     builder,
-		store:       store,
-		log:         log,
-		player:      pl,
-		ring:        audio.NewRing(2 * audio.BytesPerSecond),
-		sess:        sess,
-		events:      make(chan Event, 16),
-		wake:        make(chan struct{}, 1),
-		bankRefs:    map[string]bankRef{},
-		bufFed:      map[string]string{},
-		retitleKick: make(chan struct{}, 1),
+		cfg:      cfg,
+		eng:      eng,
+		builder:  builder,
+		store:    store,
+		log:      log,
+		player:   pl,
+		ring:     audio.NewRing(2 * audio.BytesPerSecond),
+		sess:     sess,
+		events:   make(chan Event, 16),
+		wake:     make(chan struct{}, 1),
+		bankRefs: map[string]bankRef{},
+		bufFed:   map[string]string{},
 		// A session that has played before was heard before: resuming
 		// one and changing it straight away must still keep what it
 		// sounded like. A session made moments ago has nothing behind
@@ -474,8 +469,6 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	} else {
 		go func() { defer o.wg.Done(); o.genLoop(ctx) }()
 	}
-	o.wg.Add(1)
-	go func() { defer o.wg.Done(); o.retitleLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.pumpLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.phaseLoop(ctx) }()
@@ -649,10 +642,6 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		spec := o.builder.BuildSpec(ctx, sess, seconds)
 		// Only the hurry-up opener insists on its length.
 		spec.ExactSeconds = firstTrack
-		// Ask the helper for an evocative short name while the track
-		// generates; generation takes far longer, so the name is
-		// usually ready when the track lands.
-		o.builder.TitleAsync(specPromptForLog(spec))
 		o.mu.Lock()
 		o.genBusy = true
 		o.mu.Unlock()
@@ -738,7 +727,9 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			}
 		}
 		track.ID = newTrackID()
-		o.fillTitle(track, specPromptForLog(spec))
+		// The name came in on the spec, written with the words; only a
+		// song the engine worded itself needs the fallback.
+		o.nameTrack(track)
 		o.mu.Lock()
 		if epoch == o.epoch {
 			o.queue = append(o.queue, track)
@@ -782,23 +773,13 @@ func newTrackID() string {
 	return fmt.Sprintf("t-%d-%04d", time.Now().UnixMilli(), rand.IntN(10000))
 }
 
-// fillTitle gives a track its short display name before it enters the
-// stream (immutable afterwards): the helper model's name when it
-// arrived in time (keyed on the prompt that requested the track),
-// otherwise the deterministic fallback, which must look finished on its
-// own. requestPrompt may be empty for library tracks.
-func (o *Orchestrator) fillTitle(t *engine.Track, requestPrompt string) {
+// fillTitle gives a track a deterministic display name derived from its
+// own description. It is the last resort, for tracks that arrive with no
+// name of their own - a library file from an older run, or a song whose
+// words the engine invented - and what it writes is final.
+func (o *Orchestrator) fillTitle(t *engine.Track) {
 	if t.Title == "" {
 		t.Title, t.Subtitle = prompting.TrackTitle(t.Prompt)
-	}
-	if requestPrompt == "" {
-		return
-	}
-	if title, subtitle, ok := o.builder.TitleFor(requestPrompt); ok {
-		t.Title = title
-		if subtitle != "" {
-			t.Subtitle = subtitle
-		}
 	}
 }
 
@@ -1072,7 +1053,7 @@ func (o *Orchestrator) seedFromLibrary() {
 		return
 	}
 	track.ID = newTrackID()
-	o.fillTitle(track, "")
+	o.fillTitle(track)
 	o.mu.Lock()
 	o.queue = append(o.queue, track)
 	o.lastGood = track

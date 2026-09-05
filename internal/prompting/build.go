@@ -206,6 +206,7 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 		spec.Lyrics = st.Text
 		spec.VocalLanguage = st.Lang.Code
 		spec.VocalLanguageName = st.Lang.Name
+		spec.Title, spec.Subtitle = st.Title, st.Subtitle
 		if st.Caption != "" {
 			spec.Prompt = st.Caption
 		}
@@ -444,16 +445,20 @@ func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int,
 		}
 		b.noteSuccess()
 		st := StockedLyrics{Lang: lang, Text: out}
-		// The model is warm from the lyric write: describe the song
-		// and name it in the same breath.
+		// The model is warm from the lyric write: describe the song and
+		// name it in the same breath, both before the sheet counts as
+		// written. The name has to exist now - this is the only window
+		// where the helper has the graphics card.
 		capCtx, capCancel := context.WithTimeout(ctx, 45*time.Second)
 		st.Caption = b.captionSong(capCtx, r.Caption, out)
 		capCancel()
+		nameCtx, nameCancel := context.WithTimeout(ctx, 45*time.Second)
+		st.Title, st.Subtitle = b.titleSong(nameCtx, r.Caption, out)
+		nameCancel()
 		b.mu.Lock()
 		b.lyrReady[key] = append(b.lyrReady[key], st)
 		b.recordHookLocked(key, st)
 		b.mu.Unlock()
-		b.TitleSongAsync(SongKey(out), r.Caption, out)
 		wrote++
 		b.log.Info("lyrics stocked ahead", "event", "lyrics_stocked",
 			"language", lang.Name, "ready", have+1)
@@ -531,6 +536,13 @@ func (b *Builder) GeneratorName(s *session.Session) string {
 type StockedLyrics struct {
 	Lang Language
 	Text string
+	// Title and Subtitle are the song's display names, written from
+	// these very words in the same round. They travel with the sheet
+	// into the spec, the plan and the rendered file, so a song can
+	// never reach a listener without a name of its own - and never has
+	// to be renamed under one who is already hearing it.
+	Title    string
+	Subtitle string
 	// Caption is a rich one-line description of this specific song,
 	// written by the helper from the style and the song's own words.
 	// The music generator is conditioned on the caption text, so a
@@ -758,11 +770,14 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Se
 		// One critical section clears pending AND stores the result, so
 		// no buildLyrics call can slip between them and start a
 		// duplicate write for the same context.
-		var caption string
+		var caption, title, subtitle string
 		if err == nil && out != "" {
 			capCtx, capCancel := context.WithTimeout(runCtx, 45*time.Second)
 			caption = b.captionSong(capCtx, r.Caption, out)
 			capCancel()
+			nameCtx, nameCancel := context.WithTimeout(runCtx, 45*time.Second)
+			title, subtitle = b.titleSong(nameCtx, r.Caption, out)
+			nameCancel()
 		}
 		b.mu.Lock()
 		delete(b.pending, key)
@@ -775,14 +790,11 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Se
 				b.lyrLastUses = map[string]int{}
 				b.lyrHooks = map[string][]string{}
 			}
-			st := StockedLyrics{Lang: lang, Text: out, Caption: caption}
+			st := StockedLyrics{Lang: lang, Text: out, Caption: caption, Title: title, Subtitle: subtitle}
 			b.lyrReady[key] = append(b.lyrReady[key], st)
 			b.recordHookLocked(key, st)
 		}
 		b.mu.Unlock()
-		if err == nil && out != "" {
-			b.TitleSongAsync(SongKey(out), r.Caption, out)
-		}
 		if err == nil && out == "" {
 			err = fmt.Errorf("%s wrote empty lyrics", gen.Name())
 		}

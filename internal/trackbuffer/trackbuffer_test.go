@@ -61,15 +61,15 @@ func TestTrackRoundTrip(t *testing.T) {
 		Seed:    "42",
 		Spec:    engine.Spec{VocalLanguage: "ru"},
 	}
-	if err := s.PutTrack(context.Background(), 1, 7, "song:1-7", track); err != nil {
+	if err := s.PutTrack(context.Background(), 1, 7, track); err != nil {
 		t.Fatal(err)
 	}
 	count, secs := s.TrackStats(1)
 	if count != 1 || secs < 1.9 || secs > 2.1 {
 		t.Fatalf("stats = %d, %v", count, secs)
 	}
-	got, titleKey, _, ok := s.NextTrack(context.Background(), 1)
-	if !ok || titleKey != "song:1-7" {
+	got, base, ok := s.NextTrack(context.Background(), 1)
+	if !ok || base == "" {
 		t.Fatal("NextTrack found nothing")
 	}
 	if got.Prompt != "test tone" || got.Seed != "42" || got.Spec.VocalLanguage != "ru" {
@@ -79,7 +79,7 @@ func TestTrackRoundTrip(t *testing.T) {
 	if d := math.Abs(float64(len(got.Samples)-len(samples))) / float64(audio.SampleRate*audio.Channels); d > 0.2 {
 		t.Fatalf("length drifted %vs", d)
 	}
-	if _, _, _, ok := s.NextTrack(context.Background(), 1); ok {
+	if _, _, ok := s.NextTrack(context.Background(), 1); ok {
 		t.Fatal("track not consumed")
 	}
 }
@@ -100,7 +100,7 @@ func TestRenderVersionDropsSongsButKeepsPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	track := &engine.Track{Samples: make([]int16, audio.SampleRate*audio.Channels)}
-	if err := s.PutTrack(context.Background(), 1, 2, "k", track); err != nil {
+	if err := s.PutTrack(context.Background(), 1, 2, track); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := s.TrackStats(1); n != 1 {
@@ -201,16 +201,16 @@ func TestDedupeSheetsSweepsTheMonoculture(t *testing.T) {
 	same := "[Verse]\nsteel in the water"
 	for seq := 1; seq <= 5; seq++ {
 		track := &engine.Track{Lyrics: same, Samples: make([]int16, 9600)}
-		if err := s.PutTrack(context.Background(), 0, seq, "k", track); err != nil {
+		if err := s.PutTrack(context.Background(), 0, seq, track); err != nil {
 			t.Fatal(err)
 		}
 	}
 	inst := &engine.Track{Lyrics: engine.InstrumentalLyrics, Samples: make([]int16, 9600)}
-	if err := s.PutTrack(context.Background(), 0, 6, "", inst); err != nil {
+	if err := s.PutTrack(context.Background(), 0, 6, inst); err != nil {
 		t.Fatal(err)
 	}
 	other := &engine.Track{Lyrics: "[Verse]\ndifferent words", Samples: make([]int16, 9600)}
-	if err := s.PutTrack(context.Background(), 0, 7, "k2", other); err != nil {
+	if err := s.PutTrack(context.Background(), 0, 7, other); err != nil {
 		t.Fatal(err)
 	}
 	for seq := 8; seq <= 10; seq++ {

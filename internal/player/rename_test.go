@@ -17,15 +17,27 @@ import (
 	"iar/internal/trackbuffer"
 )
 
-// The helper's name for a song is a guess, and a listener who hears the
-// song knows better. Renaming from the live page has to stick: the
-// playing copy, everywhere the song is remembered, and - the part that
-// is easy to miss - the late naming pass, which would otherwise come
-// along twenty seconds later and put the guess back.
+// namedTrack is a song as it now reaches the stream: with the name that
+// was written from its own words, which nothing but a listener changes.
+func namedTrack(tag string) *engine.Track {
+	lyrics := "[Verse]\nsteel in the water " + tag + "\n\n[Chorus]\nhold the line"
+	return &engine.Track{
+		ID:       "t-" + tag,
+		Prompt:   "nu-metal, alternative metal, aggressive, heavy groove",
+		Lyrics:   lyrics,
+		Title:    "Steel In The Water",
+		Subtitle: "alternative metal, aggressive",
+	}
+}
+
+// The name a song was given is the helper's reading of its words, and a
+// listener who hears the song may disagree. Renaming from the live page
+// has to stick, in the playing copy and everywhere the song is
+// remembered.
 func TestRenamingThePlayingSongSticks(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	o := New(testConfig(), enginetest.NewMock(), b, session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
-	playing := provisionalTrack("p")
+	playing := namedTrack("p")
 	o.mu.Lock()
 	o.cur = newTrackSource(playing, "music")
 	o.curTrack = playing
@@ -38,21 +50,12 @@ func TestRenamingThePlayingSongSticks(t *testing.T) {
 		t.Fatalf("Status shows %q; every interface polls this", st.TrackTitle)
 	}
 
-	// The helper answers afterwards, as it does minutes late on a busy
-	// machine. The listener's name wins.
-	b.PrimeTitle(playing.TitleKey, "Steel In The Water", "nu-metal, driving")
-	o.retitlePass()
-	if playing.Title != "Harbour Lights" {
-		t.Fatalf("the late naming pass overwrote a typed name: %q", playing.Title)
-	}
-
-	// And the listing the phones read agrees, without the stand-in flag
-	// that lets a client swap a name mid-song.
+	// And the listing the phones read agrees.
 	o.mu.Lock()
 	o.queue = append(o.queue, playing)
 	o.mu.Unlock()
 	_, tracks := o.QueueTracks()
-	if len(tracks) == 0 || tracks[0].Title != "Harbour Lights" || tracks[0].TitleProvisional {
+	if len(tracks) == 0 || tracks[0].Title != "Harbour Lights" {
 		t.Fatalf("queue listing: %+v", tracks)
 	}
 }
@@ -68,7 +71,7 @@ func TestRenamingASongStillOnDisk(t *testing.T) {
 
 	lyrics := "[Verse]\nsteel in the water"
 	track := &engine.Track{Prompt: "nu-metal, aggressive", Lyrics: lyrics, Samples: make([]int16, 9600)}
-	if err := o.Buffer.PutTrack(context.Background(), 0, 3, prompting.SongKey(lyrics), track); err != nil {
+	if err := o.Buffer.PutTrack(context.Background(), 0, 3, track); err != nil {
 		t.Fatal(err)
 	}
 	base := o.Buffer.List(0)[0].Base
@@ -80,20 +83,11 @@ func TestRenamingASongStillOnDisk(t *testing.T) {
 		t.Fatalf("sidecar title = %q", got.Title)
 	}
 	_, tracks := o.QueueTracks()
-	if len(tracks) != 1 || tracks[0].Title != "Harbour Lights" || tracks[0].TitleProvisional {
+	if len(tracks) != 1 || tracks[0].Title != "Harbour Lights" {
 		t.Fatalf("queue listing: %+v", tracks)
 	}
-	// A helper answer that lands afterwards does not get to overrule
-	// the listener - not in the pass, and not straight into the file.
-	b.PrimeTitle(prompting.SongKey(lyrics), "Steel In The Water", "nu-metal, driving")
-	o.retitlePass()
-	o.Buffer.SetTitleIfUnnamed(0, base, "Steel In The Water", "nu-metal, driving")
-	if got := o.Buffer.List(0)[0]; got.Title != "Harbour Lights" {
-		t.Fatalf("a late answer overwrote a typed name: %q", got.Title)
-	}
-
 	// The name rides out of the buffer with the song.
-	fed, _, _, ok := o.Buffer.NextTrack(context.Background(), 0)
+	fed, _, ok := o.Buffer.NextTrack(context.Background(), 0)
 	if !ok || fed.Title != "Harbour Lights" {
 		t.Fatalf("fed track = %+v ok=%v", fed, ok)
 	}
@@ -110,7 +104,7 @@ func TestRenamingFollowsASongOutOfTheBuffer(t *testing.T) {
 	o := New(cfg, enginetest.NewMock(), b, session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 0, testLogger())
 
-	playing := provisionalTrack("p")
+	playing := namedTrack("p")
 	o.rememberFed("0000000003", playing.ID)
 	o.mu.Lock()
 	o.cur = newTrackSource(playing, "music")
@@ -120,7 +114,7 @@ func TestRenamingFollowsASongOutOfTheBuffer(t *testing.T) {
 	if ack := o.Retitle(bufTrackPrefix+"0000000003", "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
 		t.Fatalf("rename ack = %q", ack)
 	}
-	if playing.Title != "Harbour Lights" || playing.TitleProvisional {
+	if playing.Title != "Harbour Lights" {
 		t.Fatalf("the in-memory song was not renamed: %+v", playing)
 	}
 	// A file the machine never fed, and never had, is refused gently.
@@ -138,7 +132,7 @@ func TestRenamingReachesTheBankedCopy(t *testing.T) {
 	o.Library = lib
 
 	key := "test-vibe"
-	banked := provisionalTrack("b")
+	banked := namedTrack("b")
 	banked.Samples = make([]int16, 9600)
 	libID, err := lib.Put(key, banked)
 	if err != nil {
@@ -158,7 +152,7 @@ func TestRenamingReachesTheBankedCopy(t *testing.T) {
 	}
 
 	// And through the in-memory path, for a song banked while it played.
-	live := provisionalTrack("l")
+	live := namedTrack("l")
 	live.Samples = make([]int16, 9600)
 	o.mu.Lock()
 	o.cur = newTrackSource(live, "music")
@@ -187,7 +181,7 @@ func TestRenamingMovesTheSavedCopy(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	o := New(testConfig(), enginetest.NewMock(), b, session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.SnippetsDir = t.TempDir()
-	playing := provisionalTrack("p")
+	playing := namedTrack("p")
 	playing.Samples = make([]int16, 2*48000*2) // two seconds, stereo
 	o.mu.Lock()
 	o.cur = newTrackSource(playing, "music")

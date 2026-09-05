@@ -2,8 +2,6 @@ package prompting
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"unicode"
@@ -86,12 +84,6 @@ func titleCase(s string) string {
 	return strings.Join(words, " ")
 }
 
-// titleSystem instructs the helper model to name a track.
-const titleSystem = `You name radio tracks. Given a music-generation
-prompt, reply with JSON {"title", "subtitle"}. title: an evocative 2-4
-word song name, no quotes, not a list of genres. subtitle: at most 6
-words naming the genre and mood. Never mention prompts or AI.`
-
 // titleSongSystem names one specific song from its own words, which is
 // what keeps two songs from the same station from sharing a name.
 const titleSongSystem = `You name songs. Given a song's music style and
@@ -111,49 +103,6 @@ var titleSchema = map[string]any{
 	"required": []any{"title", "subtitle"},
 }
 
-// TitleAsync asks the helper model for a short track name in the
-// background, cached per prompt. Never blocks; does nothing when the
-// helper is unusable.
-func (b *Builder) TitleAsync(prompt string) {
-	if prompt == "" || !b.helperUsable() {
-		return
-	}
-	key := "n|" + prompt
-	if _, ok := b.lookup(key); ok {
-		return
-	}
-	b.fillAsync(key, func(ctx context.Context) (string, error) {
-		// Keep-alive so this call and the lyric write clustered around
-		// the same track share one model load.
-		return b.ollama.ChatWith(ctx, titleSystem, "Music prompt: "+prompt, ChatOpts{
-			Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
-		})
-	})
-}
-
-// TitleSongAsync names one specific song in the background, keyed by
-// the caller's per-song key and fed the song's actual words - so every
-// song gets its own name instead of sharing its steering context's.
-// Never blocks; does nothing when the helper is unusable.
-// It reports whether a new helper call actually started, so callers
-// that ration requests do not spend a slot on a no-op (cached answer,
-// call already in flight, helper unusable).
-func (b *Builder) TitleSongAsync(key, caption, lyrics string) bool {
-	if key == "" || lyrics == "" || !b.helperUsable() {
-		return false
-	}
-	ck := "n|" + key
-	if _, ok := b.lookup(ck); ok {
-		return false
-	}
-	user := "MUSIC STYLE: " + caption + "\nLYRICS:\n" + lyricExcerpt(lyrics, 14)
-	return b.fillAsync(ck, func(ctx context.Context) (string, error) {
-		return b.ollama.ChatWith(ctx, titleSongSystem, user, ChatOpts{
-			Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
-		})
-	})
-}
-
 // lyricExcerpt returns up to n sung lines (tags skipped) for a prompt.
 func lyricExcerpt(lyrics string, n int) string {
 	var out []string
@@ -170,44 +119,34 @@ func lyricExcerpt(lyrics string, n int) string {
 	return strings.Join(out, "\n")
 }
 
-// SongKey names the helper's title slot for one song by its own words:
-// the words exist before the song is planned, rendered, or even
-// sequenced, so the name can be asked for the moment the lyrics are
-// written and found again by anyone who holds the lyrics - the plan,
-// the rendered file, the feeder, or a listing, across restarts and
-// replans alike. Instrumentals have no words and no key.
-func SongKey(lyrics string) string {
-	if lyrics == "" || lyrics == engine.InstrumentalLyrics {
-		return ""
+// titleSong names one song from its own words, blocking until the
+// helper answers. It runs where the lyrics are written - on the free
+// graphics card, moments after the words exist - because a name that
+// arrives later is a name that has to be applied to a song someone is
+// already listening to. An empty title means the helper had nothing;
+// callers fall back to the deterministic name and keep it.
+func (b *Builder) titleSong(ctx context.Context, caption, lyrics string) (title, subtitle string) {
+	if lyrics == "" || lyrics == engine.InstrumentalLyrics || !b.helperUsable() {
+		return "", ""
 	}
-	sum := sha256.Sum256([]byte(lyrics))
-	return "song:" + hex.EncodeToString(sum[:8])
-}
-
-// TitleForKey returns the song-keyed name when ready (see
-// TitleSongAsync); ok is false otherwise.
-func (b *Builder) TitleForKey(key string) (title, subtitle string, ok bool) {
-	return b.TitleFor(key)
-}
-
-// TitleFor returns the helper's short name for a prompt when it is
-// ready and valid; ok is false otherwise (callers keep the fallback).
-func (b *Builder) TitleFor(prompt string) (title, subtitle string, ok bool) {
-	raw, ok := b.lookup("n|" + prompt)
-	if !ok {
-		return "", "", false
+	user := "MUSIC STYLE: " + caption + "\nLYRICS:\n" + lyricExcerpt(lyrics, 14)
+	raw, err := b.ollama.ChatWith(ctx, titleSongSystem, user, ChatOpts{
+		Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
+	})
+	if err != nil {
+		return "", ""
 	}
 	var v struct {
 		Title    string `json:"title"`
 		Subtitle string `json:"subtitle"`
 	}
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return "", "", false
+	if json.Unmarshal([]byte(raw), &v) != nil {
+		return "", ""
 	}
 	title = sanitizeLine(v.Title, 48)
 	subtitle = sanitizeLine(v.Subtitle, 64)
 	if title == "" {
-		return "", "", false
+		return "", ""
 	}
-	return title, subtitle, true
+	return title, subtitle
 }

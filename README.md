@@ -243,8 +243,16 @@ built in:
 `lyrics` shows the active writer, `lyrics smoothbrain` switches, and the
 choice is saved with the session. Lyric writing runs through Ollama;
 without a daemon the engine's own planner invents words from the theme
-instead. Songs are named from their own lyrics, so lock screens and
-saved-song lists show a real title instead of a prompt fragment.
+instead.
+
+Songs are named from their own words, in the same breath as the words
+are written - before the song is planned, rendered or heard. The name
+travels with the song into the plan, onto the disk beside the audio,
+and out to every screen, so a song is never nameless and never renames
+itself while you are listening to it. A song whose words the engine
+invented (the opener after a change, when nothing is written ahead yet)
+takes a name from its own description instead, and keeps it. The only
+thing that ever changes a name afterwards is you, with the pencil.
 
 ### Sung languages
 
@@ -486,9 +494,8 @@ with can be fixed while the song is still playing instead of from the
 saved list, which means leaving the live page and stopping the radio.
 The new name is the last word: it replaces the name everywhere the song
 is kept - the queue other devices read, the copy banked for instant
-starts, the song still waiting on disk - and the automatic naming will
-not overwrite it later. If you had already saved that song, its file is
-renamed on disk too, tag and all.
+starts, the song still waiting on disk. If you had already saved that
+song, its file is renamed on disk too, tag and all.
 
 The page publishes media-session metadata, so lock screens, Bluetooth
 displays and car interfaces show the song's title and genre line with
