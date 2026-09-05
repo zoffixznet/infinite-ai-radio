@@ -243,3 +243,31 @@ func TestDedupeSheetsSweepsTheMonoculture(t *testing.T) {
 		t.Fatalf("monoculture survived: %d tracks of one sheet", sameLeft)
 	}
 }
+
+// The song's name is written before it is planned, so it has to survive
+// the one hop it makes on disk between planning and rendering: the plan
+// file. Losing it there would put the name back where it used to be -
+// resolved after the song exists, or not at all.
+func TestPlansCarryTheSongsName(t *testing.T) {
+	s := New(t.TempDir(), 0, nil)
+	plan := &engine.Plan{
+		Caption: "nu-metal, aggressive",
+		Lyrics:  "[Verse]\napoy sa dibdib",
+		Seconds: 120,
+		Spec: engine.Spec{
+			Prompt:   "nu-metal, aggressive",
+			Title:    "Apoy Sa Dibdib",
+			Subtitle: "nu-metal, driving",
+		},
+	}
+	if err := s.PutPlan(1, 3, plan); err != nil {
+		t.Fatal(err)
+	}
+	got, seq, ok := s.NextPlan(1)
+	if !ok || seq != 3 {
+		t.Fatalf("NextPlan = %+v seq=%d ok=%v", got, seq, ok)
+	}
+	if got.Spec.Title != "Apoy Sa Dibdib" || got.Spec.Subtitle != "nu-metal, driving" {
+		t.Fatalf("the plan lost the song's name: %+v", got.Spec)
+	}
+}

@@ -17,20 +17,21 @@ import (
 // Builder turns a session's steering context into generation specs.
 //
 // The deterministic path is always used immediately and is complete on
-// its own; an optional Ollama helper writes lyrics and proposes
-// structured spec refinements strictly in the background, and its
-// results are used only when they are already available by the time a
-// spec is needed. No generation ever waits for the helper.
+// its own; an optional Ollama helper writes lyrics, describes and names
+// each song, and proposes structured spec refinements. Building a spec
+// never waits for it: refinements land in the background and are used
+// only when they are already there, and the words - with the
+// description and the name written from them in the same round - come
+// off a shelf stocked ahead, in the window where the helper has the
+// graphics card to itself.
 type Builder struct {
 	ollama *Ollama
 	log    *slog.Logger
 
-	mu    sync.Mutex
-	cache map[string]string
-	// cacheOrder is insertion order, so the cache can drop its oldest
-	// entry instead of emptying itself when it fills.
-	cacheOrder []string
-	pending    map[string]bool
+	mu sync.Mutex
+	// pending marks the lyric-context keys with a background write in
+	// flight, so two callers never start the same one twice.
+	pending map[string]bool
 	// defaultGen names the lyric generator used when the session does
 	// not pick one (set from configuration; empty falls back to the
 	// built-in default).
@@ -45,12 +46,13 @@ type Builder struct {
 	// when no fresh write finished in time: stale beats
 	// machine-invented). lyrHooks remembers recent hook lines per
 	// context so follow-up writes avoid repeating a chorus.
-	// instReady holds per-song descriptions for instrumental tracks,
+	// instReady holds per-song descriptions, and the names written from
+	// them, for instrumental tracks,
 	// keyed like the lyric shelf. An instrumental has no words to
 	// describe it, so without these every instrumental of a session
 	// reaches the engine under the identical terse tag list while
 	// every vocal song arrives with a description of its own.
-	instReady map[string][]string
+	instReady map[string][]StockedCaption
 	lyrReady  map[string][]StockedLyrics
 	lyrLast   map[string]StockedLyrics
 	// phased records whether generation is phased: only then does a
@@ -114,9 +116,8 @@ func NewBuilder(ollama *Ollama, log *slog.Logger) *Builder {
 	return &Builder{
 		ollama:      ollama,
 		log:         log,
-		cache:       map[string]string{},
 		pending:     map[string]bool{},
-		instReady:   map[string][]string{},
+		instReady:   map[string][]StockedCaption{},
 		lyrReady:    map[string][]StockedLyrics{},
 		lyrLast:     map[string]StockedLyrics{},
 		lyrLastUses: map[string]int{},
@@ -191,8 +192,9 @@ func (b *Builder) BuildSpec(ctx context.Context, s *session.Session, seconds int
 	}
 	if !s.Vocal {
 		spec.Lyrics = engine.InstrumentalLyrics
-		if d := b.takeInstrumentalCaption(s, r); d != "" {
-			spec.Prompt = d
+		if d := b.takeInstrumentalCaption(s, r); d.Text != "" {
+			spec.Prompt = d.Text
+			spec.Title, spec.Subtitle = d.Title, d.Subtitle
 		}
 		return spec
 	}
@@ -310,8 +312,14 @@ func (b *Builder) StockInstrumentalCaptions(ctx context.Context, s *session.Sess
 			b.noteFailure(fmt.Errorf("instrumental description: %w", err))
 			return wrote
 		}
+		// Named from that description in the same breath, on the same
+		// free card, for the same reason a song with words is: nothing
+		// gets to name it afterwards.
+		nameCtx, nameCancel := context.WithTimeout(ctx, songNameBudget)
+		title, subtitle := b.titleInstrumental(nameCtx, line)
+		nameCancel()
 		b.mu.Lock()
-		b.instReady[key] = append(b.instReady[key], line)
+		b.instReady[key] = append(b.instReady[key], StockedCaption{Text: line, Title: title, Subtitle: subtitle})
 		b.mu.Unlock()
 		wrote++
 		b.log.Info("instrumental description stocked ahead",
@@ -335,21 +343,35 @@ func (b *Builder) AwaitingInstrumentalCaptions(s *session.Session) bool {
 // takeInstrumentalCaption pops one stocked description, or returns
 // empty when the shelf is bare - in which case the terse steering
 // caption stands, exactly as it always did.
-func (b *Builder) takeInstrumentalCaption(s *session.Session, r Rendered) string {
+func (b *Builder) takeInstrumentalCaption(s *session.Session, r Rendered) StockedCaption {
 	key := b.instrumentalKey(r)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	shelf := b.instReady[key]
 	if len(shelf) == 0 {
-		return ""
+		return StockedCaption{}
 	}
 	out := shelf[0]
 	b.instReady[key] = shelf[1:]
 	return out
 }
 
+// StockedCaption is one instrumental piece's description and the name
+// written from it, both before the piece exists.
+type StockedCaption struct {
+	Text     string
+	Title    string
+	Subtitle string
+}
+
 // captionTimeout bounds one description call.
 const captionTimeout = 90 * time.Second
+
+// songNameBudget bounds one naming call in the window where the helper
+// has the graphics card. It sits between the description's budget and
+// the lyric writer's: the answer is two short strings, but it is the
+// song's only chance at a name, and there is a retry inside it.
+const songNameBudget = 90 * time.Second
 
 // captionSong asks the helper to describe one song, synchronously; the
 // caller owns the timing. Empty on any failure - the terse steering
@@ -449,10 +471,10 @@ func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int,
 		// name it in the same breath, both before the sheet counts as
 		// written. The name has to exist now - this is the only window
 		// where the helper has the graphics card.
-		capCtx, capCancel := context.WithTimeout(ctx, 45*time.Second)
+		capCtx, capCancel := context.WithTimeout(ctx, captionTimeout)
 		st.Caption = b.captionSong(capCtx, r.Caption, out)
 		capCancel()
-		nameCtx, nameCancel := context.WithTimeout(ctx, 45*time.Second)
+		nameCtx, nameCancel := context.WithTimeout(ctx, songNameBudget)
 		st.Title, st.Subtitle = b.titleSong(nameCtx, r.Caption, out)
 		nameCancel()
 		b.mu.Lock()
@@ -753,10 +775,13 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Se
 		// duplicate write for the same context.
 		var caption, title, subtitle string
 		if err == nil && out != "" {
-			capCtx, capCancel := context.WithTimeout(runCtx, 45*time.Second)
+			capCtx, capCancel := context.WithTimeout(runCtx, captionTimeout)
 			caption = b.captionSong(capCtx, r.Caption, out)
 			capCancel()
-			nameCtx, nameCancel := context.WithTimeout(runCtx, 45*time.Second)
+			// The fused path writes while the engine holds the card, so
+			// this call runs on the processor: slow, but the name has
+			// to come from here or from nowhere.
+			nameCtx, nameCancel := context.WithTimeout(runCtx, chatTimeout)
 			title, subtitle = b.titleSong(nameCtx, r.Caption, out)
 			nameCancel()
 		}
@@ -765,7 +790,7 @@ func (b *Builder) fillLyricsAsync(key string, gen LyricsGenerator, s *session.Se
 		if err == nil && out != "" {
 			if len(b.lyrReady) > 64 {
 				// The steering context changed many times; drop stale
-				// queues wholesale, like the generic cache does.
+				// queues wholesale.
 				b.lyrReady = map[string][]StockedLyrics{}
 				b.lyrLast = map[string]StockedLyrics{}
 				b.lyrLastUses = map[string]int{}
@@ -821,38 +846,6 @@ func hookLine(lyrics string) string {
 		}
 	}
 	return first
-}
-
-// fillAsync runs one helper call in the background and caches its result.
-// At most one call per key is in flight.
-// fillAsync starts a background helper call for key, reporting whether
-// it actually launched one (false when the same key is already in
-// flight).
-func (b *Builder) fillAsync(key string, fn func(ctx context.Context) (string, error)) bool {
-	b.mu.Lock()
-	if b.pending[key] {
-		b.mu.Unlock()
-		return false
-	}
-	b.pending[key] = true
-	runCtx := b.runCtx
-	b.mu.Unlock()
-	go func() {
-		ctx, cancel := context.WithTimeout(runCtx, chatTimeout)
-		defer cancel()
-		out, err := fn(ctx)
-		b.mu.Lock()
-		delete(b.pending, key)
-		b.mu.Unlock()
-		if err != nil {
-			b.noteFailure(err)
-			return
-		}
-		b.noteSuccess()
-		b.store(key, out)
-		b.log.Info("helper result ready", "event", "helper_ready", "key_kind", key[:1])
-	}()
-	return true
 }
 
 // AwaitHelper blocks until the background usability probe has
@@ -915,37 +908,6 @@ func (b *Builder) noteSuccess() {
 	b.mu.Unlock()
 }
 
-func (b *Builder) lookup(key string) (string, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	v, ok := b.cache[key]
-	return v, ok
-}
-
-// cacheCapacity bounds the helper's answer cache. It has to comfortably
-// exceed how many songs can sit planned but not yet rendered, because a
-// song's name is asked for when it is planned and read back when it is
-// rendered - with the default six-hour planning horizon that is well
-// over a hundred songs apart.
-const cacheCapacity = 512
-
-// store remembers a helper answer, evicting the oldest entry when full.
-// It must evict one at a time rather than emptying itself: a wholesale
-// wipe throws away the names of every song still waiting to be
-// rendered, which is most of them.
-func (b *Builder) store(key, v string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, seen := b.cache[key]; !seen {
-		b.cacheOrder = append(b.cacheOrder, key)
-	}
-	b.cache[key] = v
-	for len(b.cacheOrder) > cacheCapacity {
-		delete(b.cache, b.cacheOrder[0])
-		b.cacheOrder = b.cacheOrder[1:]
-	}
-}
-
 // SetEngineBusy tells the helper whether the music engine currently
 // holds the graphics card. Going idle also ends any rest the helper
 // was serving: its timeouts were the crowded card's fault, and the
@@ -962,17 +924,6 @@ func (b *Builder) SetEngineBusy(busy bool) {
 		}
 		b.mu.Unlock()
 	}
-}
-
-// PrimeTitle records a name for a song key as if the helper had
-// answered, so a name from another source enters the same cache the
-// late-title pass reads.
-func (b *Builder) PrimeTitle(key, title, subtitle string) {
-	raw, err := json.Marshal(map[string]string{"title": title, "subtitle": subtitle})
-	if err != nil {
-		return
-	}
-	b.store("n|"+key, string(raw))
 }
 
 // SpecUpdate is a helper-proposed structured update to the steering

@@ -103,9 +103,9 @@ func (l *Library) Put(key string, t *engine.Track) (string, error) {
 	return id, nil
 }
 
-// SetTitle writes a late-resolved name into a banked track's metadata,
-// so instant starts and filler in later runs show the real name rather
-// than the stand-in the track was banked under. An entry evicted since
+// SetTitle writes a new name into a banked track's metadata, so instant
+// starts and filler in later runs show the name a listener gave the song
+// rather than the one it was banked under. An entry evicted since
 // banking is a quiet no-op.
 func (l *Library) SetTitle(key, id, title, subtitle string) bool {
 	if l == nil {

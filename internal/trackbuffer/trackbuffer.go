@@ -496,7 +496,8 @@ func (s *Store) DiskEpoch() (int, bool) {
 	return best, found
 }
 
-// SetTitle writes a late-resolved name into a rendered song's metadata,
+// SetTitle writes a new name into a rendered song's metadata (a
+// listener renaming it),
 // so listings and later runs show it, reporting whether it wrote. A
 // song fed or dropped since it was listed is not an error: the write is
 // skipped when the audio is already gone, and a re-check afterwards

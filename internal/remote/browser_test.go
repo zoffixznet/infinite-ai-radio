@@ -1618,8 +1618,11 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 	sinkName, _ := nullSink(t)
 	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":1,"library_max_mb":0`)
 	// Long enough that the single-slot queue is reliably occupied
-	// (generation takes ~2-3s per track).
-	fe.setTrackSeconds(20)
+	// (generation takes ~2-3s per track), and long enough that a device
+	// stays on one song across the checks below - two of them are about
+	// which song a control acts on, which is not a question if the song
+	// changes underneath.
+	fe.setTrackSeconds(60)
 	driver := startGeckodriver(t, sinkName)
 	w := newWebDriver(t, driver)
 	loginAdmin(t, w, sb.base)

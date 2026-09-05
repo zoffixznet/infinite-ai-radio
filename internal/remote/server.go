@@ -843,6 +843,13 @@ func (s *Server) handleRetitle(w http.ResponseWriter, r *http.Request, u account
 	}
 	ack := s.ctl.Retitle(textField(r, "id"), title)
 	s.ctl.Announce("remote rename by " + u.Email + ": " + ack)
+	// A rename that found nothing must not read as success: the device
+	// would put the new name on its own copy and then have it corrected
+	// back by the next listing.
+	if !strings.HasPrefix(ack, "renamed to ") {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": ack})
+		return
+	}
 	s.reply(w, ack)
 }
 

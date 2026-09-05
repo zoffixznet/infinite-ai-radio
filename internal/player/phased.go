@@ -598,18 +598,28 @@ func nextCycleStep(s cycleState) cycleStep {
 // derived from its description. Either way it is decided here, once,
 // before anyone can hear the song.
 func (o *Orchestrator) nameTrack(t *engine.Track) {
+	if t.Title != "" && t.Subtitle != "" {
+		return
+	}
+	// The engine's own description of what it made, which is what the
+	// sidecar and every listing derive from too - one song, one name,
+	// wherever it is read.
+	prompt := t.Prompt
+	if prompt == "" {
+		prompt = specPromptForLog(t.Spec)
+	}
+	title, subtitle := prompting.TrackTitle(prompt)
 	if t.Title == "" {
 		t.Title, t.Subtitle = t.Spec.Title, t.Spec.Subtitle
 	}
 	if t.Title == "" {
-		// The engine's own description of what it made, which is what
-		// the sidecar and every listing derive from too - one song,
-		// one name, wherever it is read.
-		prompt := t.Prompt
-		if prompt == "" {
-			prompt = specPromptForLog(t.Spec)
-		}
-		t.Title, t.Subtitle = prompting.TrackTitle(prompt)
+		t.Title, t.Subtitle = title, subtitle
+	}
+	if t.Subtitle == "" {
+		// A helper that answered with a name but no genre line would
+		// otherwise leave lock screens with a blank second line for
+		// good.
+		t.Subtitle = subtitle
 	}
 }
 
@@ -670,10 +680,9 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		// Bank on consumption: a track goes into the instant-start
 		// library when it is actually about to be heard, so a dropped
 		// buffer never churns the library. The banked copy is a
-		// snapshot taken under the lock - the retitle loop may rename
-		// the live track at any moment - and the banked location is
-		// remembered so a rename, late or asked for, reaches the
-		// sidecar too.
+		// snapshot taken under the lock - a listener may rename the
+		// live track at any moment - and the banked location is
+		// remembered so that rename reaches the sidecar too.
 		key := library.Key(sess)
 		o.mu.Lock()
 		banked := *track // shallow: Samples are shared and immutable

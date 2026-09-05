@@ -347,7 +347,9 @@ func (o *Orchestrator) setCurrent(s source) {
 	if isTrack {
 		o.heard = true
 	}
+	var retiring *engine.Track
 	if isTrack && (o.curTrack == nil || o.curTrack != ts.track) {
+		retiring = o.prevTrack
 		o.prevTrack = o.curTrack
 		o.curTrack = ts.track
 		o.playCount++
@@ -359,6 +361,9 @@ func (o *Orchestrator) setCurrent(s source) {
 	}
 	started := o.started
 	o.mu.Unlock()
+	// The song that just fell out of "previous" is finished here, but a
+	// device playing its own copy may still be on it.
+	o.retireTrack(retiring)
 	o.log.Info("now playing", "event", "now_playing", "source", s.label())
 	if firstMusic {
 		seconds := time.Since(started).Seconds()

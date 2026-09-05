@@ -237,3 +237,42 @@ func TestRenamingMovesTheSavedCopy(t *testing.T) {
 		t.Fatalf("repeat save after rename ack = %q", ack)
 	}
 }
+
+// A phone plays its own downloaded copies, at its own pace, and can be
+// a long way behind the speakers. Renaming what it is hearing must
+// still work when this machine finished with that song a while ago: the
+// audio is gone from here, but the banked copy and any saved file are
+// not, and the phone renames its own copy itself.
+func TestRenamingASongTheMachineHasFinishedWith(t *testing.T) {
+	b := prompting.NewBuilder(nil, testLogger())
+	o := New(testConfig(), enginetest.NewMock(), b, session.NewStore(t.TempDir()),
+		session.New(), &capturePlayer{}, testLogger())
+	lib := library.New(t.TempDir(), 100, testLogger())
+	o.Library = lib
+
+	gone := namedTrack("old")
+	gone.Samples = make([]int16, 9600)
+	key := "test-vibe"
+	libID, err := lib.Put(key, gone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.rememberBank(gone.ID, bankRef{key: key, id: libID})
+	// It played, and then two more played after it.
+	o.retireTrack(gone)
+
+	if ack := o.Retitle(gone.ID, "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
+		t.Fatalf("rename of a finished song = %q", ack)
+	}
+	entries := lib.Entries(key)
+	if len(entries) != 1 || entries[0].Title != "Harbour Lights" {
+		t.Fatalf("the banked copy kept the old name: %+v", entries)
+	}
+	if entries[0].Subtitle != gone.Subtitle {
+		t.Fatalf("the rename dropped the genre line: %q", entries[0].Subtitle)
+	}
+	// A song nobody has ever heard of is still refused.
+	if ack := o.Retitle("t-nothing", "Nowhere"); !strings.Contains(ack, "no longer here") {
+		t.Fatalf("unknown id ack = %q", ack)
+	}
+}

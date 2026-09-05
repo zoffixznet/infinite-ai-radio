@@ -310,14 +310,18 @@ type Orchestrator struct {
 	lastFailure    string
 	curTrack       *engine.Track
 	prevTrack      *engine.Track
-	// engineBusy mirrors whether a generation cycle currently holds
-	// the graphics card; the retitle loop asks for more names at once
-	// while it is free.
+	// engineBusy mirrors whether a generation cycle currently holds the
+	// graphics card; the lyric writer works only while it is free.
 	engineBusy atomic.Bool
 	// bankRefs remembers where a live track's banked library copy lives
 	// (track ID -> key and library id), so a listener renaming a song
 	// reaches the banked sidecar too. Pruned as tracks retire.
 	bankRefs map[string]bankRef
+	// retired remembers songs that have finished playing (id -> genre
+	// line), so a listener whose own device is still on one can rename
+	// it. Bounded by retiredOrder, oldest dropped first.
+	retired      map[string]string
+	retiredOrder []string
 	// bufFed maps a disk-buffer file base to the in-memory track it
 	// became. Feeding deletes the song from disk, so a listener still
 	// playing their own downloaded copy holds the only name anyone
@@ -778,9 +782,9 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			// in the WaitGroup so shutdown never races a disk write
 			// (adding here is safe: genLoop itself holds the group).
 			key := library.Key(sess)
-			// A snapshot, not the live track: the retitle loop and a
-			// listener's rename both write Title under the lock while
-			// this write is still running.
+			// A snapshot, not the live track: a listener's rename
+			// writes Title under the lock while this write is still
+			// running.
 			o.mu.Lock()
 			banked := *track // shallow: Samples are shared and immutable
 			o.mu.Unlock()

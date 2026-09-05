@@ -3,6 +3,8 @@ package prompting
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -10,10 +12,11 @@ import (
 )
 
 // This file names tracks for display on lock screens and car displays:
-// a deterministic fallback computed for every track, plus an optional
-// helper-model call that proposes an evocative short name in the
-// background. The fallback must look finished on its own, because the
-// helper is optional and self-disables.
+// a deterministic name derived from the track's own description, and
+// the helper model's better one, asked for where the song's words are
+// written and waited for there. Whichever a song gets, it gets once and
+// keeps. The deterministic one must look finished on its own, because
+// the helper is optional and can fail.
 
 // TrackTitle derives a short display title and subtitle from a track's
 // generation prompt, deterministically. The title is the title-cased
@@ -93,6 +96,15 @@ line or sharpest image, in the language the lyrics are written in;
 never a genre label, never generic. subtitle: at most 6 words naming
 the genre and mood, in English. Never mention prompts or AI.`
 
+// titleInstrumentalSystem names a piece with no words, from the
+// description written for it - the only thing that tells it apart from
+// every other piece in the same style.
+const titleInstrumentalSystem = `You name instrumental pieces. Given a
+DESCRIPTION of one piece, reply with JSON {"title", "subtitle"}. title:
+a distinctive 2-4 word name drawn from that description's own imagery -
+never a genre label, never generic. subtitle: at most 6 words naming
+the genre and mood, in English. Never mention prompts or AI.`
+
 // titleSchema constrains the helper's reply.
 var titleSchema = map[string]any{
 	"type": "object",
@@ -126,27 +138,72 @@ func lyricExcerpt(lyrics string, n int) string {
 // already listening to. An empty title means the helper had nothing;
 // callers fall back to the deterministic name and keep it.
 func (b *Builder) titleSong(ctx context.Context, caption, lyrics string) (title, subtitle string) {
-	if lyrics == "" || lyrics == engine.InstrumentalLyrics || !b.helperUsable() {
+	if lyrics == "" || lyrics == engine.InstrumentalLyrics || b.ollama == nil {
 		return "", ""
 	}
-	user := "MUSIC STYLE: " + caption + "\nLYRICS:\n" + lyricExcerpt(lyrics, 14)
-	raw, err := b.ollama.ChatWith(ctx, titleSongSystem, user, ChatOpts{
-		Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
-	})
-	if err != nil {
+	return b.nameFrom(ctx, titleSongSystem,
+		"MUSIC STYLE: "+caption+"\nLYRICS:\n"+lyricExcerpt(lyrics, 14))
+}
+
+// titleInstrumental names a piece that has no words, from the
+// description written for it in the same round.
+func (b *Builder) titleInstrumental(ctx context.Context, caption string) (title, subtitle string) {
+	if caption == "" || b.ollama == nil {
 		return "", ""
 	}
-	var v struct {
-		Title    string `json:"title"`
-		Subtitle string `json:"subtitle"`
+	return b.nameFrom(ctx, titleInstrumentalSystem, "DESCRIPTION: "+caption)
+}
+
+// nameFrom asks for one name and waits for it. There is exactly one
+// retry, immediately, while the model is still loaded: this is the only
+// window in which the name can be asked for at all, and a name that
+// fails here is a song that plays under a generic one for the rest of
+// its life. A rest earned by unrelated failures is deliberately not
+// consulted - the lyrics for this very song just came back, so the
+// helper is answering.
+func (b *Builder) nameFrom(ctx context.Context, system, user string) (title, subtitle string) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		raw, err := b.ollama.ChatWith(ctx, system, user, ChatOpts{
+			Format: titleSchema, KeepAliveSeconds: scribeKeepAlive,
+		})
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		var v struct {
+			Title    string `json:"title"`
+			Subtitle string `json:"subtitle"`
+		}
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			lastErr = fmt.Errorf("unreadable answer %q: %w", firstChars(raw, 60), err)
+			continue
+		}
+		title = sanitizeLine(v.Title, 48)
+		subtitle = sanitizeLine(v.Subtitle, 64)
+		if title != "" {
+			return title, subtitle
+		}
+		lastErr = errors.New("the helper answered with no name")
 	}
-	if json.Unmarshal([]byte(raw), &v) != nil {
-		return "", ""
+	// Said out loud: a whole batch coming out under prompt-derived
+	// names is otherwise a mystery with nothing in the log.
+	reason := "unknown"
+	if lastErr != nil {
+		reason = lastErr.Error()
 	}
-	title = sanitizeLine(v.Title, 48)
-	subtitle = sanitizeLine(v.Subtitle, 64)
-	if title == "" {
-		return "", ""
+	b.log.Warn("song not named; it keeps the name from its description",
+		"event", "song_name_failed", "error", reason)
+	return "", ""
+}
+
+// firstChars trims a helper reply for a log line.
+func firstChars(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
 	}
-	return title, subtitle
+	return s
 }

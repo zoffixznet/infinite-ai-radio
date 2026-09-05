@@ -252,3 +252,65 @@ func TestNoBackgroundLyricWritesWhileEngineBusy(t *testing.T) {
 		t.Fatal("the freed card should resume background writing")
 	}
 }
+
+// The helper can answer the words and then fail on the name - a timeout
+// on a crowded card, or an unreadable reply. The sheet is still written
+// (the words are the expensive part) and the song goes on to take the
+// deterministic name from its own description. What must not happen is
+// a silent failure that also stops the writer: the helper is plainly
+// working, so it keeps its turn.
+func TestASheetSurvivesANameThatFails(t *testing.T) {
+	f := &fakeOllama{
+		reply:    "[Verse]\nsteel in the water\n\n[Chorus]\nhold the line",
+		failJSON: true, // every schema-constrained call - the naming ones
+	}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	s := wordsmithSession()
+
+	if wrote := b.StockLyrics(context.Background(), s, 1, nil); wrote != 1 {
+		t.Fatalf("a failed name lost the sheet: wrote %d", wrote)
+	}
+	if n := f.jsonCalls.Load(); n < 2 {
+		t.Fatalf("naming was tried %d times; it gets one retry while the model is warm", n)
+	}
+	if !b.helperUsable() {
+		t.Fatal("a failed name put the whole helper to rest")
+	}
+	spec := b.BuildSpec(context.Background(), s, 150)
+	if spec.Lyrics != f.reply {
+		t.Fatalf("the sheet was not used: %q", firstLine(spec.Lyrics))
+	}
+	if spec.Title != "" {
+		t.Fatalf("a failed name produced one anyway: %q", spec.Title)
+	}
+}
+
+// An instrumental has no words to be named from, but it does have the
+// description written for it in the same round - and that is written on
+// the same free card, so the name comes from there rather than from
+// nowhere.
+func TestInstrumentalsAreNamedFromTheirDescription(t *testing.T) {
+	f := &fakeOllama{
+		reply:     "Slow-burning synth arpeggios over a patient kick, widening into a hazy chorus of pads.",
+		jsonReply: `{"title":"Patient Kick","subtitle":"synthwave, hazy"}`,
+	}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	s := session.New()
+	s.BasePrompt = "synthwave, hazy"
+	s.Vocal = false
+
+	if wrote := b.StockInstrumentalCaptions(context.Background(), s, 1, nil); wrote != 1 {
+		t.Fatalf("wrote %d descriptions", wrote)
+	}
+	spec := b.BuildSpec(context.Background(), s, 150)
+	if spec.Prompt != f.reply {
+		t.Fatalf("the description was not used: %q", firstLine(spec.Prompt))
+	}
+	if spec.Title != "Patient Kick" || spec.Subtitle != "synthwave, hazy" {
+		t.Fatalf("instrumental name = %q / %q", spec.Title, spec.Subtitle)
+	}
+}

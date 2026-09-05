@@ -181,8 +181,7 @@ func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 	defer o.mu.Unlock()
 	// In-memory tracks are handed out as shallow copies: the caller
 	// reads Title and Subtitle without the lock (often during a
-	// seconds-long encode) while the retitle loop may rename the live
-	// track. Samples are shared and immutable.
+	// seconds-long encode) while a listener may rename the live track. Samples are shared and immutable.
 	for _, t := range o.queue {
 		if t.ID == id {
 			cp := *t

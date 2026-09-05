@@ -21,6 +21,9 @@ type fakeOllama struct {
 	reply     string
 	jsonReply string
 	failFills bool
+	// failJSON fails only the schema-constrained calls - the ones that
+	// ask for a name - while plain calls (lyrics, descriptions) answer.
+	failJSON  bool
 	slow      time.Duration
 	chats     atomic.Int32
 	fills     atomic.Int32
@@ -68,6 +71,10 @@ func (f *fakeOllama) server(t *testing.T) *httptest.Server {
 		}
 		if f.slow > 0 {
 			time.Sleep(f.slow)
+		}
+		if f.failJSON && len(req.Format) > 0 {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
 		}
 		if f.failFills || (f.maxFills > 0 && f.fills.Load() > f.maxFills) {
 			http.Error(w, "boom", http.StatusInternalServerError)
