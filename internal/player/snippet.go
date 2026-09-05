@@ -191,6 +191,7 @@ func (o *Orchestrator) NewSession(prompt string) string {
 	fresh := prompting.SessionFromPrompt(prompt)
 	o.saveSession()
 	o.mu.Lock()
+	o.carryLanguagesLocked(fresh)
 	o.sess = fresh
 	o.heard = false // nothing of this one has been heard yet
 	o.epoch++

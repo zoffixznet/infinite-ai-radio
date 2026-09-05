@@ -259,7 +259,10 @@ languages none         # back to the engine's own choice
 ```
 
 The list is saved in the configuration, so it survives restarts and
-preset switches; the phone remote shows one switch per language on its
+preset switches, and a language you switch off stays off when you start
+a preset or a new prompt - it is a standing preference about your radio
+rather than a property of one vibe. A saved session that carries its own
+answer keeps it. The phone remote shows one switch per language on its
 Live screen. Languages the engine has no tag for still work best-effort
 (the words are written in that language and sung without a language
 hint), and the `languages` listing says which ones those are. Steering

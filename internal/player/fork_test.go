@@ -163,3 +163,32 @@ func TestDeletingAutomaticSessions(t *testing.T) {
 		t.Fatalf("second delete ack = %q", ack)
 	}
 }
+
+// Which languages get sung is a standing preference about the radio,
+// not a property of one vibe: starting a preset used to lose it, and
+// the songs came back in a language the listener had switched off.
+func TestSwitchedOffLanguagesSurviveASessionSwitch(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	sess := heardSession("gym-grind")
+	sess.Vocal = true
+	o, _ := newTestOrchestratorWithStore(t, enginetest.NewMock(), sess, store)
+
+	langs := o.Languages()
+	if len(langs) < 2 {
+		t.Skip("needs at least two configured vocal languages")
+	}
+	off := langs[0].Name
+	o.SetLanguage(off, false)
+
+	for _, switchTo := range []func(){
+		func() { o.LoadPreset("pink-noise") },
+		func() { o.NewSession("dark techno with vocals") },
+	} {
+		switchTo()
+		for _, l := range o.Languages() {
+			if l.Name == off && l.On {
+				t.Fatalf("%s came back on after switching sessions", off)
+			}
+		}
+	}
+}

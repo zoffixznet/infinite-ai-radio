@@ -392,6 +392,7 @@ func (o *Orchestrator) LoadPreset(name string) string {
 	o.saveSession()
 	fresh := session.FromPreset(p)
 	o.mu.Lock()
+	o.carryLanguagesLocked(fresh)
 	o.sess = fresh
 	o.heard = false // nothing of this one has been heard yet
 	o.epoch++
@@ -415,6 +416,7 @@ func (o *Orchestrator) LoadSession(name string) string {
 	}
 	o.saveSession()
 	o.mu.Lock()
+	o.carryLanguagesLocked(s)
 	o.sess = s
 	// A session that played before was heard before: changing it now
 	// keeps what it sounded like, rather than writing over it.
@@ -430,6 +432,22 @@ func (o *Orchestrator) LoadSession(name string) string {
 	o.kickGen()
 	o.log.Info("session loaded", "event", "session_loaded", "session", s.Name)
 	return "session " + s.Name + " loaded: " + s.Describe()
+}
+
+// carryLanguagesLocked hands the languages a listener switched off to
+// the session replacing this one. Which languages are sung is a
+// standing preference about their radio, not a property of one vibe:
+// starting a preset used to lose it, and the radio would quietly sing
+// in a language they had turned off. A session that carries its own
+// answer keeps it. Callers hold o.mu.
+func (o *Orchestrator) carryLanguagesLocked(fresh *session.Session) {
+	if fresh == nil || fresh.Languages != nil || len(o.sess.Languages) == 0 {
+		return
+	}
+	fresh.Languages = make(map[string]bool, len(o.sess.Languages))
+	for name, on := range o.sess.Languages {
+		fresh.Languages[name] = on
+	}
 }
 
 // LoadByName switches to a preset or a saved session, whichever the
