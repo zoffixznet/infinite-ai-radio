@@ -87,8 +87,12 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return c.O.ToggleLoop(), false
 	case "pause":
 		return c.O.TogglePause(), false
+	case "standby":
+		return c.O.ToggleStandby(), false
 	case "resume", "play":
 		return c.O.Resume(), false
+	case "restart", "regenerate":
+		return c.O.RestartGeneration(), false
 	case "volume", "vol":
 		if rest == "" {
 			return fmt.Sprintf("volume is %d%% (use: volume 0-100)", c.O.Status().Volume), false
@@ -343,4 +347,5 @@ commands (leading / optional):
   skip | loop       next / repeat track  delete <n|autos> delete sessions
   pause | standby   mute / hold radio    volume <0-100>   set volume
   lyrics [name]     pick lyric writer    status | engine  show status
-  languages [list]  sung languages       help | quit      this list / exit`
+  languages [list]  sung languages       help | quit      this list / exit
+  restart           empty buffer, start over`

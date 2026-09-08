@@ -291,6 +291,7 @@ type fakeCtl struct {
 	skips     int
 	loops     int
 	holds     int
+	flushes   int
 	renames   []string
 	autoWipes []int
 	news      []string
@@ -381,6 +382,13 @@ func (f *fakeCtl) ToggleStandby() string {
 	defer f.mu.Unlock()
 	f.holds++
 	return "the radio is on standby"
+}
+
+func (f *fakeCtl) RestartGeneration() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.flushes++
+	return "buffer emptied: 43 song(s) and 12 plan(s) dropped; generating again from the top"
 }
 
 func (f *fakeCtl) DeleteAutoSessions(olderThanDays int) string {
@@ -868,6 +876,7 @@ func TestPermissionMatrix(t *testing.T) {
 		"/next":                 {"POST", "/next", nil},
 		"/loop":                 {"POST", "/loop", nil},
 		"/standby":              {"POST", "/standby", nil},
+		"/buffer/flush":         {"POST", "/buffer/flush", nil},
 		"/new":                  {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
 		"/save":                 {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
 		"/retitle":              {"POST", "/retitle", url.Values{"id": {"t-1"}, "title": {"Steel In The Water"}}},
@@ -894,26 +903,26 @@ func TestPermissionMatrix(t *testing.T) {
 		want expect
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
-			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/standby": auth, "/new": auth, "/save": auth, "/retitle": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
+			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/standby": auth, "/buffer/flush": auth, "/new": auth, "/save": auth, "/retitle": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
 			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth, "/sessions/delete-auto": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/buffer/flush": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/standby": ok, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/standby": ok, "/buffer/flush": ok, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": ok, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/buffer/flush": deny, "/new": ok, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": ok, "/retitle": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/standby": deny, "/buffer/flush": deny, "/new": deny, "/save": ok, "/retitle": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/standby": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/standby": deny, "/buffer/flush": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok, "/sessions/delete-auto": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/standby": ok, "/new": ok, "/save": ok, "/retitle": ok, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/standby": ok, "/buffer/flush": ok, "/new": ok, "/save": ok, "/retitle": ok, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok, "/sessions/delete-auto": ok}},
 	}
 	for who, row := range matrix {
@@ -936,8 +945,8 @@ func TestPermissionMatrix(t *testing.T) {
 	// Only the permitted calls reached the controller.
 	h.ctl.mu.Lock()
 	defer h.ctl.mu.Unlock()
-	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || h.ctl.loops != 2 || h.ctl.holds != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
-		t.Fatalf("controller calls: steers=%v skips=%d loops=%d holds=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.loops, h.ctl.holds, h.ctl.news, h.ctl.saves)
+	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || h.ctl.loops != 2 || h.ctl.holds != 2 || h.ctl.flushes != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
+		t.Fatalf("controller calls: steers=%v skips=%d loops=%d holds=%d flushes=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.loops, h.ctl.holds, h.ctl.flushes, h.ctl.news, h.ctl.saves)
 	}
 	// The lyric-writer switch rides the steer permission (steerer +
 	// full admin).
@@ -968,7 +977,7 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.autoWipes) != 2 {
 		t.Fatalf("bulk deletes of automatic sessions: %v", h.ctl.autoWipes)
 	}
-	if len(h.ctl.notes) != 28 {
+	if len(h.ctl.notes) != 30 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
 	}
 }
@@ -1553,8 +1562,8 @@ func TestMutationsNeedOriginOrHeader(t *testing.T) {
 	h := newHarness(t, nil)
 	admin := h.admin()
 	ck := admin.sessionCookieOf()
-	do := func(origin, header string) int {
-		req, _ := http.NewRequest("POST", h.srv.URL+"/steer", strings.NewReader("text=evil"))
+	do := func(path, origin, header string) int {
+		req, _ := http.NewRequest("POST", h.srv.URL+path, strings.NewReader("text=evil"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if origin != "" {
 			req.Header.Set("Origin", origin)
@@ -1570,26 +1579,56 @@ func TestMutationsNeedOriginOrHeader(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	// A bare cross-site-style POST (no Origin, no header) is refused.
-	if got := do("", ""); got != http.StatusForbidden {
-		t.Fatalf("bare POST = %d", got)
-	}
-	// A foreign Origin is refused even with the header.
-	if got := do("http://evil.example.com", "1"); got != http.StatusForbidden {
-		t.Fatalf("foreign-origin POST = %d", got)
+	// A bare cross-site-style POST (no Origin, no header) is refused,
+	// and so is a foreign Origin even with the header - for a steer
+	// and for the post that empties the whole buffer alike.
+	for _, path := range []string{"/steer", "/buffer/flush"} {
+		if got := do(path, "", ""); got != http.StatusForbidden {
+			t.Fatalf("bare POST %s = %d", path, got)
+		}
+		if got := do(path, "http://evil.example.com", "1"); got != http.StatusForbidden {
+			t.Fatalf("foreign-origin POST %s = %d", path, got)
+		}
 	}
 	// The page's fetch shape (header) and a same-origin form post
 	// (Origin) both work.
-	if got := do("", "1"); got != 200 {
+	if got := do("/steer", "", "1"); got != 200 {
 		t.Fatalf("header POST = %d", got)
 	}
-	if got := do(h.srv.URL, ""); got != 200 {
+	if got := do("/steer", h.srv.URL, ""); got != 200 {
 		t.Fatalf("same-origin form POST = %d", got)
 	}
 	h.ctl.mu.Lock()
 	defer h.ctl.mu.Unlock()
-	if len(h.ctl.steers) != 2 {
-		t.Fatalf("only the legit posts may reach the controller: %v", h.ctl.steers)
+	if len(h.ctl.steers) != 2 || h.ctl.flushes != 0 {
+		t.Fatalf("only the legit posts may reach the controller: steers=%v flushes=%d", h.ctl.steers, h.ctl.flushes)
+	}
+}
+
+// Emptying the buffer answers with the player's own acknowledgment and
+// is announced to the room, like every other remote action.
+func TestBufferFlushReturnsTheAckAndAnnouncesIt(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	resp, body := admin.postAPI("/buffer/flush", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("flush = %d %s", resp.StatusCode, body)
+	}
+	var got actionResponse
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("flush reply %q: %v", body, err)
+	}
+	if !got.OK || !strings.Contains(got.Ack, "generating again from the top") {
+		t.Fatalf("flush reply = %+v", got)
+	}
+	h.ctl.mu.Lock()
+	defer h.ctl.mu.Unlock()
+	if h.ctl.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1", h.ctl.flushes)
+	}
+	want := "remote buffer flush by admin@example.com: " + got.Ack
+	if len(h.ctl.notes) != 1 || h.ctl.notes[0] != want {
+		t.Fatalf("announcement = %v, want %q", h.ctl.notes, want)
 	}
 }
 

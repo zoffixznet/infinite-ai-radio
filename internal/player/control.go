@@ -135,6 +135,86 @@ func (o *Orchestrator) Clear() string {
 	return "steering context cleared; back to the session's base sound" + kept
 }
 
+// RestartGeneration throws away every song made ahead and starts
+// generating again from the first rung of the batch ladder, with the
+// session and its steering left exactly as they are. Phased generation
+// climbs that ladder as un-steered listening proves the context settled
+// - one song, then ten, then 20, 40 and 80 - and once it has reached
+// the top, the only way to hear a fresh run of songs under the same
+// settings used to be loading another preset and then loading this one
+// back, which threw the steering context away and took as long as any
+// cold start. This is the honest button for that: the buffer goes, the
+// session stays, so nothing is saved and nothing branches.
+//
+// The epoch bump does the real work, exactly as it does for a steer.
+// The phased loops reconcile the buffer against the epoch on their next
+// pass, and that reconciliation (syncPhasedState) restarts the play
+// counters the ladder climbs on, so the next cycle plans one quick song
+// rather than eighty. The on-disk buffer is emptied here as well rather
+// than left for that pass: it is hours of audio the listener has just
+// asked to be rid of, and the offline 'iar buffer clear' does the same.
+func (o *Orchestrator) RestartGeneration() string {
+	o.mu.Lock()
+	if o.sess.Mode == session.ModeNoise {
+		o.mu.Unlock()
+		return "noise mode: nothing is generated ahead, so there is nothing to start over"
+	}
+	oldEpoch := o.epoch
+	o.epoch++
+	queued := len(o.queue)
+	o.queue = nil
+	// A recording the listener flagged for repetition would otherwise
+	// come round again out of the very buffer they just emptied. The
+	// epoch bump breaks the loop on its own; this says so out loud.
+	o.loopOn = false
+	// steerPending rather than switchReq, and the last good track is
+	// kept: this is a change to what comes next, exactly like a steer,
+	// and the radio treats it like one. Cutting to silence the instant
+	// the button is pressed is what loading another preset does - the
+	// detour this replaces - and it would trade one annoyance for a
+	// worse one. The song in the speakers plays on, the previous sound
+	// after it if the first fresh song is slower than that, and the
+	// mixer crosses over the moment one is ready.
+	o.steerPending = true
+	held := o.standby
+	o.mu.Unlock()
+	songs, plans, files := queued, 0, 0
+	if o.Buffer != nil {
+		// Counted before the drop, and for the epoch the buffer was
+		// serving: the acknowledgment says what was thrown away, not
+		// how many files happened to be lying in the directory.
+		tracks, _ := o.Buffer.TrackStats(oldEpoch)
+		songs += tracks
+		plans, _ = o.Buffer.PlanStats(oldEpoch)
+		files = o.Buffer.DropAll()
+	}
+	o.kickGen()
+	o.log.Info("buffer emptied to start generation over", "event", "buffer_restarted",
+		"epoch", oldEpoch, "songs", songs, "plans", plans, "files", files, "standby", held)
+	var ack string
+	switch {
+	case songs > 0 && plans > 0:
+		ack = fmt.Sprintf("buffer emptied: %d song(s) and %d plan(s) dropped", songs, plans)
+	case songs > 0:
+		ack = fmt.Sprintf("buffer emptied: %d song(s) dropped", songs)
+	case plans > 0:
+		ack = fmt.Sprintf("buffer emptied: %d plan(s) dropped", plans)
+	default:
+		ack = "buffer already empty"
+	}
+	switch {
+	case held:
+		// A held radio generates nothing, and the generator is prodded
+		// again on waking; promising music that is not coming would be
+		// worse than saying so.
+		return ack + "; the radio is on standby, so generation starts over when you wake it"
+	case o.eng == nil:
+		return ack + "; nothing new is generated - the music engine is unavailable (run 'iar setup')"
+	default:
+		return ack + "; generating again from the top" + o.switchEstimateNote("sound")
+	}
+}
+
 // LyricsGen shows or switches the lyric writer for vocal tracks. An
 // empty name reports the current one and the options.
 func (o *Orchestrator) LyricsGen(name string) string {

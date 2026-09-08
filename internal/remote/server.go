@@ -43,6 +43,7 @@ type Controls interface {
 	Skip() string
 	ToggleLoop() string
 	ToggleStandby() string
+	RestartGeneration() string
 	Retitle(which, title string) string
 	DeleteAutoSessions(olderThanDays int) string
 	SaveSnippet(which, tag string) string
@@ -272,6 +273,9 @@ func (s *Server) buildHandler() http.Handler {
 	// Holding the whole radio is a steering-level act: it decides what
 	// everyone hears, or stops hearing.
 	mux.HandleFunc("POST /standby", s.apiPerm("steer", permSteer, s.handleStandby))
+	// Emptying the buffer decides what everyone hears next, the same
+	// as a steer does, and answers to the same permission.
+	mux.HandleFunc("POST /buffer/flush", s.apiPerm("steer", permSteer, s.handleBufferFlush))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
 	// Renaming what is playing is the same act as renaming it in the
@@ -829,6 +833,14 @@ func (s *Server) handleLoop(w http.ResponseWriter, r *http.Request, u accounts.U
 func (s *Server) handleStandby(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.ToggleStandby()
 	s.ctl.Announce("remote standby by " + u.Email + ": " + ack)
+	s.reply(w, ack)
+}
+
+// handleBufferFlush throws away every song made ahead and starts
+// generation over from one quick song, keeping the session as it is.
+func (s *Server) handleBufferFlush(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	ack := s.ctl.RestartGeneration()
+	s.ctl.Announce("remote buffer flush by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 

@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `restart` in the terminal: throw away every song the radio has made
+  ahead and start generating again from the first rung of the batch
+  ladder, with the session and its steering kept. Nothing goes quiet -
+  the song in the speakers plays on until the first fresh one is ready.
+  The phone remote reaches it over `POST /buffer/flush`.
+
+### Fixed
+
+- `standby` in the terminal held the radio as the help said it did.
+  Typed, it steered the music with the word instead.
+
 ## [1.0.0] - 2026-09-03
 
 First public release. Everything below is what you get on day one.

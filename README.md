@@ -314,6 +314,7 @@ typed at the same prompt. A leading slash is optional: `skip` and
 | `loop` | repeat the playing track until toggled off |
 | `pause` / `resume` | pause or continue output |
 | `standby` | hold the whole radio: nothing plays, nothing is generated |
+| `restart` | empty the buffer and start generating over, session kept |
 | `volume <0-100>` | set output volume |
 | `lyrics [name]` | show or switch the lyric writer |
 | `languages [list]` | show or set the offered languages; `+X`/`-X`/`none` switch this session's |
@@ -339,6 +340,20 @@ listening. A phone in buffered mode holds songs of its own, so pressing
 play into a held radio is allowed but warns, in the banner, that the
 music runs out when this device's own songs do; the banner's *Wake*
 button clears the hold for everyone.
+
+### Starting generation over
+
+`restart` throws away every song the radio has made ahead and starts
+generating again from the first rung of the batch ladder: one quick
+song, then a small batch, then deeper ones as the sound settles. The
+session, its steering and your saved songs are untouched - only the
+songs waiting in the buffer go. It is for the evening when the eighty
+songs already rendered are not the ones you want to hear, and the only
+way to get a fresh run out of the same settings was to load a different
+preset and load this one back, which threw the steering away and took
+as long as a cold start. Nothing goes quiet: the song in the speakers
+plays on, and the radio crosses over the moment the first fresh song is
+ready. `iar buffer clear` does the same to a stopped radio.
 
 ## Sessions and presets
 
@@ -870,8 +885,9 @@ the ladder, so trying prompts never wastes deep work - but a restart
 of the player does not: the buffer carries a context and a build
 stamp, continues across restarts of the same binary, and is cleared
 when a different build of the player takes over, so songs rendered by
-older code never linger into an upgrade. `iar buffer clear` resets it
-by hand.
+older code never linger into an upgrade. `restart` empties it and puts
+the ladder back on its first rung without touching the session, and
+`iar buffer clear` does the same to a stopped radio.
 
 - `phased`: turns the split pipeline on (the default). false restores
   the fused path: each track generated in one engine job with the audio

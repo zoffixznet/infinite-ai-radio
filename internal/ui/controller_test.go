@@ -178,8 +178,51 @@ func TestControllerSessionsListingIsGrouped(t *testing.T) {
 	if !strings.Contains(resp, "delete <n|autos>") {
 		t.Fatalf("help lacks delete: %q", resp)
 	}
-	if n := strings.Count(resp, "\n") + 1; n > 10 {
+	// At 80x24 the backlog shows twelve lines while generating (the
+	// chrome takes nine, the input area three), and the echoed "> help"
+	// is one of them: eleven is the most the block can be.
+	if n := strings.Count(resp, "\n") + 1; n > 11 {
 		t.Fatalf("help grew to %d lines; it must fit an 80x24 terminal", n)
+	}
+}
+
+// The help advertised "standby" for as long as the hold existed, but
+// the word had no case of its own: typing it fell through to free text
+// and steered the music with the word "standby".
+func TestControllerStandbyHoldsTheRadioRatherThanSteering(t *testing.T) {
+	c := newController(t)
+	resp, quit := c.Handle("standby")
+	if quit || !strings.Contains(resp, "standby") {
+		t.Fatalf("standby resp = %q", resp)
+	}
+	st := c.O.Status()
+	if !st.Standby {
+		t.Fatal("the radio is not held")
+	}
+	if len(st.Tweaks) > 0 {
+		t.Fatalf("standby was taken as steering: %+v", st.Tweaks)
+	}
+	if resp, _ := c.Handle("standby"); !strings.Contains(resp, "awake") {
+		t.Fatalf("a second standby did not wake the radio: %q", resp)
+	}
+}
+
+// "restart" (and its alias) start generation over: the epoch moves on
+// by one, and the answer is the player's own acknowledgment.
+func TestControllerRestartStartsGenerationOver(t *testing.T) {
+	c := newController(t)
+	for _, word := range []string{"restart", "/regenerate"} {
+		before := c.O.Status().Epoch
+		resp, quit := c.Handle(word)
+		if quit || !strings.Contains(resp, "generating again from the top") {
+			t.Fatalf("%s resp = %q", word, resp)
+		}
+		if after := c.O.Status().Epoch; after != before+1 {
+			t.Fatalf("%s moved the epoch %d -> %d, want one step", word, before, after)
+		}
+	}
+	if resp, _ := c.Handle("help"); !strings.Contains(resp, "restart") {
+		t.Fatalf("help does not list restart:\n%s", resp)
 	}
 }
 
