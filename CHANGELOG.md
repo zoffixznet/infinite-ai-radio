@@ -8,16 +8,46 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `restart` in the terminal: throw away every song the radio has made
-  ahead and start generating again from the first rung of the batch
-  ladder, with the session and its steering kept. Nothing goes quiet -
-  the song in the speakers plays on until the first fresh one is ready.
-  The phone remote reaches it over `POST /buffer/flush`.
+- Saved songs are banked on the device the way the live stream's are,
+  to the same per-device buffering level, so a saved song starts on the
+  tap instead of loading first and the next one is ready before it is
+  needed. The line under the saved player counts what is ready.
+- **Preload songs for the inactive mode**, off by default: a few saved
+  songs kept ready while the live stream plays, and a few live songs
+  while the saved ones do, so switching between the two away from a
+  good signal plays straight away.
+- A save that cannot reach the radio is queued on the device and goes
+  through by itself when the signal comes back - for the dead patches
+  of a drive, not an afternoon offline; past a quarter of an hour the
+  phone says it has given up.
+- `restart` in the terminal and **Empty the buffer and start over**
+  under Settings on the phone: throw away every song made ahead and
+  start generating again from the first rung of the batch ladder, with
+  the session and its steering kept. Nothing goes quiet - the song in
+  the speakers plays on until the first fresh one is ready.
+
+### Changed
+
+- Next on a buffered device now means *not this one*: the skipped song
+  is deleted from the device and never downloaded or played again. With
+  nothing else ready the trouble beeps sound and the device waits for
+  the radio, instead of starting the song just rejected over from the
+  top.
+- The saved confirmation stays put. The song's name carries **Saving:**
+  from the moment a save is asked for until the radio has it, then
+  **Saved:** for as long as that song plays - on the page and on the car
+  screen. It used to be a two-second flash.
+- Each saved song's row button turns into a pause while that song is
+  playing, and pressing it pauses the player.
+- The buffering level is no longer hidden behind buffered playback: it
+  governs the saved songs whichever transport the live stream uses.
 
 ### Fixed
 
 - `standby` in the terminal held the radio as the help said it did.
   Typed, it steered the music with the word instead.
+- The trouble cue is six beeps, and Settings and the README now say six
+  rather than three.
 
 ## [1.0.0] - 2026-09-03
 

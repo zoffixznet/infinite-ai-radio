@@ -108,6 +108,7 @@
       <div class="grouphead"><span class="grouplabel">On this device</span></div>
       <div id="savednow" class="empty">Pick a song, or press play.</div>
       <audio id="savedaudio" preload="none"></audio>
+      <p class="hint" id="savedbank"></p>
       <p class="hint">Plays here only. The stream and the speakers keep going.</p>
     </section>
 
@@ -172,6 +173,11 @@
         <input type="checkbox" id="standby"{{if not .Perms.Steer}} disabled{{end}}> Standby
       </label>
       <p class="settingnote">Stops the radio for everyone: nothing plays and nothing is generated, so a machine left on is not spending its graphics card on music nobody is hearing. What is already made is kept, and waking starts from it.</p>
+      <div id="bufflushrow" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}}>
+        <button class="action tap danger" id="bufflush" type="button">Empty the buffer and start over</button>
+        <p class="settingnote">Throws away every song the radio has made ahead and starts generating again from one quick song, then a small batch, then deeper ones as the sound settles. The station, its steering and your saved songs are untouched. This is for when the songs already waiting in the buffer are not the ones you want to hear.</p>
+        <div id="bufflushstatus" class="cardstatus"></div>
+      </div>
     </section>
 
     <section class="card" aria-label="Playback on this device">
@@ -180,8 +186,9 @@
         <input type="checkbox" id="buffered"> Buffered playback
       </label>
       <p class="settingnote">Downloads whole tracks ahead of time, so a dead zone does not interrupt the music.</p>
-      <div class="row" id="bufopts" hidden>
-        <select id="buflevel" aria-label="How much to buffer">
+      <label class="hint" for="buflevel">How much to keep on this device</label>
+      <div class="row" id="bufopts">
+        <select id="buflevel" aria-label="How much to keep on this device">
           <option value="eco">Economical &mdash; one song ahead (~3 min), least data</option>
           <option value="auto">Automatic &mdash; a couple ahead on cellular, ~15&ndash;20 min on Wi&#8209;Fi</option>
           <option value="steady">Steady &mdash; about 20 min banked</option>
@@ -189,11 +196,16 @@
           <option value="ultra">Ultra &mdash; about 3 hours banked, for flights and dead zones</option>
         </select>
       </div>
+      <p class="settingnote">Applies to the live stream while buffered playback is on, and to your saved songs either way &mdash; so a saved song starts on the tap instead of loading first, and the next one is ready before it is needed.</p>
       <p class="settingnote" id="bufmins"></p>
+      <label class="check tap" id="preloadotherrow">
+        <input type="checkbox" id="preloadother"> Preload songs for the inactive mode
+      </label>
+      <p class="settingnote">Keeps a few saved songs ready while you are on the live stream, and a few live songs ready while you are on the saved ones, so switching between them away from a good signal plays straight away. Off by default, because it spends data on music you may not listen to.</p>
       <label class="check tap">
         <input type="checkbox" id="audiocues" checked> Audio cues for trouble
       </label>
-      <p class="settingnote">Three soft beeps when the radio stops delivering new music and starts repeating itself, so a stuck stream is heard rather than discovered an hour later.</p>
+      <p class="settingnote">Six soft beeps when the radio stops delivering new music and starts repeating itself, so a stuck stream is heard rather than discovered an hour later.</p>
       <label class="check tap" id="carresumerow">
         <input type="checkbox" id="carresume"> Resume when the car reconnects
       </label>

@@ -651,6 +651,48 @@ func TestRealBrowser(t *testing.T) {
 	w.click(`#chunks .chunk button[data-action="Play"]`)
 	saved := assertPlays(t, w, "savedaudio", 1.5, 20*time.Second)
 	t.Logf("saved chunk: currentTime %.1fs readyState %d", saved.Time, saved.Ready)
+	// The row's own button answers the tap: while that song is the one
+	// playing it IS the pause, and pressing it pauses the player rather
+	// than doing something of its own. Without that, a song that takes
+	// a moment to start looks like a button that did nothing.
+	waitFor(t, 10*time.Second, "the row button to become a pause", func() bool {
+		var n int
+		w.exec(`return document.querySelectorAll('#chunks .chunk button[data-action="Pause"]').length;`, &n)
+		return n == 1
+	})
+	w.click(`#chunks .chunk button[data-action="Pause"]`)
+	waitFor(t, 10*time.Second, "the row pause to pause the player", func() bool {
+		var v struct {
+			Paused bool   `json:"paused"`
+			Action string `json:"action"`
+		}
+		w.exec(`var a=document.getElementById('savedaudio');
+			var b=document.querySelector('#chunks .chunk .rowicon[data-action]');
+			return {paused: !!(a && a.paused), action: b ? b.getAttribute('data-action') : ''};`, &v)
+		return v.Paused && v.Action == "Play"
+	})
+	// Saved songs are banked on the device exactly like the stream's,
+	// so pressing play is not a wait on the network - which on a car's
+	// connection is what made this mode stutter at every song.
+	waitFor(t, 30*time.Second, "the saved song banked on this device", func() bool {
+		var keys []string
+		w.execAsync(`var cb=arguments[arguments.length-1];
+			var req=indexedDB.open("iar-radio");
+			req.onerror=function(){cb([])};
+			req.onsuccess=function(){
+				try {
+					var tx=req.result.transaction("chunks","readonly");
+					tx.objectStore("chunks").getAllKeys().onsuccess=function(e){cb(e.target.result)};
+				} catch (err) { cb([]); }
+			};`, &keys)
+		return len(keys) == 1
+	})
+	var bankNote string
+	w.exec(`return (document.getElementById('savedbank')||{}).textContent||'';`, &bankNote)
+	if !strings.Contains(bankNote, "ready on this device") {
+		t.Fatalf("the saved bank's count says %q", bankNote)
+	}
+	w.click(`#chunks .chunk button[data-action="Play"]`)
 	w.click(`#chunks .chunk button[data-action="Loop"]`)
 	var loopText string
 	w.exec(`return document.getElementById('loopstate').textContent;`, &loopText)
@@ -783,6 +825,27 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`document.getElementById('play').click(); return true;`, nil)
 		return false
 	})
+	// Emptying the radio's own buffer is the one button that replaces
+	// the preset detour - load something else, load this back - that
+	// used to be the only way to start the batch ladder over. It throws
+	// away everything made ahead, so it asks first. This station is
+	// noise, which needs no generation at all, and the answer says so
+	// rather than pretending something was done. (The music-mode
+	// answer is asserted where there is a buffer to empty, in
+	// TestRealBrowserBufferedNextExclusive.)
+	w.click("#more")
+	w.click("#bufflush")
+	if text := w.alertText(); !strings.Contains(text, "Empty the radio's buffer?") {
+		t.Fatalf("buffer flush confirmation = %q", text)
+	}
+	w.acceptAlert()
+	waitFor(t, 15*time.Second, "the buffer flush ack", func() bool {
+		var ack string
+		w.exec(`return (document.getElementById('bufflushstatus')||{}).textContent||'';`, &ack)
+		return strings.Contains(ack, "noise mode") && !strings.Contains(ack, "failed")
+	})
+	w.click("#sheetclose")
+
 	// Station bands are collapsible; open them all so the target row is
 	// clickable.
 	w.exec(`document.querySelectorAll('#sessions details').forEach(function (d) { d.open = true; }); return true;`, nil)
@@ -1504,8 +1567,8 @@ func TestRealBrowserResilience(t *testing.T) {
 
 	// --- the car's previous-track button saves what the driver hears ---
 	// The media-session action is dispatched exactly as Chrome would;
-	// buffered mode must save the DEVICE's playing track, flash "Saved:"
-	// on the car metadata, and restore the honest title afterwards.
+	// buffered mode must save the DEVICE's playing track and mark it
+	// "Saved:" on the car metadata for as long as that song plays.
 	// Wait for the early part of a track so the played track cannot
 	// change under the assertions below.
 	waitFor(t, 30*time.Second, "early in a buffered track", func() bool {
@@ -1530,16 +1593,46 @@ func TestRealBrowserResilience(t *testing.T) {
 	if !greyed {
 		t.Fatal("save button not greyed after the car save")
 	}
-	var flash string
-	w.exec(`return navigator.mediaSession.metadata ? navigator.mediaSession.metadata.title : '';`, &flash)
-	if !strings.HasPrefix(flash, "Saved: ") {
-		t.Fatalf("car metadata flash = %q", flash)
+	var mark string
+	w.exec(`return navigator.mediaSession.metadata ? navigator.mediaSession.metadata.title : '';`, &mark)
+	if !strings.HasPrefix(mark, "Saved: ") {
+		t.Fatalf("car metadata after the save = %q", mark)
 	}
-	waitFor(t, 6*time.Second, "car metadata restored after the flash", func() bool {
-		var title string
-		w.exec(`return navigator.mediaSession.metadata ? navigator.mediaSession.metadata.title : '';`, &title)
-		return title != "" && !strings.HasPrefix(title, "Saved: ")
-	})
+	// The page's headline carries the same marker, and for the same
+	// reason: the answer has to be there when the driver looks up, not
+	// only at the instant the save landed.
+	var headline string
+	w.exec(`return (document.getElementById('now')||{}).textContent||'';`, &headline)
+	if !strings.HasPrefix(headline, "Saved: ") {
+		t.Fatalf("the headline does not say the song is saved: %q", headline)
+	}
+	// And it stays put while that song plays. This used to be a
+	// two-second flash, which meant learning whether the song was safe
+	// required watching the screen at exactly the right moment - on a
+	// slow signal, where the save takes longest, that moment was
+	// routinely missed.
+	var srcAtSave string
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].src; }
+		return '';`, &srcAtSave)
+	held := time.Now().Add(5 * time.Second)
+	for time.Now().Before(held) {
+		var v struct {
+			Title string `json:"title"`
+			Src   string `json:"src"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var src=''; for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) src=a[i].src; }
+			var m=('mediaSession' in navigator) && navigator.mediaSession.metadata;
+			return {title: m ? m.title : '', src: src};`, &v)
+		if v.Src != srcAtSave {
+			break // the song moved on; the marker belongs to the next one
+		}
+		if !strings.HasPrefix(v.Title, "Saved: ") {
+			t.Fatalf("the saved marker was taken back while the song was still playing: %q", v.Title)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 	waitFor(t, 15*time.Second, "saved snippet file on disk", func() bool {
 		matches, _ := filepath.Glob(filepath.Join(sb.dir, "data", "snippets", "untagged", "*.mp3"))
 		return len(matches) == 1
@@ -1562,7 +1655,7 @@ func TestRealBrowserResilience(t *testing.T) {
 	waitFor(t, 60*time.Second, "a library-kind track prefetched", func() bool {
 		var keys []string
 		w.execAsync(`var cb=arguments[arguments.length-1];
-			var req=indexedDB.open("iar-radio",1);
+			var req=indexedDB.open("iar-radio");
 			req.onerror=function(){cb([])};
 			req.onsuccess=function(){
 				try {
@@ -1815,6 +1908,122 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	_ = after
+
+	// Emptying the radio's buffer keeps the station and its steering
+	// and starts the batch ladder over, so a listener who does not like
+	// what is queued gets fresh songs without the detour through
+	// another preset that used to be the only way.
+	w.click("#more")
+	w.click("#bufflush")
+	if text := w.alertText(); !strings.Contains(text, "Empty the radio's buffer?") {
+		t.Fatalf("buffer flush confirmation = %q", text)
+	}
+	w.acceptAlert()
+	waitFor(t, 20*time.Second, "the radio to say it is generating again", func() bool {
+		var ack string
+		w.exec(`return (document.getElementById('bufflushstatus')||{}).textContent||'';`, &ack)
+		return strings.Contains(ack, "generating again from the top")
+	})
+	w.click("#sheetclose")
+}
+
+// TestRealBrowserSkippedSongNeverComesBack holds the promise Next makes
+// on a buffered device: the song is gone. The device used to fall back
+// on replaying what it already had when nothing new had arrived, and
+// with one song banked that meant a press of Next started the song the
+// listener had just rejected over from the top - most reliably right
+// after a new preset, when the radio has nothing fresh yet and pressing
+// Next is exactly what a listener does. Now the song leaves the bank
+// for good, the trouble beeps sound, and the device waits.
+func TestRealBrowserSkippedSongNeverComesBack(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":1,"library_max_mb":0`)
+	// Long songs, so nothing ends of its own accord while the skips
+	// below are being counted.
+	fe.setTrackSeconds(60)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+
+	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
+	w.click("#play")
+	waitFor(t, 60*time.Second, "playing with a song banked ahead", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		return strings.Contains(pill, "ahead")
+	})
+
+	// Take the radio away: what is on the device is now all there is,
+	// which is the situation the old fallback existed for.
+	sb.killPlayer()
+
+	banked := func() []string {
+		var keys []string
+		w.execAsync(`var cb=arguments[arguments.length-1];
+			var req=indexedDB.open("iar-radio");
+			req.onerror=function(){cb([])};
+			req.onsuccess=function(){
+				try {
+					var tx=req.result.transaction("tracks","readonly");
+					tx.objectStore("tracks").getAllKeys().onsuccess=function(e){cb(e.target.result)};
+				} catch (err) { cb([]); }
+			};`, &keys)
+		return keys
+	}
+	playing := func() bool {
+		var on bool
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return true; }
+			return false;`, &on)
+		return on
+	}
+	if len(banked()) == 0 {
+		t.Fatal("nothing was banked on the device to skip through")
+	}
+
+	// Skip until the device runs out. Every press must consume a song
+	// rather than cycle: a device that replayed would never stop.
+	deadline := time.Now().Add(90 * time.Second)
+	presses := 0
+	for time.Now().Before(deadline) && playing() {
+		w.click("#next")
+		presses++
+		if presses > 30 {
+			t.Fatal("the device kept finding something to play after 30 skips; it is cycling")
+		}
+		time.Sleep(900 * time.Millisecond) // the manual-skip debounce
+	}
+	if playing() {
+		t.Fatal("the device never ran out of songs to skip to")
+	}
+
+	// Everything skipped is off the device and on the list of what
+	// never comes back, and the page says it is waiting rather than
+	// claiming to play.
+	waitFor(t, 15*time.Second, "the bank to be empty and the page to say it is waiting", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		return len(banked()) == 0 && strings.Contains(pill, "waiting")
+	})
+	var tossed string
+	w.exec(`return localStorage.getItem('iar.tossed') || '';`, &tossed)
+	if tossed == "" || tossed == "{}" {
+		t.Fatalf("nothing was recorded as skipped: %q", tossed)
+	}
+
+	// And it stays silent. The regression this guards is the opposite:
+	// the skipped song starting again a moment later.
+	hold := time.Now().Add(8 * time.Second)
+	for time.Now().Before(hold) {
+		if playing() {
+			t.Fatal("a skipped song started playing again")
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	if n := len(banked()); n != 0 {
+		t.Fatalf("%d skipped song(s) are still stored on the device", n)
+	}
 }
 
 // TestRealBrowserAutoResume covers the car-off pause machinery: a

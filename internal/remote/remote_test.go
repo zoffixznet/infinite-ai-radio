@@ -1393,6 +1393,11 @@ func TestPlayerPageContainsControls(t *testing.T) {
 		`id="play"`, `id="next"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="saveprev"`, `id="carsave"`, `id="carresume"`, `id="tag"`, `id="text"`, `id="now"`, `id="nowprompt"`,
 		`id="mode-live"`, `id="mode-saved"`, `id="tags"`, `id="chunks"`, `id="savedaudio"`, `id="backloop"`,
 		`id="steerstatus"`, `id="savestatus"`, `id="sessstatus"`,
+		// The per-device banking controls: one buffering level for both
+		// modes, the opt-in preload for the mode not on screen, the
+		// saved bank's count, and the button that empties the radio's
+		// own buffer.
+		`id="buflevel"`, `id="preloadother"`, `id="savedbank"`, `id="bufflush"`, `id="bufflushstatus"`,
 		`href="/users"`, `href="/account"`, `action="/logout"`, "viewport", "/app.js", "manifest.webmanifest",
 	} {
 		if !strings.Contains(page, want) {

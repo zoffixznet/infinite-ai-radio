@@ -118,9 +118,17 @@
     }
   });
 
+  $("bufflush").addEventListener("click", function () {
+    // Hours of generated music, gone: worth one question first.
+    if (!window.confirm("Empty the radio's buffer? Every song made ahead is thrown away, " +
+      "and the radio starts generating again from one quick song.")) return;
+    buzz();
+    act($("bufflush"), [$("bufflushstatus"), stateEl], "/buffer/flush", "", "emptying the buffer…");
+  });
+
   // ---- audio cue for trouble ---------------------------------------
   // A radio that quietly repeats itself looks exactly like a radio
-  // that is working. Three soft beeps in a hole in the music say
+  // that is working. Six soft beeps in a hole in the music say
   // otherwise, without being an alarm: the music ducks, the beeps
   // sound, the music comes back.
   var audioCues = store.get("iar.audiocues", true) !== false;
@@ -327,11 +335,17 @@
     $("scroll").scrollTop = 0;
     if (live) {
       savedAudio.pause();
+      // Keeping saved songs ready behind the stream needs their
+      // listing, which only the saved screen used to ask for.
+      if (preloadOther) loadChunks();
     } else {
       stopListening("stopped (switched to saved chunks)");
       loadChunks();
     }
     syncPrevAction();
+    // Which of the two banks fills in the background follows which
+    // mode is on screen.
+    syncWarm();
   }
   $("mode-live").addEventListener("click", function () { setMode("live"); });
   $("mode-saved").addEventListener("click", function () { setMode("saved"); });
@@ -561,6 +575,7 @@
   // connectivity nudge.
   function onVisible() {
     if (document.hidden) return;
+    flushSaveQueue();
     if (resumePending && carResume) { tryResume(); return; }
     retryNow();
   }
@@ -659,19 +674,86 @@
     wrapped: false,  // the last pick came back round to something heard
     wantPlay: false, // start playback as soon as anything is stored
     loop: false,     // repeat the playing track on this device
-    storeFull: false // the device refused to store a downloaded track
+    storeFull: false,// the device refused to store a downloaded track
+    // warm is the background bank: downloading upcoming songs without
+    // playing any of them, so a listener sitting in the saved songs can
+    // switch back to the live stream and hear something at once.
+    warm: false,
+    // tossed holds the songs this listener pressed Next on. They are
+    // deleted from the bank, never downloaded again, and never picked -
+    // pressing Next means "not this one", and a device that answers by
+    // starting the same song over reads as a broken button.
+    tossed: {}
   };
+
+  // The toss list outlives a reload, because the radio goes on offering
+  // the song until the stream reaches it. It is bounded and it expires:
+  // a song id is only unique within a run of the radio, so an entry
+  // kept for days could one day silence a different song that happens
+  // to inherit the id.
+  var maxTossed = 300;
+  var tossKeepMs = 24 * 60 * 60 * 1000;
+  (function loadTossed() {
+    var saved = store.get("iar.tossed", {});
+    var now = Date.now();
+    Object.keys(saved || {}).forEach(function (id) {
+      var rec = saved[id];
+      if (!rec || typeof rec !== "object") return;
+      if (!rec.at || now - rec.at > tossKeepMs) return;
+      pf.tossed[id] = rec;
+    });
+  })();
+  function saveTossed() { store.set("iar.tossed", pf.tossed); }
+  // pfTossed answers for one listing row or banked record. The title
+  // rides along with the id: ids restart with the radio, names do not,
+  // so a name that no longer matches means this is a different song
+  // wearing an old id and it deserves its chance.
+  function pfTossed(id, title) {
+    var rec = id && pf.tossed[id];
+    if (!rec) return false;
+    if (rec.title && title && rec.title !== title) return false;
+    return true;
+  }
+  // pfToss throws one song away for good: off the device, out of the
+  // listing, and onto the list of what never comes back.
+  function pfToss(id, title) {
+    if (!id) return;
+    pf.tossed[id] = { title: title || "", at: Date.now() };
+    var ids = Object.keys(pf.tossed);
+    while (ids.length > maxTossed) { delete pf.tossed[ids.shift()]; }
+    saveTossed();
+    if (pf.have[id]) {
+      try { URL.revokeObjectURL(pf.have[id].url); } catch (e) {}
+      delete pf.have[id];
+    }
+    try { idbReq(idbStore("readwrite")["delete"](id))["catch"](function () {}); } catch (e) {}
+    pf.rows = pf.rows.filter(function (row) { return row.id !== id; });
+    delete pf.seen[id];
+  }
 
   // Buffering level (per device): how far ahead to download and how
   // many finished tracks to keep banked.
   var bufLevel = store.get("iar.buflevel", "auto");
   if (bufLevel !== "eco" && bufLevel !== "max" && bufLevel !== "steady" && bufLevel !== "ultra") bufLevel = "auto";
+  // Whether this device keeps a little of the mode it is NOT showing
+  // ready: a few saved songs behind the live stream, a few live songs
+  // behind the saved ones. Off by default, because it costs data
+  // nobody asked for, and deliberately shallow - it exists so that
+  // switching modes in a dead zone is not a wait, not so the device
+  // downloads everything twice.
+  var preloadOther = store.get("iar.preloadother", false) === true;
 
+  // Two banks live in one database: "tracks" is the live stream's
+  // queue, "chunks" is the saved songs. The upgrade names both rather
+  // than assuming which one is missing - a device that never ran the
+  // one-store version arrives here with nothing at all.
   function idbOpen() {
     return new Promise(function (resolve, reject) {
-      var req = indexedDB.open("iar-radio", 1);
+      var req = indexedDB.open("iar-radio", 2);
       req.onupgradeneeded = function () {
-        req.result.createObjectStore("tracks", { keyPath: "id" });
+        var db = req.result;
+        if (!db.objectStoreNames.contains("tracks")) db.createObjectStore("tracks", { keyPath: "id" });
+        if (!db.objectStoreNames.contains("chunks")) db.createObjectStore("chunks", { keyPath: "key" });
       };
       req.onsuccess = function () { resolve(req.result); };
       req.onerror = function () { reject(req.error); };
@@ -683,7 +765,27 @@
       r.onerror = function () { reject(r.error); };
     });
   }
-  function idbStore(mode) { return pf.db.transaction("tracks", mode).objectStore("tracks"); }
+  function idbNamed(name, mode) { return pf.db.transaction(name, mode).objectStore(name); }
+  function idbStore(mode) { return idbNamed("tracks", mode); }
+  // dbReady opens the database once and hands the same one to whoever
+  // asks. Either bank may be the first to want it, and two opens racing
+  // each other through the version upgrade is how a browser ends up
+  // blocking one of them forever.
+  var dbOpening = null;
+  function dbReady() {
+    if (!idbSupported) return Promise.reject(new Error("this device has no storage for songs"));
+    if (pf.db) return Promise.resolve(pf.db);
+    if (!dbOpening) {
+      dbOpening = idbOpen().then(function (db) {
+        pf.db = db;
+        return db;
+      })["catch"](function (e) {
+        dbOpening = null;
+        throw e;
+      });
+    }
+    return dbOpening;
+  }
 
   function pfDepth() {
     if (bufLevel === "eco") return 1;
@@ -706,6 +808,15 @@
     if (bufLevel === "ultra") return 72;
     return 8;
   }
+
+  // warmDepth is how many songs the background bank pulls for the mode
+  // nobody is listening to. A handful, not a full bank: it exists so
+  // switching between the two modes has something to play at once, not
+  // so the device downloads everything twice.
+  var warmDepth = 3;
+  // pfLive covers both reasons the live bank has work to do: someone is
+  // listening to it, or it is being kept warm behind the saved songs.
+  function pfLive() { return pf.active || pf.warm; }
 
   // pfMinutes reports how much audio is banked on this device.
   function pfMinutes() {
@@ -750,21 +861,33 @@
     return n;
   }
 
+  // pfAdoptRecords brings the device's stored songs back into memory.
+  // Songs the listener pressed Next on stay gone: the file survived the
+  // reload, the decision has to survive it too.
+  function pfAdoptRecords(recs) {
+    (recs || []).forEach(function (rec) {
+      if (pfTossed(rec.id, rec.title)) {
+        idbReq(idbStore("readwrite")["delete"](rec.id))["catch"](function () {});
+        return;
+      }
+      if (!pf.have[rec.id]) {
+        // epoch left undefined: the first queue listing decides
+        // whether the record is still current and restamps it.
+        pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "" };
+      }
+    });
+  }
+
   function startBuffered() {
     if (pf.active) return;
     pf.active = true;
+    pf.warm = false;
     setPlayButton(true);
     pfState("preparing buffered playback…", "");
-    (pf.db ? Promise.resolve(pf.db) : idbOpen().then(function (db) { pf.db = db; return db; }))
+    dbReady()
       .then(function () { return idbReq(idbStore("readonly").getAll()); })
       .then(function (recs) {
-        (recs || []).forEach(function (rec) {
-          if (!pf.have[rec.id]) {
-            // epoch left undefined: the first queue listing decides
-            // whether the record is still current and restamps it.
-            pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "" };
-          }
-        });
+        pfAdoptRecords(recs);
         pf.wantPlay = true;
         pfShowMinutes();
         updateSaveButtons(null);
@@ -805,6 +928,37 @@
     setPlayButton(false);
     streamState(msg || "", cls || "");
     mediaPlaybackState("none");
+    // Nobody is listening to the live bank now, which is exactly when
+    // the background one may want to take over.
+    syncWarm();
+  }
+
+  // syncWarm starts and stops the background live bank. It follows the
+  // setting and the mode: while the saved songs are on screen, the live
+  // queue is the one worth having ready.
+  function syncWarm() {
+    var want = preloadOther && idbSupported && !pf.active && mode === "saved";
+    if (want === pf.warm) return;
+    pf.warm = want;
+    if (!want) {
+      if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
+      if (pf.fetchTimer) { clearTimeout(pf.fetchTimer); pf.fetchTimer = null; }
+      if (pf.queueTimer) { clearInterval(pf.queueTimer); pf.queueTimer = null; }
+      return;
+    }
+    dbReady().then(function () {
+      if (!pf.warm || pf.active) return;
+      return idbReq(idbStore("readonly").getAll()).then(function (recs) {
+        pfAdoptRecords(recs);
+        pfShowMinutes();
+        pfRefreshQueue();
+        if (!pf.queueTimer) {
+          // Slower than a listening device polls: nothing here is
+          // waiting on the answer.
+          pf.queueTimer = setInterval(function () { pfRefreshQueue(); }, 30000);
+        }
+      });
+    })["catch"](function () { pf.warm = false; });
   }
 
   function pfRefreshQueue() {
@@ -816,14 +970,16 @@
       }
       return r.json();
     }).then(function (q) {
-      if (!q || !pf.active) return;
+      if (!q || !pfLive()) return;
       pf.offline = false;
       var first = pf.epoch < 0;
       if (!first && q.epoch !== pf.epoch) {
         pfEpochChanged(q.epoch);
       }
       pf.epoch = q.epoch;
-      pf.rows = q.tracks || [];
+      // A song the listener pressed Next on never comes back, however
+      // long the radio keeps offering it.
+      pf.rows = (q.tracks || []).filter(function (row) { return !pfTossed(row.id, row.title); });
       if (first) {
         // Epoch counters are per-run: leftovers from an earlier run can
         // only be trusted if the current listing still names them.
@@ -880,9 +1036,10 @@
         }, 2000);
       }
     }).catch(function () {
-      if (!pf.active) return;
+      if (!pfLive()) return;
       // Offline: keep playing what is stored; the interval retries.
       pf.offline = true;
+      if (!pf.active) return; // the background bank has nothing to play
       if (!pf.playingId) {
         pf.wantPlay = true;
         var id = pfNextId(null);
@@ -925,7 +1082,7 @@
   // into playback: pf.wantPlay marks that playback should start as
   // soon as anything is stored, and each completed download honours it.
   function pfEnsureDownloads() {
-    if (!pf.active || pf.ctrl) return;
+    if (!pfLive() || pf.ctrl) return;
     var starving = pf.wantPlay && !pf.playingId && pfNextId(null) === null;
     // The next row in play order that is not stored yet.
     var next = null;
@@ -933,9 +1090,13 @@
     for (var i = 0; i < pf.rows.length; i++) {
       var row = pf.rows[i];
       if (row.id === pf.playingId) { passed = true; continue; }
-      if (passed && !pf.have[row.id]) { next = row; break; }
+      if (passed && !pf.have[row.id] && !pfTossed(row.id, row.title)) { next = row; break; }
     }
-    if (!next || (pfAhead() >= pfDepth() && !starving)) {
+    // A bank kept warm behind the saved songs takes a few songs and
+    // stops; the depth the listener chose is for the mode they are
+    // actually listening to.
+    var depth = pf.active ? pfDepth() : warmDepth;
+    if (!next || (pfAhead() >= depth && !starving)) {
       // Nothing (more) to download right now. Start playback from the
       // store when it is wanted; new rows arrive with the next listing.
       if (pf.wantPlay && !pf.playingId) {
@@ -980,7 +1141,7 @@
       // Only a freshly generated track is worth cutting the current
       // song short for. Banked filler is older than what is playing and
       // may be in a language the listener has just switched off.
-      if (pf.switchOnDownload && row.kind !== "library") {
+      if (pf.active && pf.switchOnDownload && row.kind !== "library") {
         pf.switchOnDownload = false;
         pfPlay(row.id);
       } else if (pf.wantPlay && !pf.playingId) {
@@ -997,7 +1158,7 @@
         stopBuffered("session expired - reload this page and log in again", "bad");
         return;
       }
-      if (!pf.active) return;
+      if (!pfLive()) return;
       // 404 (evicted/steered away): drop the row and move on. Network
       // errors retry shortly; playback continues from storage.
       if (e && e.message && e.message.indexOf("track 4") === 0) {
@@ -1041,8 +1202,12 @@
   // press of Next that silently replays it reads as a broken button.
   function pfNextId(afterId, strict) {
     var ids = [];
-    pf.rows.forEach(function (row) { if (pf.have[row.id]) ids.push(row.id); });
-    if (!ids.length) ids = Object.keys(pf.have);
+    pf.rows.forEach(function (row) {
+      if (pf.have[row.id] && !pfTossed(row.id, row.title)) ids.push(row.id);
+    });
+    if (!ids.length) {
+      ids = Object.keys(pf.have).filter(function (id) { return !pfTossed(id, pf.have[id].title); });
+    }
     if (!ids.length) return null;
     var at = ids.indexOf(afterId);
     // Prefer something not heard yet in this context: a store of three
@@ -1264,14 +1429,44 @@
     if (now - lastManualSkip < 700 || !pf.active) return;
     lastManualSkip = now;
     if (pf.loop) pfSetLoop(false, true);
-    if (!pfNextId(pf.playingId, true)) {
-      setStatus([stateEl, $("steerstatus")],
-        "nothing new to skip to yet - still downloading the next track", "warn");
-      pfEnsureDownloads();
+    var tossId = pf.playingId;
+    var rec = tossId ? pf.have[tossId] : null;
+    // Picked before the song is thrown away, so what follows is the
+    // next song in the listing rather than whatever happens to be first
+    // once the skipped one is gone.
+    var nextId = pfNextId(tossId, true);
+    // Whatever happens after this, the skipped song stops here.
+    var out = pf.els[pf.cur];
+    if (out) {
+      out.onended = null;
+      out.ontimeupdate = null;
+      quiet(out);
+    }
+    pfToss(tossId, rec && rec.title);
+    if (nextId && nextId !== tossId && pf.have[nextId]) {
+      setStatus([stateEl, $("steerstatus")], "skipped on this device only", "ok");
+      pf.cur = 1 - pf.cur;
+      pfPlay(nextId);
       return;
     }
-    setStatus([stateEl, $("steerstatus")], "skipped on this device only", "ok");
-    pfAdvance();
+    // Nothing else is on the device. The old answer was to start the
+    // skipped song again from the top, which is exactly what the
+    // listener just said they did not want to hear; the honest one is
+    // the trouble beeps and a wait for the radio.
+    pf.playingId = null;
+    pf.wantPlay = true;
+    pf.wrapped = false;
+    lastNow = "";
+    msArtist = "";
+    updateSeek(null);
+    updateSaveButtons(null);
+    paintNow(null);
+    applyMediaMetadata();
+    playTroubleCue();
+    setStatus([stateEl, $("steerstatus")],
+      "skipped - nothing else on this device; waiting for the radio", "warn");
+    pfShowMinutes();
+    pfEnsureDownloads();
   }
 
   // paintNow names the song THIS listener is hearing. In buffered
@@ -1280,15 +1475,35 @@
   // track here renamed the song under a listener who was looping one.
   // The lyrics and the seek row already follow the device; the
   // now-block was the part left behind.
+  // nowBase is the playing song's name without the save marker in
+  // front of it, so the marker can be redrawn the instant a save is
+  // asked for rather than at the next poll.
+  var nowBase = "…";
+  function paintNowText(text) {
+    nowBase = text;
+    setText($("now"), saveMark() + nowBase);
+  }
+  function paintSaveMark() { setText($("now"), saveMark() + nowBase); }
+
   function paintNow(s) {
     var rec = pf.active && pf.playingId ? pf.have[pf.playingId] : null;
     if (rec) {
       nowTitle = rec.title || "";
-      setText($("now"), rec.title || rec.prompt || "...");
+      paintNowText(rec.title || rec.prompt || "...");
       setText($("nowprompt"), (rec.title && rec.prompt) || "");
       var m = "Track " + (pf.played || 0);
       if (rec.subtitle) m += "  ·  " + rec.subtitle;
       setText($("meta"), m);
+      return;
+    }
+    // Buffered playback between songs: this block names what THIS
+    // device is hearing, and it is hearing nothing. Painting the
+    // machine's song here would name a song the listener cannot hear.
+    if (pf.active) {
+      nowTitle = "";
+      paintNowText("…");
+      setText($("nowprompt"), "");
+      setText($("meta"), "");
       return;
     }
     // Without a device track there is nothing to say until the next
@@ -1296,7 +1511,7 @@
     if (!s) return;
     var t = s.track;
     nowTitle = (t && t.title) || "";
-    setText($("now"), (t && (t.title || t.prompt)) || s.source || s.state || "...");
+    paintNowText((t && (t.title || t.prompt)) || s.source || s.state || "...");
     setText($("nowprompt"), (t && t.title && t.prompt) || "");
     var meta = t && t.number ? "Track " + t.number : "";
     if (t && t.subtitle) meta += (meta ? "  ·  " : "") + t.subtitle;
@@ -1350,12 +1565,14 @@
   });
 
   function pfStatus() {
-    // Nothing playing and nothing banked is its own state, and saying
-    // "playing" through it is how a silent radio looks like a working
-    // one - after a flush with the machine unreachable, most of all.
-    if (!pf.playingId && !Object.keys(pf.have).length) {
+    // Nothing playing is its own state, and saying "playing" through it
+    // is how a silent radio looks like a working one - after a flush
+    // with the machine unreachable, or after a skip with nothing left
+    // to skip to, most of all.
+    if (!pf.playingId) {
+      var empty = !Object.keys(pf.have).length;
       pfState(pf.offline
-        ? "nothing on this device and the radio is unreachable"
+        ? (empty ? "nothing on this device and the radio is unreachable" : "offline - waiting for a song to arrive")
         : "waiting for the radio to send a song…", pf.offline ? "bad" : "");
       pfShowMinutes();
       return;
@@ -1370,8 +1587,8 @@
   // ---- transport choice and the play button ------------------------
   function syncTransportUI() {
     $("buffered").checked = transport === "buffered";
-    $("bufopts").hidden = transport !== "buffered";
     $("buflevel").value = bufLevel;
+    $("preloadother").checked = preloadOther;
     pfShowMinutes();
   }
   $("buffered").addEventListener("change", function () {
@@ -1391,6 +1608,18 @@
       pfEnsureDownloads();
       pfStatus();
     }
+    // One level, both banks: the saved songs are kept to the same
+    // depth as the stream, so "Maximum" means the same thing in both
+    // modes.
+    svTrim();
+    svEnsure();
+  });
+  $("preloadother").addEventListener("change", function () {
+    preloadOther = $("preloadother").checked;
+    store.set("iar.preloadother", preloadOther);
+    syncWarm();
+    if (!preloadOther) return;
+    if (chunks.length) svEnsure(); else loadChunks();
   });
 
   function startListening() {
@@ -1453,19 +1682,37 @@
   // lastNow is the playing track's short title (the laptop's track in
   // direct mode, this device's track in buffered mode, the chunk in
   // saved mode); msArtist carries "Track N" plus the genre/mood
-  // subtitle (or the chunk's tag). msFlash briefly overrides the title
-  // (the car "Saved" confirmation) and always restores through this
-  // same function, so a stale string can never stick.
+  // subtitle (or the chunk's tag).
   var lastNow = "";
   var msArtist = "";
-  var msFlash = "";
-  var msFlashTimer = null;
+  var lastMetaSig = "";
+  // saveMark is the standing answer to "did that save work?". It sits
+  // in front of the song's name from the moment a save is asked for
+  // until the radio has it, and then for as long as that song plays.
+  // It used to be a two-second flash, which meant learning whether the
+  // song was saved required watching the screen at the right instant -
+  // in a car, on a bad signal, that is no answer at all.
+  function saveMark() {
+    if (mode !== "live") return "";
+    var id = saveTargets().cur;
+    if (!id) return "";
+    if (isSaved(id)) return "Saved: ";
+    if (savingIds[id]) return "Saving: ";
+    return "";
+  }
   function applyMediaMetadata() {
     if (!("mediaSession" in navigator)) return;
+    var title = saveMark() + (lastNow || "Infinite AI Radio");
+    var artist = msArtist || "AI-generated stream";
+    // Handing the lock screen the words it already shows still counts
+    // as a change to it, and this runs on every poll.
+    var sig = title + "\u0000" + artist;
+    if (sig === lastMetaSig) return;
+    lastMetaSig = sig;
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: msFlash || lastNow || "Infinite AI Radio",
-        artist: msArtist || "AI-generated stream",
+        title: title,
+        artist: artist,
         album: "Infinite AI Radio",
         artwork: [
           { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
@@ -1473,18 +1720,6 @@
         ]
       });
     } catch (e) {}
-  }
-  // flashMetadata shows a short confirmation on the car screen, then
-  // re-applies whatever is current (even if the track changed).
-  function flashMetadata(text) {
-    msFlash = text;
-    if (msFlashTimer) clearTimeout(msFlashTimer);
-    msFlashTimer = setTimeout(function () {
-      msFlash = "";
-      msFlashTimer = null;
-      applyMediaMetadata();
-    }, 2000);
-    applyMediaMetadata();
   }
   function mediaPlaybackState(state) {
     if (!("mediaSession" in navigator)) return;
@@ -1502,12 +1737,10 @@
     if (now - lastCarSave < 700) return; // car-button spam guard
     lastCarSave = now;
     if (!(me && me.save)) return;
-    var saveTitle = lastNow || "this track";
-    doSave($("save"), false, [stateEl, $("savestatus")]).then(function (d) {
-      // Flash only on success (including the idempotent no-op); a
-      // failed save leaves the honest metadata alone.
-      if (d) flashMetadata("Saved: " + saveTitle);
-    });
+    // No confirmation to flash: the marker in front of the song's name
+    // says "Saving:" from this instant and "Saved:" once the radio has
+    // it, and it stays there for the rest of the song.
+    doSave($("save"), false, [stateEl, $("savestatus")]);
   }
 
   // msAction routes every media-session action; the same dispatch is
@@ -1830,6 +2063,137 @@
   var lastPrev = null;    // /state prev object
   var savedIds = {};      // server-confirmed saved ids
   var localSaved = {};    // optimistic marks while the encode runs
+  var savingIds = {};     // saves asked for and not answered yet
+
+  // ---- saves that outlive the signal -------------------------------
+  // Saving is the one thing a listener does at exactly the moment the
+  // signal is at its worst: a mountain road, a tunnel, a dead patch on
+  // the motorway. A save that fell into one of those used to be simply
+  // lost. Queued instead, it goes through by itself when the signal
+  // comes back.
+  //
+  // Every entry names one concrete track id, never "the one playing":
+  // by the time the queue drains, the one playing is a different song
+  // and saving that would be saving the wrong thing. The radio keeps a
+  // song reachable while it is the playing or the previous one, so the
+  // honest reach of this is a few minutes - long enough for the dead
+  // patches that lose saves, and no promise beyond that.
+  var saveQueue = [];
+  // How long a queued save is worth retrying. Past this the radio has
+  // moved on and there is nothing left to save, so the entry is
+  // dropped and said so rather than retried forever.
+  var saveQueueMaxAge = 15 * 60 * 1000;
+  var saveRetryMs = 10000;
+  var saveFlushing = false;
+  var saveRetryTimer = null;
+  (function loadSaveQueue() {
+    var stored = store.get("iar.savequeue", []);
+    if (!stored || !stored.length) return;
+    stored.forEach(function (item) {
+      if (!item || !item.id) return;
+      saveQueue.push(item);
+      savingIds[item.id] = true;
+    });
+    // A page reloaded still off the network has to get back to these
+    // on its own; the radio being reachable is the other trigger.
+    scheduleSaveFlush();
+  })();
+  function persistSaveQueue() { store.set("iar.savequeue", saveQueue); }
+  // A queued save lands minutes after the tap that asked for it, quite
+  // possibly with the settings sheet long closed, so the answer goes
+  // to the transport line as well as to the card it came from.
+  function saveNews() { return [stateEl, $("savestatus")]; }
+  function scheduleSaveFlush() {
+    if (saveRetryTimer || !saveQueue.length) return;
+    saveRetryTimer = setTimeout(function () {
+      saveRetryTimer = null;
+      flushSaveQueue();
+    }, saveRetryMs);
+  }
+  function dropQueuedSave(id) {
+    var before = saveQueue.length;
+    saveQueue = saveQueue.filter(function (item) { return item.id !== id; });
+    if (saveQueue.length !== before) persistSaveQueue();
+  }
+  // postSave is the one place a save reaches the radio. It marks the
+  // failures that are worth queueing - the request never arrived, or
+  // the radio is up but not answering - apart from the ones that mean
+  // the song is simply gone, which no amount of retrying fixes.
+  function postSave(id, tag) {
+    var body = "tag=" + encodeURIComponent(tag || "");
+    if (id) body += "&which=" + encodeURIComponent(id);
+    return fetch("/save", { method: "POST", headers: headers, body: body })
+      .then(function (r) {
+        if (r.status === 401) { loggedOut(); throw new Error("logged out"); }
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (r.status >= 500) {
+            var busy = new Error(d.error || ("error " + r.status));
+            busy.offline = true;
+            throw busy;
+          }
+          if (!r.ok) throw new Error(d.error || d.ack || ("error " + r.status));
+          return d;
+        });
+      }, function () {
+        var gone = new Error("no connection to the radio");
+        gone.offline = true;
+        throw gone;
+      });
+  }
+  function queueSave(id, tag, title) {
+    if (!id) return;
+    for (var i = 0; i < saveQueue.length; i++) {
+      if (saveQueue[i].id === id) return;
+    }
+    saveQueue.push({ id: id, tag: tag || "", title: title || "", at: Date.now() });
+    persistSaveQueue();
+    savingIds[id] = true;
+    updateSaveButtons(null);
+    scheduleSaveFlush();
+  }
+  function saveSettled(id, ok) {
+    delete savingIds[id];
+    if (ok) localSaved[id] = true;
+    updateSaveButtons(null);
+  }
+  // flushSaveQueue drains the queue oldest first, one at a time, and
+  // stops at the first entry the network refuses so the rest keep
+  // their order and their turn.
+  function flushSaveQueue() {
+    if (saveFlushing || !saveQueue.length) return;
+    var item = saveQueue[0];
+    var named = item.title || "an earlier song";
+    if (Date.now() - (item.at || 0) > saveQueueMaxAge) {
+      saveQueue.shift();
+      persistSaveQueue();
+      delete savingIds[item.id];
+      updateSaveButtons(null);
+      setStatus(saveNews(), "gave up saving " + named + " - the radio has moved past it", "err");
+      flushSaveQueue();
+      return;
+    }
+    saveFlushing = true;
+    postSave(item.id, item.tag).then(function (d) {
+      saveFlushing = false;
+      saveQueue.shift();
+      persistSaveQueue();
+      var ok = !!(d && d.saved);
+      saveSettled(item.id, ok);
+      setStatus(saveNews(), ok ? "saved " + named : "could not save " + named, ok ? "ok" : "err");
+      say(ok ? "saved " + named : "could not save " + named);
+      if (mode === "saved") loadChunks();
+      flushSaveQueue();
+    })["catch"](function (e) {
+      saveFlushing = false;
+      if (e && e.offline) { scheduleSaveFlush(); return; }
+      saveQueue.shift();
+      persistSaveQueue();
+      saveSettled(item.id, false);
+      setStatus(saveNews(), "could not save " + named + ": " + e.message, "err");
+      flushSaveQueue();
+    });
+  }
+  window.addEventListener("online", flushSaveQueue);
 
   function saveTargets() {
     if (pf.active) return { cur: pf.playingId, prev: pf.prevId };
@@ -1843,13 +2207,17 @@
   function setSavedClass(btn, id) {
     if (!btn) return;
     var on = isSaved(id);
+    // A save waiting on the signal is neither saved nor not saved, and
+    // the control has to say so or the listener presses it again.
+    var waiting = !on && !!(id && savingIds[id]);
     setClass(btn, "saved", on);
+    setClass(btn, "saving", waiting);
     setAttr(btn, "aria-pressed", on ? "true" : "false");
     if (btn === $("save")) {
       // Filled heart, same geometry, so nothing moves when it flips.
       setHTML($("saveglyph"), on ? icon.heartFull : icon.heart);
-      setText($("savelabel"), on ? "Saved" : "Save");
-      setAttr(btn, "aria-label", on ? "Already saved" : "Save this track");
+      setText($("savelabel"), waiting ? "Saving" : (on ? "Saved" : "Save"));
+      setAttr(btn, "aria-label", waiting ? "Saving this track" : (on ? "Already saved" : "Save this track"));
     }
   }
   // updateSaveButtons re-derives the greyed state; called on every
@@ -1867,10 +2235,22 @@
       (s.saved_ids || []).forEach(function (id) { savedIds[id] = true; });
       if (s.track && s.track.saved) savedIds[s.track.id] = true;
       if (s.prev && s.prev.saved) savedIds[s.prev.id] = true;
+      // The radio can have a song safe before its answer gets back to
+      // this device - a save whose reply was lost with the signal is
+      // still a save, and retrying it would be asking twice.
+      Object.keys(savingIds).forEach(function (id) {
+        if (!savedIds[id]) return;
+        delete savingIds[id];
+        dropQueuedSave(id);
+      });
     }
     var ids = saveTargets();
     setSavedClass($("save"), ids.cur);
     setSavedClass($("saveprev"), ids.prev);
+    // The marker in front of the song's name is derived from exactly
+    // this state, so it is repainted from exactly here.
+    paintSaveMark();
+    applyMediaMetadata();
   }
 
   // doSave saves what the listener is hearing: the buffered player's
@@ -1884,29 +2264,50 @@
       setStatus(statusEl, "already saved", "ok");
       return Promise.resolve({ ack: "already saved" });
     }
-    var which = "";
-    if (pf.active) {
-      if (!id) {
-        setStatus($("savestatus"), wantPrev ? "no previous track on this device yet" : "nothing is playing on this device yet", "err");
-        return Promise.resolve(null);
-      }
-      which = id;
-    } else if (wantPrev) {
-      which = "prev";
+    // Always a concrete track id, even where the old code could get
+    // away with "the one playing": a save that waits out a dead patch
+    // has to name the song the listener meant, not whichever song is
+    // playing when the signal returns.
+    if (!id) {
+      setStatus(statusEl, wantPrev
+        ? "no previous track to save yet"
+        : (pf.active ? "nothing is playing on this device yet" : "nothing is playing yet"), "err");
+      return Promise.resolve(null);
     }
-    var body = "tag=" + encodeURIComponent(saveTag());
-    if (which) body += "&which=" + encodeURIComponent(which);
+    if (savingIds[id]) {
+      setStatus(statusEl, "already saving that track", "ok");
+      return Promise.resolve({ ack: "already saving" });
+    }
+    var tag = saveTag();
+    var named = wantPrev ? ((lastPrev && lastPrev.title) || "") : (lastNow || "");
     buzz();
-    return act(btn, statusEl, "/save", body,
-      wantPrev ? "saving the previous track…" : "saving this track…").then(function (d) {
-      if (!d) return d;
-      // The server says whether the track is in the snippets; a refused
-      // save must not leave the control claiming it is.
-      if (id && d.saved) {
-        localSaved[id] = true;
-        updateSaveButtons(null);
-      }
+    savingIds[id] = true;
+    updateSaveButtons(null);
+    if (btn) {
+      btn.setAttribute("aria-disabled", "true");
+      btn.classList.add("is-working");
+      releasePress();
+    }
+    setStatus(statusEl, wantPrev ? "saving the previous track…" : "saving this track…", "");
+    return postSave(id, tag).then(function (d) {
+      saveSettled(id, !!(d && d.saved));
+      setStatus(statusEl, d.ack || "done", "ok");
+      say(d.ack || "done");
       if (mode === "saved") loadChunks();
+      return d;
+    })["catch"](function (e) {
+      if (e && e.offline) {
+        queueSave(id, tag, named);
+        setStatus(statusEl, "no signal - queued; this song saves itself when the radio is reachable", "warn");
+        say("queued to save when the connection is back");
+        return { queued: true };
+      }
+      saveSettled(id, false);
+      setStatus(statusEl, "failed: " + e.message, "err");
+      say("failed: " + e.message);
+      return null;
+    }).then(function (d) {
+      if (btn) { btn.removeAttribute("aria-disabled"); btn.classList.remove("is-working"); }
       return d;
     });
   }
@@ -2107,6 +2508,9 @@
       if (!s) return;
       pollFails = 0;
       setText($("conn"), "connected");
+      // Proof the radio is reachable: whatever a dead patch swallowed
+      // can go now.
+      if (saveQueue.length) flushSaveQueue();
       paintNow(s);
       // Every change to the sound branches the session, so the name in
       // the status line is also how the station list learns that what
@@ -2197,6 +2601,166 @@
   var playlist = [];        // checked songs in the selected tags and languages
   var current = null;       // song playing in saved mode
   var repeatOne = null;     // song looped on its own
+  var rowPlay = [];         // per-row play buttons, so they can be repainted
+
+  // ---- the saved songs' own bank -----------------------------------
+  // The saved songs used to be streamed off the radio on the tap that
+  // asked for them: press play, wait, hear it stutter, then wait again
+  // at every song change - which on a car's connection is most of the
+  // listening. They get what the live stream gets now: whole songs
+  // downloaded ahead of time into this device's own store, to the same
+  // per-device buffering level, so "Maximum" means maximum in both
+  // modes and a handful of saved songs is simply all of them.
+  var sv = {
+    have: {},        // key -> {url, bytes}
+    ctrl: null,
+    timer: null,
+    full: false,     // the device refused to store a downloaded song
+    adopted: false   // the store has been read back at least once
+  };
+
+  function svCap() { return pfStoreCap(); }
+  // svWant is how many songs to have ready, counted from the one
+  // playing. Behind the live stream it is a handful - enough that
+  // switching over plays at once, not a second full bank.
+  function svWant() { return mode === "saved" ? svCap() : Math.min(warmDepth, svCap()); }
+
+  // svOrder is the order worth downloading in: the song playing, then
+  // the loop in the order it will play it, then everything else, which
+  // is still one tap away on its own row.
+  function svOrder() {
+    var out = [];
+    var seen = {};
+    function push(c) {
+      var k = keyOf(c);
+      if (seen[k]) return;
+      seen[k] = true;
+      out.push(c);
+    }
+    var at = 0;
+    if (current) {
+      chunks.forEach(function (c) { if (c.url === current.url) push(c); });
+      playlist.forEach(function (c, i) { if (c.url === current.url) at = i + 1; });
+    }
+    for (var i = 0; i < playlist.length; i++) push(playlist[(at + i) % playlist.length]);
+    chunks.forEach(push);
+    return out;
+  }
+
+  function svForget(key) {
+    if (sv.have[key]) {
+      try { URL.revokeObjectURL(sv.have[key].url); } catch (e) {}
+      delete sv.have[key];
+    }
+    try { idbReq(idbNamed("chunks", "readwrite")["delete"](key))["catch"](function () {}); } catch (e) {}
+  }
+
+  // svTrim caps the bank at the level's ceiling, oldest first, and
+  // never drops the song currently playing out of under it.
+  function svTrim() {
+    if (!idbSupported || !pf.db) return;
+    var cap = svCap();
+    var playing = current ? keyOf(current) : "";
+    idbReq(idbNamed("chunks", "readonly").getAll()).then(function (recs) {
+      if (!recs || recs.length <= cap) return;
+      recs.sort(function (a, b) { return a.saved - b.saved; });
+      recs.slice(0, recs.length - cap).forEach(function (rec) {
+        if (rec.key === playing) return;
+        svForget(rec.key);
+      });
+      svShow();
+    })["catch"](function () {});
+  }
+
+  // svPrune drops what the radio no longer lists: a deleted song, or
+  // one whose rename moved its file out from under the name the bank
+  // knows it by.
+  function svPrune() {
+    var known = {};
+    chunks.forEach(function (c) { known[keyOf(c)] = true; });
+    Object.keys(sv.have).forEach(function (k) { if (!known[k]) svForget(k); });
+  }
+
+  // svAdopt reads the store back after a reload, so a device that
+  // banked its songs yesterday still has them today.
+  function svAdopt() {
+    if (!idbSupported) return Promise.resolve();
+    return dbReady().then(function () {
+      return idbReq(idbNamed("chunks", "readonly").getAll());
+    }).then(function (recs) {
+      var known = {};
+      chunks.forEach(function (c) { known[keyOf(c)] = true; });
+      (recs || []).forEach(function (rec) {
+        if (!known[rec.key]) { svForget(rec.key); return; }
+        if (!sv.have[rec.key]) {
+          sv.have[rec.key] = { url: URL.createObjectURL(rec.blob), bytes: rec.blob.size };
+        }
+      });
+      sv.adopted = true;
+      svShow();
+    })["catch"](function () {});
+  }
+
+  function svShow() {
+    var n = Object.keys(sv.have).length;
+    var note = n ? n + " song" + (n === 1 ? "" : "s") + " ready on this device" : "";
+    if (sv.full) note += (note ? "  ·  " : "") + "no room left on this device for more";
+    setText($("savedbank"), note);
+  }
+
+  // svEnsure downloads the next song the level asks for, one at a time.
+  function svEnsure() {
+    if (!idbSupported || sv.ctrl || !chunks.length) return;
+    if (mode !== "saved" && !preloadOther) return;
+    var want = svWant();
+    var order = svOrder();
+    var next = null;
+    var banked = 0;
+    for (var i = 0; i < order.length && banked < want; i++) {
+      if (sv.have[keyOf(order[i])]) { banked++; continue; }
+      next = order[i];
+      break;
+    }
+    if (!next) { svShow(); return; }
+    var song = next;
+    var key = keyOf(song);
+    var ctrl = new AbortController();
+    sv.ctrl = ctrl;
+    var deadline = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, trackFetchTimeout);
+    dbReady().then(function () {
+      // no-store for the same reason the live bank uses it: this device
+      // keeps the song itself, in a place it can actually empty.
+      return fetch(song.url, { signal: ctrl.signal, cache: "no-store" });
+    }).then(function (r) {
+      clearTimeout(deadline);
+      if (r.status === 401 || r.status === 403) { throw { auth: true }; }
+      if (!r.ok) throw new Error("song " + r.status);
+      return r.blob();
+    }).then(function (blob) {
+      sv.ctrl = null;
+      sv.have[key] = { url: URL.createObjectURL(blob), bytes: blob.size };
+      return idbReq(idbNamed("chunks", "readwrite").put({ key: key, blob: blob, saved: Date.now() }))
+        .then(function () { sv.full = false; })
+        ["catch"](function () {
+          // Out of room: the song is ready this session but will not
+          // survive a reload, which is worth saying rather than
+          // discovering on the next drive.
+          sv.full = true;
+        });
+    }).then(function () {
+      svTrim();
+      svShow();
+      svEnsure();
+    })["catch"](function (e) {
+      clearTimeout(deadline);
+      sv.ctrl = null;
+      if (e && e.auth) { loggedOut(); return; }
+      // Off the network, or the file has gone: the timer retries
+      // rather than a tight loop hammering a dead connection.
+      if (sv.timer) return;
+      sv.timer = setTimeout(function () { sv.timer = null; svEnsure(); }, 5000);
+    });
+  }
 
   function tagOn(tag) { return tagsOn[tag] !== false; }
   function keyOf(c) { return c.tag + "/" + c.file; }
@@ -2333,6 +2897,7 @@
     if (!window.confirm('Delete "' + c.title + '" for good? The file and its lyrics are removed from the server.')) return;
     if (current && current.url === c.url) { savedAudio.pause(); current = null; }
     if (repeatOne && repeatOne.url === c.url) { repeatOne = null; updateLoopState(); }
+    svForget(keyOf(c));
     chunkPost("/chunks/delete", { tag: c.tag, file: c.file });
   }
 
@@ -2382,6 +2947,7 @@
   function renderChunks() {
     var box = $("chunks");
     box.innerHTML = "";
+    rowPlay = [];
     if (!chunks.length) {
       box.innerHTML = '<span class="empty">nothing saved yet - save a track from the live stream</span>';
       return;
@@ -2440,8 +3006,9 @@
       play.setAttribute("data-action", "Play");
       play.setAttribute("aria-label", "Play " + c.title);
       play.innerHTML = icon.play;
-      play.addEventListener("click", function () { playChunk(c); });
+      play.addEventListener("click", function () { toggleChunk(c); });
       wrap.appendChild(play);
+      rowPlay.push({ chunk: c, btn: play, wrap: wrap });
 
       var loop = document.createElement("button");
       loop.type = "button";
@@ -2460,7 +3027,10 @@
     });
     if (!shown) {
       box.innerHTML = '<span class="empty">no songs match the checked tags and languages</span>';
+      rowPlay = [];
+      return;
     }
+    paintRowPlay();
   }
 
   function setAllChecked(on) {
@@ -2490,7 +3060,10 @@
 
   function playChunk(c) {
     current = c;
-    savedAudio.src = c.url;
+    // The device's own copy when it has one - that is the whole point
+    // of banking them - and the radio's otherwise.
+    var banked = sv.have[keyOf(c)];
+    savedAudio.src = banked ? banked.url : c.url;
     savedAudio.play().catch(function (e) { $("savednow").textContent = "could not play: " + e.message; });
     $("savednow").className = "";
     $("savednow").textContent = c.title + "  (" + c.tag + ")";
@@ -2498,6 +3071,41 @@
     msArtist = c.subtitle ? c.subtitle + " · " + c.tag : c.tag;
     applyMediaMetadata();
     renderChunks();
+    // Playing moves the head of the queue, so what is worth having
+    // ready moves with it.
+    svEnsure();
+  }
+
+  // toggleChunk is what a row's own button does. It doubles as the
+  // pause, because a song that takes a moment to start is
+  // indistinguishable from a button that did nothing - and the pause
+  // it performs is the player's own, not a second kind of pause.
+  function toggleChunk(c) {
+    if (current && current.url === c.url && savedAudio.src) {
+      if (savedAudio.paused) {
+        savedAudio.play()["catch"](function (e) {
+          $("savednow").textContent = "could not play: " + e.message;
+        });
+      } else {
+        savedAudio.pause();
+      }
+      return;
+    }
+    playChunk(c);
+  }
+  function chunkPlaying(c) {
+    return !!(current && current.url === c.url && savedAudio.src && !savedAudio.paused);
+  }
+  // paintRowPlay repaints the rows' own buttons without rebuilding the
+  // list: a play or pause must not collapse the panel someone has open.
+  function paintRowPlay() {
+    rowPlay.forEach(function (row) {
+      var on = chunkPlaying(row.chunk);
+      setHTML(row.btn, on ? icon.pause : icon.play);
+      setAttr(row.btn, "data-action", on ? "Pause" : "Play");
+      setAttr(row.btn, "aria-label", (on ? "Pause " : "Play ") + row.chunk.title);
+      setClass(row.wrap, "playing", !!(current && current.url === row.chunk.url));
+    });
   }
 
   function unloopOne() {
@@ -2535,8 +3143,8 @@
     step(1);
   });
   savedAudio.addEventListener("ended", function () { if (!repeatOne) step(1); });
-  savedAudio.addEventListener("play", function () { setSavedPlayButton(true); mediaPlaybackState("playing"); });
-  savedAudio.addEventListener("pause", function () { setSavedPlayButton(false); mediaPlaybackState("paused"); });
+  savedAudio.addEventListener("play", function () { setSavedPlayButton(true); mediaPlaybackState("playing"); paintRowPlay(); });
+  savedAudio.addEventListener("pause", function () { setSavedPlayButton(false); mediaPlaybackState("paused"); paintRowPlay(); });
 
   function loadChunks() {
     fetch("/api/chunks").then(function (r) {
@@ -2550,9 +3158,14 @@
       rebuildPlaylist();
       renderChunks();
       updateLoopState();
+      // The bank follows the listing: songs the radio no longer has go,
+      // and whatever the buffering level asks for is fetched.
+      if (sv.adopted) { svPrune(); svEnsure(); } else { svAdopt().then(svEnsure); }
     }).catch(function () {});
   }
-  setInterval(function () { if (mode === "saved") loadChunks(); }, 30000);
+  // The listing is worth refreshing in live mode too when this device
+  // keeps saved songs ready behind it.
+  setInterval(function () { if (mode === "saved" || preloadOther) loadChunks(); }, 30000);
 
   syncTransportUI();
   setMode(mode);

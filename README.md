@@ -353,7 +353,8 @@ way to get a fresh run out of the same settings was to load a different
 preset and load this one back, which threw the steering away and took
 as long as a cold start. Nothing goes quiet: the song in the speakers
 plays on, and the radio crosses over the moment the first fresh song is
-ready. `iar buffer clear` does the same to a stopped radio.
+ready. The phone remote has the same button under **Settings -> The
+radio itself**, and `iar buffer clear` does the same to a stopped radio.
 
 ## Sessions and presets
 
@@ -490,11 +491,18 @@ minutes of dead signal. How much is buffered is a per-device choice
 under Settings, from one track ahead on metered connections to about 45
 minutes - or, on the Ultra setting, about three hours for a flight or
 a long dead zone (a phone that runs out of room says so rather than
-failing quietly). In buffered mode the Next button skips only on that
-device; other listeners and the machine keep their own position. A
-Settings switch selects the direct live stream instead - the one
-`/stream.mp3` serves - whose Next skips for everyone. The Loop button
-works the same way: when a track is a keeper, tap it and the song
+failing quietly). That one choice governs your saved songs as well, so
+*Maximum* means the same depth in both modes.
+
+In buffered mode the Next button skips only on that device; other
+listeners and the machine keep their own position. Next also means *not
+this one*: the skipped song is deleted from the device and never
+downloaded or played again, so a device with nothing else ready sounds
+the trouble beeps and waits for the radio rather than starting the song
+you have just rejected over from the top. A Settings switch selects the
+direct live stream instead - the one `/stream.mp3` serves - whose Next
+skips for everyone. The Loop button works the same way: when a track is
+a keeper, tap it and the song
 repeats until you tap again - on this device alone in buffered mode,
 for the whole radio (speakers, stream and all) on the direct stream.
 Skipping, steering or changing the session turns the loop off, since
@@ -509,14 +517,32 @@ its edge. If the stream drops or stalls, the page reconnects on its own
 and picks up the moment the stream is reachable again; only an expired
 login stops it.
 
+**Preload songs for the inactive mode** is off by default. Switched on,
+the device keeps a few saved songs ready while you are on the live
+stream, and a few live songs ready while you are on the saved ones, so
+moving between the two away from a good signal plays straight away
+instead of waiting. It is deliberately shallow - a handful either way,
+not a second full bank - because it spends data on music you may not
+listen to.
+
 **Audio cues for trouble** are on by default. A radio that quietly
 repeats itself looks exactly like a radio that is working, so when the
 music stops arriving and the same song comes round again, the sound
-ducks for three soft beeps and comes back. It repeats at most every few
+ducks for six soft beeps and comes back. It repeats at most every few
 minutes, and switching it off in Settings is one tap.
 
 Saving from the phone captures what *you* are hearing - in buffered mode
-that is this device's track, which may trail the machine's speakers.
+that is this device's track, which may trail the machine's speakers. The
+song's own name carries the answer: **Saving:** in front of it from the
+moment you ask until the radio has the song, then **Saved:** for as long
+as that song plays - on the page and on the car screen alike, rather
+than a confirmation you had to be looking at the right second to catch.
+A save that cannot reach the radio at all, in a tunnel or on a mountain
+road, is queued on the device and goes through by itself when the signal
+comes back. The radio keeps a song saveable while it is the playing or
+the previous one, so this covers the dead patches of a drive rather than
+an afternoon offline; past a quarter of an hour the phone says it has
+given up instead of retrying for ever.
 
 The pencil beside the song's name renames it, so a name you disagree
 with can be fixed while the song is still playing instead of from the
@@ -539,9 +565,10 @@ Two car conveniences live under Settings, remembered per device:
 - **The previous-track button saves the track.** An endless stream has
   no meaningful "previous", so that button - on the steering wheel,
   headset or car screen - doubles as save-what-I-am-hearing, confirmed
-  by a "Saved:" flash in the title. It captures every previous-track
-  input, a voice assistant's "previous song" included. In the
-  saved-songs player, previous keeps its normal meaning.
+  by the "Saved:" marker in front of the song's name, which stays there
+  for the rest of the song. It captures every previous-track input, a
+  voice assistant's "previous song" included. In the saved-songs
+  player, previous keeps its normal meaning.
 - **Resume when the car reconnects.** When the car turns off, playback
   pauses and resumes by itself when the car asks to play again - never
   on a timer, so a phone in a pocket stays silent. Hands-free resume
@@ -554,10 +581,19 @@ The remote's **Saved** mode plays your saved songs entirely on the
 phone; the live stream and the machine's speakers are untouched. Tick
 the tags and sung languages you want and it loops through the checked
 songs forever; uncheck a song to skip it without deleting anything, or
-loop just one. Tapping a row opens the song's panel: full lyrics,
-details, and buttons to download, rename, move or delete it. Renaming
-here works the same way as the pencil on the live page: the file and
-its title tag both change.
+loop just one. Each row's own button plays that song and turns into a
+pause while it is the one playing, so a tap is always answered. Tapping
+the rest of the row opens the song's panel: full lyrics, details, and
+buttons to download, rename, move or delete it. Renaming here works the
+same way as the pencil on the live page: the file and its title tag
+both change.
+
+Saved songs are banked on the device exactly like the live stream's, to
+the same buffering level under Settings, so a song starts on the tap
+rather than loading first and the next one is ready before it is
+needed. With *Maximum* chosen and a handful of songs saved, that is all
+of them. The line under the player counts what is ready, and songs you
+delete from the radio leave the device with them.
 
 On disk, a saved song's file is named after its title with the sung
 language's tag before the extension
