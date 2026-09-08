@@ -1700,9 +1700,15 @@
     if (savingIds[id]) return "Saving: ";
     return "";
   }
+  // offlineMark says the radio itself is out of reach. A car screen
+  // shows the song and nothing else, so a device playing happily out of
+  // its own bank looks exactly like one the radio is still feeding -
+  // right up to the moment the bank runs out. This is the difference,
+  // in front of the name where it cannot be missed.
+  function offlineMark() { return radioUnreachable() ? "[X] " : ""; }
   function applyMediaMetadata() {
     if (!("mediaSession" in navigator)) return;
-    var title = saveMark() + (lastNow || "Infinite AI Radio");
+    var title = offlineMark() + saveMark() + (lastNow || "Infinite AI Radio");
     var artist = msArtist || "AI-generated stream";
     // Handing the lock screen the words it already shows still counts
     // as a change to it, and this runs on every poll.
@@ -2585,9 +2591,18 @@
       // on the first one and taking it back on the next just strobes.
       pollFails++;
       if (pollFails >= 3) setText($("conn"), "disconnected");
+      // A failed poll is the only place the car's marker can appear:
+      // the successful path repaints the metadata on its way through
+      // updateSaveButtons, and this one has to do it for itself.
+      applyMediaMetadata();
     });
   }
   var pollFails = 0;
+  // radioUnreachable is the same fact the connection line reports, and
+  // it takes three failed polls - about six seconds - rather than one,
+  // because mobile data drops the odd request on a good day and a mark
+  // that blinks is a mark a driver learns to ignore.
+  function radioUnreachable() { return pollFails >= 3; }
   poll();
   setInterval(poll, 2000);
 

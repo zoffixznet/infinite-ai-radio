@@ -16,6 +16,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   songs kept ready while the live stream plays, and a few live songs
   while the saved ones do, so switching between the two away from a
   good signal plays straight away.
+- `[X]` in front of the song's name on lock screens and car displays
+  while the radio cannot be reached, so a phone playing out of its own
+  bank is told apart from one the radio is still feeding.
 - A save that cannot reach the radio is queued on the device and goes
   through by itself when the signal comes back - for the dead patches
   of a drive, not an afternoon offline; past a quarter of an hour the

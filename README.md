@@ -554,7 +554,11 @@ song, its file is renamed on disk too, tag and all.
 
 The page publishes media-session metadata, so lock screens, Bluetooth
 displays and car interfaces show the song's title and genre line with
-working play, pause and next buttons. Browsers refuse to autoplay on an
+working play, pause and next buttons. When the radio itself cannot be
+reached, the song's name is prefixed there with `[X]`: a phone playing
+out of its own bank looks exactly like one the radio is still feeding,
+right up to the moment the bank runs out, and a car screen has room to
+say so and nothing else. Browsers refuse to autoplay on an
 untouched page, so after a reload the next tap anywhere starts the
 audio. Installing the page as a web app removes even that, though only
 over HTTPS; on the plain `http://` tailnet address the one-tap start is

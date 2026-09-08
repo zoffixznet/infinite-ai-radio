@@ -1593,9 +1593,14 @@ func TestRealBrowserResilience(t *testing.T) {
 	if !greyed {
 		t.Fatal("save button not greyed after the car save")
 	}
+	// The unreachable-radio marker can legitimately sit in front of the
+	// saved one; what is under test here is the saved one.
+	savedMarked := func(title string) bool {
+		return strings.HasPrefix(strings.TrimPrefix(title, "[X] "), "Saved: ")
+	}
 	var mark string
 	w.exec(`return navigator.mediaSession.metadata ? navigator.mediaSession.metadata.title : '';`, &mark)
-	if !strings.HasPrefix(mark, "Saved: ") {
+	if !savedMarked(mark) {
 		t.Fatalf("car metadata after the save = %q", mark)
 	}
 	// The page's headline carries the same marker, and for the same
@@ -1628,7 +1633,7 @@ func TestRealBrowserResilience(t *testing.T) {
 		if v.Src != srcAtSave {
 			break // the song moved on; the marker belongs to the next one
 		}
-		if !strings.HasPrefix(v.Title, "Saved: ") {
+		if !savedMarked(v.Title) {
 			t.Fatalf("the saved marker was taken back while the song was still playing: %q", v.Title)
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -1958,6 +1963,26 @@ func TestRealBrowserSkippedSongNeverComesBack(t *testing.T) {
 	// which is the situation the old fallback existed for.
 	sb.killPlayer()
 
+	// A car screen shows the song and nothing else, so a device playing
+	// happily out of its own bank looks exactly like one the radio is
+	// still feeding - until the bank runs out. The marker in front of
+	// the name is the difference, and it appears while the music is
+	// still playing rather than after it stops.
+	waitFor(t, 20*time.Second, "the car title to mark the radio unreachable", func() bool {
+		var v struct {
+			Title   string `json:"title"`
+			Playing bool   `json:"playing"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var on=false; for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) on=true; }
+			var m=('mediaSession' in navigator) && navigator.mediaSession.metadata;
+			return {title: m ? m.title : '', playing: on};`, &v)
+		if strings.HasPrefix(v.Title, "[X] ") && !v.Playing {
+			t.Fatalf("the marker only arrived after the music stopped: %q", v.Title)
+		}
+		return strings.HasPrefix(v.Title, "[X] ")
+	})
+
 	banked := func() []string {
 		var keys []string
 		w.execAsync(`var cb=arguments[arguments.length-1];
@@ -2024,6 +2049,16 @@ func TestRealBrowserSkippedSongNeverComesBack(t *testing.T) {
 	if n := len(banked()); n != 0 {
 		t.Fatalf("%d skipped song(s) are still stored on the device", n)
 	}
+
+	// And the marker is not a one-way door: the radio coming back takes
+	// it off again.
+	sb.startPlayer(t)
+	waitFor(t, 30*time.Second, "the car title to drop the marker", func() bool {
+		var title string
+		w.exec(`var m=('mediaSession' in navigator) && navigator.mediaSession.metadata;
+			return m ? m.title : '';`, &title)
+		return title != "" && !strings.HasPrefix(title, "[X] ")
+	})
 }
 
 // TestRealBrowserAutoResume covers the car-off pause machinery: a
