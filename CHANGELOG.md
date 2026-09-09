@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-09
+
 ### Added
 
 - Saved songs are banked on the device the way the live stream's are,
@@ -73,6 +75,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The trouble cue is six beeps, and Settings and the README now say six
   rather than three.
 
+## [1.1.1] - 2026-09-05
+
+### Fixed
+
+- An answer of "no language in particular" survives a reload instead of
+  coming back as the preset's language.
+- A session saved before the languages belonged to sessions keeps
+  singing what it was singing.
+
+## [1.1.0] - 2026-09-05
+
+### Added
+
+- The radio can be held on standby: nothing plays and nothing is
+  generated until it is woken.
+- A song can be renamed from the page that is playing it, and the new
+  name follows it into every copy that outlives playback.
+
+### Changed
+
+- A song is named where its words are written, and nothing renames it
+  afterwards.
+- The languages a session sings in belong to the session rather than to
+  the machine's configuration.
+- A restart resumes the sound that was playing, and changing it
+  branches the session rather than overwriting it.
+
 ## [1.0.0] - 2026-09-03
 
 First public release. Everything below is what you get on day one.
@@ -127,5 +156,8 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/zoffixznet/infinite-ai-radio/releases/tag/v1.0.0
