@@ -107,9 +107,12 @@ func runPlay(pf playFlags) error {
 	orch := player.New(a.cfg, eng, builder, store, sess, pl, a.log)
 	orch.Timings = a.timings
 	orch.Library = a.library()
+	// Which build is running: the buffer is stamped with it, the status
+	// display shows it, and the phone shows the same string in its
+	// settings.
+	orch.BuildStamp = version
 	if a.cfg.Buffer.Phased {
 		orch.Buffer = trackbuffer.New(filepath.Join(a.paths.DataDir, "buffer"), a.cfg.MP3Quality, a.log)
-		orch.BuildStamp = version
 	}
 	if pf.telemetry {
 		// Phased generation's whole point is an empty card between
@@ -123,6 +126,11 @@ func runPlay(pf playFlags) error {
 		})
 	}
 	orch.SnippetsDir = a.snippetsDir()
+	// The build, beside the paths: a rebuild clears the buffer and
+	// reloads the page, and this is the string to check the phone's
+	// settings against when something looks like it came from the
+	// version before.
+	fmt.Fprintf(os.Stderr, "iar: Infinite AI Radio %s\n", version)
 	// Saves land here; say so up front instead of making the listener
 	// dig the path out of a save acknowledgment or the docs.
 	fmt.Fprintf(os.Stderr, "iar: saved tracks go to %s\n", orch.SnippetsDir)

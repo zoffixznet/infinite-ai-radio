@@ -75,6 +75,11 @@ type Config struct {
 	Mailer Mailer
 	// SnippetsDir is where saved chunks live (served in saved mode).
 	SnippetsDir string
+	// Version is the running binary's version string, shown in the
+	// page's settings. The machine prints the same string at startup,
+	// so the two can be read against each other - which is the whole
+	// question when a page has been sitting open across a rebuild.
+	Version string
 }
 
 // Server is the running remote.
@@ -452,7 +457,8 @@ type permData struct {
 // handlePlayer serves the main page.
 func (s *Server) handlePlayer(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	s.render(w, http.StatusOK, "player.html", map[string]any{
-		"Nav": s.nav(u, "player"),
+		"Nav":     s.nav(u, "player"),
+		"Version": s.cfg.Version,
 		"Perms": permData{
 			Steer: u.Perms.Steer, NewPrompt: u.Perms.NewPrompt,
 			Save: u.Perms.Save, Admin: u.Perms.Admin,

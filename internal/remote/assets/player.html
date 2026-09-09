@@ -21,6 +21,7 @@
       <button id="mode-live" class="tap on" role="tab" aria-selected="true" type="button">Live</button>
       <button id="mode-saved" class="tap" role="tab" aria-selected="false" type="button">Saved</button>
     </div>
+    <button id="hold" class="iconbtn tap" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Put the radio on standby" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3.6v7.8"/><path d="M17.9 6.5a7.7 7.7 0 1 1-11.8 0"/></svg></button>
     <button id="more" class="iconbtn tap" type="button" aria-label="Settings and more" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.34.37.63.67.83.3.2.65.31 1.01.31H21a2 2 0 0 1 0 4h-.09c-.36 0-.71.11-1.01.31-.3.2-.53.49-.67.83z"/></svg></button>
     <span id="conn" class="sr-only" role="status"></span>
     <span id="say" class="sr-only" role="status" aria-live="polite"></span>
@@ -162,7 +163,10 @@
 
 <dialog class="sheet" id="sheet" aria-label="Settings and more">
   <div class="sheethead">
-    <h2>Settings</h2>
+    <div class="sheettitle">
+      <h2>Settings</h2>
+      <p class="sheetversion">{{.Nav.Product}} {{.Version}}</p>
+    </div>
     <button class="iconbtn tap" id="sheetclose" type="button" aria-label="Close settings"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </div>
   <div class="sheetbody" tabindex="-1" autofocus>

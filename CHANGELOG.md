@@ -16,6 +16,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   songs kept ready while the live stream plays, and a few live songs
   while the saved ones do, so switching between the two away from a
   good signal plays straight away.
+- A standby button on the app bar, beside the settings gear: holding
+  the radio no longer means opening Settings and scrolling. The switch
+  in Settings is still there and the two follow each other.
+- The running build is shown where Settings opens, printed at startup
+  (`iar: Infinite AI Radio <version>`) and repeated by `status`, so a
+  page left open across a rebuild can be told from a fresh one.
 - `[X]` in front of the song's name on lock screens and car displays
   while the radio cannot be reached, so a phone playing out of its own
   bank is told apart from one the radio is still feeding.
@@ -47,6 +53,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A control pressed with no signal answers in seconds instead of
+  sitting on the browser's own connect timeout, and says the radio is
+  out of reach rather than blaming what was asked for. Waking a radio
+  from a dead zone was the worst case: the button simply spun.
+- A song whose local copy would not start left the page reporting
+  "playing (buffered)" over silence, because the next status repaint
+  read the song that had been picked rather than the element that was
+  supposed to be making sound. The device now says so, moves to the
+  next song, and stops after three refusals in a row rather than
+  working through the whole bank.
+- Pressing play primes the audio elements inside the tap, the way the
+  tap-anywhere path already did. Without it, the wait to open the
+  store and ask the radio what is coming could outlive the gesture
+  that authorised the sound - which is a slow connection, exactly
+  where it hurts.
 - `standby` in the terminal held the radio as the help said it did.
   Typed, it steered the music with the word instead.
 - The trouble cue is six beeps, and Settings and the README now say six

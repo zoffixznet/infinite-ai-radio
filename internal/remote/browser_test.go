@@ -767,23 +767,39 @@ func TestRealBrowser(t *testing.T) {
 	if !settings.Cues {
 		t.Fatal("audio cues for trouble were not on by default")
 	}
+	// Which build served this page. The machine prints the same string
+	// when it starts, and the only reason to show it here is so the two
+	// can be read against each other after a rebuild.
+	var build string
+	w.exec(`return (document.querySelector('.sheetversion')||{}).textContent||'';`, &build)
+	if !strings.HasPrefix(build, "Infinite AI Radio ") ||
+		strings.TrimSpace(strings.TrimPrefix(build, "Infinite AI Radio ")) == "" {
+		t.Fatalf("the settings do not name the running build: %q", build)
+	}
 	w.click("#sheetclose")
 
 	// The radio can be held from the phone, and a held radio says so
 	// where it cannot be scrolled past - the case that matters is the
 	// listener who forgot, whose device carries on playing songs it
 	// already has until they run out.
-	w.click("#more")
-	w.exec(`document.getElementById('standby').click(); return true;`, nil)
-	w.click("#sheetclose")
+	// Holding the radio is one tap on the app bar, not two taps and a
+	// scroll inside the settings sheet - and the button says which
+	// state the radio is in, with the switch in Settings following it,
+	// because they are the same act.
+	w.click("#hold")
 	waitFor(t, 15*time.Second, "the standby banner to appear", func() bool {
 		var v struct {
 			Hidden bool   `json:"hidden"`
 			Text   string `json:"text"`
+			Held   bool   `json:"held"`
+			Box    bool   `json:"box"`
 		}
 		w.exec(`var b=document.getElementById('standbybar');
-			return {hidden: !!b.hidden, text: (document.getElementById('standbytext')||{}).textContent||""};`, &v)
-		return !v.Hidden && strings.Contains(v.Text, "standby")
+			return {hidden: !!b.hidden,
+				text: (document.getElementById('standbytext')||{}).textContent||"",
+				held: document.getElementById('hold').classList.contains('on'),
+				box: !!document.getElementById('standby').checked};`, &v)
+		return !v.Hidden && strings.Contains(v.Text, "standby") && v.Held && v.Box
 	})
 	// Pressing play into a held radio is allowed, and the banner
 	// switches to the wording for someone who is listening anyway:
@@ -795,18 +811,21 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`return (document.getElementById('standbytext')||{}).textContent||"";`, &text)
 		return strings.Contains(text, "silen") && !strings.Contains(text, "wake it to start again")
 	})
-	// Waking clears it for everyone.
+	// Waking clears it for everyone, and the app-bar button lets go of
+	// its held colour with it.
 	w.click("#standbywake")
 	waitFor(t, 15*time.Second, "the banner to clear on waking", func() bool {
 		var v struct {
 			Hidden bool `json:"hidden"`
 			Held   bool `json:"held"`
+			Button bool `json:"button"`
 		}
 		w.execAsync(`var cb = arguments[arguments.length - 1];
 			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
-				cb({hidden: !!document.getElementById('standbybar').hidden, held: !!st.standby});
+				cb({hidden: !!document.getElementById('standbybar').hidden, held: !!st.standby,
+				    button: document.getElementById('hold').classList.contains('on')});
 			});`, &v)
-		return v.Hidden && !v.Held
+		return v.Hidden && !v.Held && !v.Button
 	})
 	// Leave listening off again: this device only asked for songs to
 	// prove the warning, and a page that remembers wanting them would
@@ -2059,6 +2078,60 @@ func TestRealBrowserSkippedSongNeverComesBack(t *testing.T) {
 			return m ? m.title : '';`, &title)
 		return title != "" && !strings.HasPrefix(title, "[X] ")
 	})
+}
+
+// TestRealBrowserSilentSongIsNotReportedAsPlaying reproduces the state a
+// listener could only escape by pressing Next: the page reporting
+// "playing (buffered)" with no sound and a dead timeline. A song is
+// named the instant it is picked, seconds before play() settles, and
+// the status repaint on the next poll read that name rather than the
+// element - so a song that never started was painted straight over its
+// own error, and the device sat in silence claiming to work.
+func TestRealBrowserSilentSongIsNotReportedAsPlaying(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":2,"library_max_mb":0`)
+	fe.setTrackSeconds(60)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+
+	// Every attempt to start a song fails the way a truncated download
+	// does: the song is picked, so the page knows its name, but no
+	// sound ever comes of it. Armed before play, so the very first song
+	// is the one that refuses.
+	w.exec(`HTMLMediaElement.prototype.play = function () {
+			return Promise.reject(new DOMException("no decoder", "NotSupportedError"));
+		};
+		document.getElementById('buffered').click();
+		return true;`, nil)
+	w.click("#play")
+
+	honest := false
+	deadline := time.Now().Add(25 * time.Second)
+	for time.Now().Before(deadline) {
+		var v struct {
+			Pill    string `json:"pill"`
+			Playing bool   `json:"playing"`
+		}
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var on=false; for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) on=true; }
+			return {pill: (document.getElementById('streamstate')||{}).textContent||"",
+				playing: on};`, &v)
+		if !v.Playing && strings.Contains(v.Pill, "playing (buffered)") {
+			t.Fatalf("the page reports %q with no sound coming out of it", v.Pill)
+		}
+		for _, honestly := range []string{"would not start", "will not play", "waiting for the radio"} {
+			if strings.Contains(v.Pill, honestly) {
+				honest = true
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !honest {
+		t.Fatal("the page never said the songs would not start")
+	}
+	_ = sb
 }
 
 // TestRealBrowserAutoResume covers the car-off pause machinery: a

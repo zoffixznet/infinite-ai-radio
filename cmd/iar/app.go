@@ -265,5 +265,6 @@ func (a *app) remoteConfig(snippetsDir string) remote.Config {
 		Sessions:     sessions,
 		Mailer:       mail.New(a.cfg.Remote.SMTP),
 		SnippetsDir:  snippetsDir,
+		Version:      version,
 	}
 }

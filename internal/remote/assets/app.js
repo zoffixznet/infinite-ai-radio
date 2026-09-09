@@ -84,7 +84,29 @@
     if (box) {
       if (box.checked !== !!on) box.checked = !!on;
     }
+    // The same fact on the app bar, one tap from anywhere rather than
+    // two taps and a scroll inside the settings sheet.
+    var btn = $("hold");
+    if (btn) {
+      setClass(btn, "on", on);
+      setAttr(btn, "aria-pressed", on ? "true" : "false");
+      setAttr(btn, "aria-label", on ? "Wake the radio" : "Put the radio on standby");
+    }
     syncStandbyBanner();
+  }
+  // toggleStandby is the one path all three controls take - the button
+  // on the app bar, the checkbox in Settings, and the banner's Wake -
+  // so holding the radio means the same thing however it was asked for.
+  // want is what the listener is asking for; the server decides, and
+  // the next poll paints whatever it decided.
+  function toggleStandby(want, btn) {
+    act(btn, [stateEl, $("steerstatus")], "/standby", "",
+      want ? "putting the radio on standby…" : "waking the radio…");
+    if (want) {
+      // Holding the radio stops this device too: otherwise the
+      // listener walks away believing music is still being made.
+      stopListening("stopped - the radio is on standby");
+    }
   }
   function syncStandbyBanner() {
     var bar = $("standbybar");
@@ -103,19 +125,16 @@
   }
   $("standbywake").addEventListener("click", function () {
     buzz();
-    act($("standbywake"), [stateEl, $("steerstatus")], "/standby", "", "waking the radio…");
+    toggleStandby(false, $("standbywake"));
+  });
+  $("hold").addEventListener("click", function () {
+    buzz();
+    toggleStandby(!radioStandby, $("hold"));
   });
   $("standby").addEventListener("change", function () {
-    // The checkbox reports what the radio IS; the server decides. A
-    // failed call leaves it painted wrong until the next poll fixes
-    // it, which is a second away.
-    act(null, [stateEl, $("steerstatus")], "/standby", "",
-      $("standby").checked ? "putting the radio on standby…" : "waking the radio…");
-    if ($("standby").checked) {
-      // Holding the radio stops this device too: otherwise the
-      // listener walks away believing music is still being made.
-      stopListening("stopped - the radio is on standby");
-    }
+    // The checkbox reports what the radio IS, and the browser has
+    // already flipped it - so its new value is the request.
+    toggleStandby($("standby").checked, null);
   });
 
   $("bufflush").addEventListener("click", function () {
@@ -295,7 +314,18 @@
       releasePress();
     }
     setStatus(statusEl, pending || "working…", "");
-    return fetch(path, { method: "POST", headers: headers, body: body || "" })
+    // Bounded. A post sent into a dead zone otherwise sits on the
+    // browser's own connect timeout - minutes of a spinning button
+    // with nothing said - and the one control most likely to be
+    // pressed there is the one that wakes the radio.
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var deadline = ctrl ? setTimeout(function () {
+      try { ctrl.abort(); } catch (e) {}
+    }, actTimeout) : null;
+    return fetch(path, {
+      method: "POST", headers: headers, body: body || "",
+      signal: ctrl ? ctrl.signal : undefined
+    })
       .then(function (r) {
         if (r.status === 401) { loggedOut(); throw new Error("logged out"); }
         return r.json().catch(function () { return {}; }).then(function (d) {
@@ -309,14 +339,27 @@
         return d;
       })
       .catch(function (e) {
-        setStatus(statusEl, "failed: " + e.message, "err");
-        say("failed: " + e.message);
+        // The radio being out of reach is not a failure of the thing
+        // that was asked for, and saying so is the difference between
+        // "try again" and "wait until you have a signal".
+        if ((e && e.name === "AbortError") || radioUnreachable()) {
+          setStatus(statusEl, "no answer from the radio - it is out of reach from here", "err");
+          say("the radio did not answer");
+        } else {
+          setStatus(statusEl, "failed: " + e.message, "err");
+          say("failed: " + e.message);
+        }
         return null;
       })
       .finally(function () {
+        if (deadline) clearTimeout(deadline);
         if (btn) { btn.removeAttribute("aria-disabled"); btn.classList.remove("is-working"); }
       });
   }
+  // actTimeout bounds one mutating post, generously enough that a slow
+  // connection still lands and briefly enough that a dead one is said
+  // out loud while the listener is still looking at the screen.
+  var actTimeout = 12000;
 
   // ---- mode switch -------------------------------------------------
   var mode = store.get("iar.mode", "live");
@@ -683,7 +726,13 @@
     // deleted from the bank, never downloaded again, and never picked -
     // pressing Next means "not this one", and a device that answers by
     // starting the same song over reads as a broken button.
-    tossed: {}
+    tossed: {},
+    // bad holds copies that would not play, for this page's lifetime
+    // only. lastAdvance is when the playing element last moved, and
+    // nudged marks that it has already been prodded once about it.
+    bad: {},
+    lastAdvance: 0,
+    nudged: false
   };
 
   // The toss list outlives a reload, because the radio goes on offering
@@ -714,6 +763,16 @@
     if (rec.title && title && rec.title !== title) return false;
     return true;
   }
+  // pfForget drops one banked song off the device. Used by the toss
+  // below, and on its own when a listing says a song is gone.
+  function pfForget(id) {
+    if (!id) return;
+    if (pf.have[id]) {
+      try { URL.revokeObjectURL(pf.have[id].url); } catch (e) {}
+      delete pf.have[id];
+    }
+    try { idbReq(idbStore("readwrite")["delete"](id))["catch"](function () {}); } catch (e) {}
+  }
   // pfToss throws one song away for good: off the device, out of the
   // listing, and onto the list of what never comes back.
   function pfToss(id, title) {
@@ -722,14 +781,16 @@
     var ids = Object.keys(pf.tossed);
     while (ids.length > maxTossed) { delete pf.tossed[ids.shift()]; }
     saveTossed();
-    if (pf.have[id]) {
-      try { URL.revokeObjectURL(pf.have[id].url); } catch (e) {}
-      delete pf.have[id];
-    }
-    try { idbReq(idbStore("readwrite")["delete"](id))["catch"](function () {}); } catch (e) {}
+    pfForget(id);
     pf.rows = pf.rows.filter(function (row) { return row.id !== id; });
     delete pf.seen[id];
   }
+  // pfPlayable reports whether a banked song is worth picking: not one
+  // the listener skipped, and not one whose copy on this device has
+  // already refused to play. A refusal keeps the bytes - the fault is
+  // usually the moment, not the file - but stops the picker handing
+  // back the same silence over and over.
+  function pfPlayable(id, title) { return !!id && !pf.bad[id] && !pfTossed(id, title); }
 
   // Buffering level (per device): how far ahead to download and how
   // many finished tracks to keep banked.
@@ -840,6 +901,13 @@
   }
 
   function pfState(text, cls) { if (pf.active) streamState(text, cls); }
+
+  // pfStallMs is how long the playing element may go without moving
+  // before the page stops calling it playing. Long enough to cover a
+  // slow start, a seek and the gap the trouble cue leaves between two
+  // songs; short enough to be noticed in the same glance that noticed
+  // the silence.
+  var pfStallMs = 8000;
 
   // pfListedPlaying reports whether the playing track is still in the
   // server listing. Once the stream consumes it, every listed row is
@@ -1203,10 +1271,10 @@
   function pfNextId(afterId, strict) {
     var ids = [];
     pf.rows.forEach(function (row) {
-      if (pf.have[row.id] && !pfTossed(row.id, row.title)) ids.push(row.id);
+      if (pf.have[row.id] && pfPlayable(row.id, row.title)) ids.push(row.id);
     });
     if (!ids.length) {
-      ids = Object.keys(pf.have).filter(function (id) { return !pfTossed(id, pf.have[id].title); });
+      ids = Object.keys(pf.have).filter(function (id) { return pfPlayable(id, pf.have[id].title); });
     }
     if (!ids.length) return null;
     var at = ids.indexOf(afterId);
@@ -1299,11 +1367,22 @@
       try { el.currentTime = 0; } catch (e) {}
     }
     el.loop = pf.loop;
+    // The clock the status line is checked against starts now: it is
+    // reasonable for a song to take a moment to get going, and
+    // unreasonable for it to take one forever.
+    pf.lastAdvance = Date.now();
+    pf.nudged = false;
     el.onended = function () { pfAdvance(); };
-    el.ontimeupdate = function () { if (pf.playingId === id) updateSeek(el); };
+    el.ontimeupdate = function () {
+      if (pf.playingId !== id) return;
+      pf.lastAdvance = Date.now();
+      pf.nudged = false;
+      updateSeek(el);
+    };
     el.play().then(function () {
       autoStarting = false;
       disarmGestureStart();
+      pfPlayFails = 0;
       pfStatus();
       pf.played = (pf.played || 0) + 1;
       lastNow = rec.title || rec.prompt || "buffered track";
@@ -1322,9 +1401,38 @@
         armGestureStart();
         return;
       }
-      pfState("could not start audio: " + (e && e.message ? e.message : e), "bad");
+      // pf.playingId already names this song - it is set the instant
+      // the song is picked - so leaving it set means the next poll
+      // paints "playing (buffered)" straight over this error, and the
+      // device sits in silence claiming to work. That is the state a
+      // listener could only escape by pressing Next.
+      var why = (e && e.message) ? e.message : String(e);
+      if (pf.playingId === id) {
+        pf.bad[id] = true;
+        pf.playingId = null;
+        pf.wantPlay = true;
+        updateSeek(null);
+        updateSaveButtons(null);
+        paintNow(null);
+      }
+      pfPlayFails++;
+      if (pfPlayFails >= maxPlayFails) {
+        // Song after song refusing is not a bad copy, it is a device
+        // that cannot play right now. Walking the whole bank looking
+        // for one that works would throw away hours of songs over a
+        // fault that a single tap may clear.
+        pf.wantPlay = false;
+        pfState("this device will not play its songs (" + why + ") - press play to try again", "bad");
+        return;
+      }
+      pfState("that song would not start (" + why + ") - trying the next one", "bad");
+      pfEnsureDownloads();
     });
   }
+  // maxPlayFails bounds how many songs in a row may refuse before the
+  // device stops working through its bank looking for one that starts.
+  var maxPlayFails = 3;
+  var pfPlayFails = 0;
 
   // pfPreloadNext stages the following track on the idle element BEFORE
   // the current one ends, so the swap is immediate.
@@ -1577,6 +1685,28 @@
       pfShowMinutes();
       return;
     }
+    // A song is named the instant it is picked, seconds before play()
+    // settles and long before the first sound. On its own that is an
+    // intention, not a fact - so when the element that should be making
+    // sound has not moved for a while, say so rather than reporting
+    // "playing" over silence.
+    if (!resumePending && Date.now() - (pf.lastAdvance || 0) > pfStallMs) {
+      if (!pf.nudged) {
+        // One prod first: a phone waking from sleep sometimes just
+        // needs asking again.
+        pf.nudged = true;
+        var stalled = pf.els[pf.cur];
+        if (stalled) {
+          try {
+            var again = stalled.play();
+            if (again && again["catch"]) again["catch"](function () {});
+          } catch (e) {}
+        }
+      }
+      pfState("the song on this device has stopped - skip to move on", "bad");
+      pfShowMinutes();
+      return;
+    }
     var extra = pf.offline ? " · offline, playing banked tracks" : "";
     if (!pf.offline && pf.wrapped) extra = " · replaying stored tracks, nothing new yet";
     if (pf.loop) extra += " · looping this track";
@@ -1643,6 +1773,12 @@
       stopListening("stopped");
       return;
     }
+    // Inside the gesture, before the wait: the buffered player has to
+    // open its store and ask the radio what is coming before it can
+    // play anything, and on a slow connection that wait outlives the
+    // tap that authorised the sound. The tap-anywhere path has always
+    // primed the elements here; the play button never did.
+    primeAudio();
     startListening();
   });
 

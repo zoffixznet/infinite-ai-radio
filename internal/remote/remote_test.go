@@ -533,13 +533,19 @@ type harness struct {
 	dir    string
 }
 
+// testVersion stands in for the build stamp the binary passes in. The
+// page shows it so a listener can read it against the string the
+// machine prints when it starts.
+const testVersion = "v9.9.9-7-gdeadbee"
+
 func newHarness(t *testing.T, mailer Mailer) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	users := accounts.NewStore(filepath.Join(dir, "remote", "users.json"))
 	sessions := accounts.NewSessions(filepath.Join(dir, "remote", "sessions.json"), time.Hour)
 	ctl := &fakeCtl{}
-	cfg := Config{Users: users, Sessions: sessions, Mailer: mailer, SnippetsDir: filepath.Join(dir, "snippets")}
+	cfg := Config{Users: users, Sessions: sessions, Mailer: mailer,
+		SnippetsDir: filepath.Join(dir, "snippets"), Version: testVersion}
 	s, err := newServer(cfg, ctl, NewStreamer(testLog()), testLog())
 	if err != nil {
 		t.Fatal(err)
@@ -1398,6 +1404,12 @@ func TestPlayerPageContainsControls(t *testing.T) {
 		// saved bank's count, and the button that empties the radio's
 		// own buffer.
 		`id="buflevel"`, `id="preloadother"`, `id="savedbank"`, `id="bufflush"`, `id="bufflushstatus"`,
+		// Holding the radio is one tap from the app bar, not two taps
+		// and a scroll inside the settings sheet.
+		`id="hold"`,
+		// Which build served this page, so it can be read against the
+		// string the machine printed when it started.
+		testVersion,
 		`href="/users"`, `href="/account"`, `action="/logout"`, "viewport", "/app.js", "manifest.webmanifest",
 	} {
 		if !strings.Contains(page, want) {

@@ -596,6 +596,7 @@ func (o *Orchestrator) Status() Status {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	st := Status{
+		Build:           o.BuildStamp,
 		BufferTarget:    o.cfg.BufferTracks,
 		FailStreak:      o.failStreak,
 		LastFailure:     o.lastFailure,

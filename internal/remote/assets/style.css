@@ -345,6 +345,9 @@ body.app .inner { max-width: 520px; margin: 0 auto; width: 100%; }
   border: 0; border-radius: 12px; cursor: pointer;
 }
 .iconbtn svg { width: 22px; height: 22px; display: block; }
+/* A held radio is a fact about the whole station, so the button that
+   holds it wears the same colour as the banner that announces it. */
+.iconbtn.on { color: var(--warn); background: var(--warn-fill); }
 /* The row's delete cross is drawn at the same weight as every other
    icon rather than at whatever size a font decides. */
 .rowicon svg { width: 18px; height: 18px; display: block; }
@@ -564,7 +567,15 @@ dialog.sheet::backdrop { background: var(--scrim); }
   display: flex; align-items: center; gap: var(--s3);
   padding: var(--s4) var(--s4) var(--s2);
 }
-.sheethead h2 { flex: 1; font-size: 20px; line-height: 28px; font-weight: 700; }
+.sheethead .sheettitle { flex: 1; min-width: 0; }
+.sheethead h2 { font-size: 20px; line-height: 28px; font-weight: 700; }
+/* The build this page came from, where the settings open. The machine
+   prints the same string when it starts, and the two are worth reading
+   against each other after a rebuild. */
+.sheetversion {
+  margin: 0; color: var(--text-3); font-size: 12px; line-height: 16px;
+  overflow-wrap: anywhere;
+}
 .sheetbody:focus { outline: none; }
 .sheetbody {
   overflow-y: auto; overscroll-behavior: contain;

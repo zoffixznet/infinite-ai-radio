@@ -310,6 +310,9 @@ func statusText(st player.Status) string {
 		}
 	}
 	fmt.Fprintf(&b, "engine:   %s\n", engine)
+	if st.Build != "" {
+		fmt.Fprintf(&b, "version:  %s\n", st.Build)
+	}
 	if _, _, text, ok := bufferGauge(st); ok {
 		fmt.Fprintf(&b, "buffer:   %s, generating: %v\n", text, st.Generating)
 	}

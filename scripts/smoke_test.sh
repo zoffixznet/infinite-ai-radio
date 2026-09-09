@@ -41,6 +41,12 @@ out="$SANDBOX/out.txt"
   echo "quit"
 } | "$BIN" --engine noise --player null --plain > "$out" 2>&1 || fail "iar exited non-zero"
 
+# Which build is running, in both places a listener can read it: the
+# line printed at startup and the status block. The phone shows the same
+# string in its settings, and the pair is only useful if they match.
+grep -q "^iar: Infinite AI Radio " "$out" || fail "the startup output does not name the running build"
+grep -qE "^ +version:  " "$out" || fail "status does not name the running build"
+
 grep -q "switching to white noise" "$out" || fail "steering acknowledgment missing"
 grep -q "switching to brown noise" "$out" || fail "second steering acknowledgment missing"
 grep -q "session saved as smoke-session" "$out" || fail "session naming failed"

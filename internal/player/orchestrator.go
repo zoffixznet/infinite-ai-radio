@@ -53,6 +53,10 @@ type Status struct {
 	State string
 	// Source describes the current audio source.
 	Source string
+	// Build is the running binary's version string, the same one the
+	// disk buffer is stamped with. A listener comparing the machine
+	// with the phone is asking whether they are the same build.
+	Build string
 	// Elapsed and Duration describe progress through the current track
 	// (zero for endless sources).
 	Elapsed  time.Duration

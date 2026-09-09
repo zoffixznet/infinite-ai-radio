@@ -333,9 +333,11 @@ left off and generating again once the buffer runs down. The hold is
 remembered across restarts, so a radio put on standby comes back up on
 standby.
 
-The phone remote has the same switch under **Settings -> The radio
-itself**, and a held radio says so in a banner across the top of the
-page that cannot be scrolled past. Ticking it also stops that device
+The phone remote holds it from the button beside the settings gear, on
+the app bar where every screen can reach it - it wears the banner's
+colour while the radio is held - and from the same switch under
+**Settings -> The radio itself**. A held radio says so in a banner
+across the top of the page that cannot be scrolled past. Ticking it also stops that device
 listening. A phone in buffered mode holds songs of its own, so pressing
 play into a held radio is allowed but warns, in the banner, that the
 music runs out when this device's own songs do; the banner's *Wake*
@@ -551,6 +553,13 @@ The new name is the last word: it replaces the name everywhere the song
 is kept - the queue other devices read, the copy banked for instant
 starts, the song still waiting on disk. If you had already saved that
 song, its file is renamed on disk too, tag and all.
+
+Settings opens on the build the page came from, under the heading. The
+machine prints the same string when it starts (`iar: Infinite AI Radio
+v1.2.0-4-g1a2b3c4`) and `status` in the terminal repeats it, so after a
+rebuild you can tell at a glance whether the page in your hand came
+from the binary that is running - a tab left open across a restart
+still shows the version it was served.
 
 The page publishes media-session metadata, so lock screens, Bluetooth
 displays and car interfaces show the song's title and genre line with
