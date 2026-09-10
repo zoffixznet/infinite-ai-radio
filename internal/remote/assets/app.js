@@ -382,7 +382,7 @@
       // listing, which only the saved screen used to ask for.
       if (preloadOther) loadChunks();
     } else {
-      stopListening("stopped (switched to saved chunks)");
+      stopListening("stopped (switched to the saved songs)");
       loadChunks();
     }
     syncPrevAction();
@@ -449,9 +449,13 @@
     $("playlabel").textContent = on ? "Stop" : "Play";
     playBtn.setAttribute("aria-label", on ? "Stop listening" : "Play the live stream");
   }
+  // The saved player's main button carries an aria-label, which wins
+  // over the caption inside it - so the name a screen reader announces
+  // has to change with the state here, the way the live one's does.
   function setSavedPlayButton(on) {
-    $("splayglyph").innerHTML = on ? icon.pause : icon.play;
-    $("splaylabel").textContent = on ? "Pause" : "Play";
+    setHTML($("splayglyph"), on ? icon.pause : icon.play);
+    setText($("splaylabel"), on ? "Pause" : "Play");
+    setAttr($("splay"), "aria-label", on ? "Pause this song" : "Play the selected song");
   }
 
   // ---- system-pause detection (car off, route loss) ----------------
@@ -1303,40 +1307,63 @@
     return pf.els[i];
   }
 
-  // ---- the seek row -----------------------------------------------
-  // A buffered song is a whole local file: the slider seeks it. The
-  // direct live stream has no rewind, so its row is grayed and only
-  // shows the machine's clock.
+  // ---- the seek rows ------------------------------------------------
+  // A whole file on the device is seekable: the slider moves it. A live
+  // stream is not, so its row is grayed and only shows the machine's
+  // clock. Both screens have one - the live one above the stream, the
+  // saved one above this device's own player - so the row is built
+  // once and told which element is under it.
   function fmtClock(secs) {
     if (!isFinite(secs) || secs < 0) secs = 0;
     var m = Math.floor(secs / 60), sec = Math.floor(secs % 60);
     return m + ":" + (sec < 10 ? "0" : "") + sec;
   }
-  var seekDragging = false;
-  function updateSeek(el, elapsedText, durationText) {
-    var row = $("seekrow");
-    if (!row) return;
-    if (el) {
-      setClass(row, "disabled", false);
-      var dur = el.duration;
-      if (!isFinite(dur) || dur <= 0) return;
-      if (!seekDragging) setValue($("seek"), Math.round(el.currentTime / dur * 1000));
-      setText($("seeknow"), fmtClock(el.currentTime));
-      setText($("seekdur"), fmtClock(dur));
-      return;
+  // makeSeekRow wires the three elements of one row - clock, slider,
+  // duration - to a seekable() that names the element the slider may
+  // move right now, or null when nothing may be moved. It returns the
+  // row's painter: paint(el) follows that element's clock; paint(null,
+  // elapsed, duration) grays the row and shows times from elsewhere.
+  // The drag flag is per row, so a thumb held on one screen is never
+  // yanked back by the other one's clock.
+  function makeSeekRow(prefix, seekable) {
+    var row = $(prefix + "seekrow");
+    var slider = $(prefix + "seek");
+    var nowEl = $(prefix + "seeknow");
+    var durEl = $(prefix + "seekdur");
+    var dragging = false;
+    if (slider) {
+      slider.addEventListener("input", function () { dragging = true; });
+      slider.addEventListener("change", function () {
+        dragging = false;
+        var el = seekable();
+        if (!el || !isFinite(el.duration) || el.duration <= 0) return;
+        try { el.currentTime = slider.value / 1000 * el.duration; } catch (e) {}
+      });
     }
-    setClass(row, "disabled", true);
-    setValue($("seek"), 0);
-    setText($("seeknow"), elapsedText || "0:00");
-    setText($("seekdur"), durationText || "–:––");
+    return function (el, elapsedText, durationText) {
+      if (!row) return;
+      if (el) {
+        setClass(row, "disabled", false);
+        var dur = el.duration;
+        if (!isFinite(dur) || dur <= 0) return;
+        if (!dragging) setValue(slider, Math.round(el.currentTime / dur * 1000));
+        setText(nowEl, fmtClock(el.currentTime));
+        setText(durEl, fmtClock(dur));
+        return;
+      }
+      setClass(row, "disabled", true);
+      // Unconditionally, even under a finger: a row that goes idle
+      // mid-drag has no painter left to run once the drag ends, so a
+      // thumb spared here would sit parked partway along a grayed row
+      // reading 0:00 for as long as the device waits.
+      setValue(slider, 0);
+      setText(nowEl, elapsedText || "0:00");
+      setText(durEl, durationText || "–:––");
+    };
   }
-  $("seek").addEventListener("input", function () { seekDragging = true; });
-  $("seek").addEventListener("change", function () {
-    seekDragging = false;
-    if (!pf.active || !pf.playingId) return;
-    var el = pf.els[pf.cur];
-    if (!el || !isFinite(el.duration) || el.duration <= 0) return;
-    try { el.currentTime = $("seek").value / 1000 * el.duration; } catch (e) {}
+  var updateSeek = makeSeekRow("", function () {
+    if (!pf.active || !pf.playingId) return null;
+    return pf.els[pf.cur];
   });
 
   function pfPlay(id) {
@@ -1891,7 +1918,7 @@
   function msAction(action) {
     switch (action) {
       case "play":
-        if (mode === "live") { if (!tryResume()) startListening(); } else savedAudio.play();
+        if (mode === "live") { if (!tryResume()) startListening(); } else savedPlay();
         break;
       case "pause":
         if (mode === "live") stopListening("stopped"); else savedAudio.pause();
@@ -2998,7 +3025,8 @@
   }
 
   // chunkPost drives one curation action and reloads the listing;
-  // failures land in the on-this-device line, where the eyes already are.
+  // failures land under the song's name at the top of the screen, where
+  // the eyes already are.
   function chunkPost(path, params) {
     var body = new URLSearchParams(params).toString();
     return fetch(path, { method: "POST", headers: headers, body: body })
@@ -3011,8 +3039,7 @@
       })
       .then(function (d) { loadChunks(); return d; })
       .catch(function (e) {
-        $("savednow").className = "";
-        $("savednow").textContent = "failed: " + e.message;
+        savedTrouble("failed: " + e.message);
         return null;
       });
   }
@@ -3046,7 +3073,18 @@
 
   function deleteChunk(c) {
     if (!window.confirm('Delete "' + c.title + '" for good? The file and its lyrics are removed from the server.')) return;
-    if (current && current.url === c.url) { savedAudio.pause(); current = null; }
+    if (current && current.url === c.url) {
+      savedAudio.pause();
+      current = null;
+      // The block at the top of the screen names the song playing. A
+      // deleted song is not playing, so the element is emptied and the
+      // block goes back to asking for one - a name left up there over a
+      // silent player is the screen lying about what it is doing.
+      savedAudio.removeAttribute("src");
+      savedAudio.load();
+      paintSavedNow(null);
+      updateSavedSeek(null, "0:00", null);
+    }
     if (repeatOne && repeatOne.url === c.url) { repeatOne = null; updateLoopState(); }
     svForget(keyOf(c));
     chunkPost("/chunks/delete", { tag: c.tag, file: c.file });
@@ -3161,18 +3199,6 @@
       wrap.appendChild(play);
       rowPlay.push({ chunk: c, btn: play, wrap: wrap });
 
-      var loop = document.createElement("button");
-      loop.type = "button";
-      loop.className = "rowicon tap" + (looping ? " on" : "");
-      loop.setAttribute("data-action", "Loop");
-      loop.setAttribute("aria-pressed", looping ? "true" : "false");
-      loop.setAttribute("aria-label", (looping ? "Stop looping " : "Loop ") + c.title);
-      loop.innerHTML = SVG + 'fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M4 12a8 8 0 0 1 8-8 8 8 0 0 1 6.9 4M20 12a8 8 0 0 1-8 8 8 8 0 0 1-6.9-4"/>' +
-        '<path d="M19 3v5h-5M5 21v-5h5"/></svg>';
-      loop.addEventListener("click", function () { looping ? unloopOne() : loopOne(c); });
-      wrap.appendChild(loop);
-
       box.appendChild(wrap);
       if (open) box.appendChild(panelFor(c));
     });
@@ -3195,29 +3221,134 @@
     moveChunks(chunks.filter(function (c) { return visible(c) && isChecked(c); }));
   });
 
+  // The loop lives where the live page keeps it: a button in the
+  // transport bar, beside Next - the slot the live bar gives its own
+  // loop beside Skip - wearing an accent ring while it is on. It used
+  // to be one small icon per row, which turned a colour a shade off the
+  // rest of the row and was in practice unreadable - and being per-row,
+  // it also asked "which song?" about a control that only ever means
+  // "this one".
   function updateLoopState() {
     var el = $("loopstate");
-    if (repeatOne) {
-      el.textContent = "Looping one song: " + repeatOne.title;
-      el.className = "one";
-      $("backloop").hidden = false;
-    } else {
-      el.textContent = "Looping every checked song in the selected tags and languages";
-      el.className = "";
-      $("backloop").hidden = true;
-    }
+    setText(el, repeatOne
+      ? "Looping one song: " + repeatOne.title
+      : "Looping every checked song in the selected tags and languages");
+    setClass(el, "one", !!repeatOne);
+    // The button is named for what it controls and says on or off with
+    // aria-pressed alone, exactly as the live one does. A name that
+    // flips too would have it announce "Stop looping this song,
+    // pressed" - which reads as the opposite of what is happening.
+    setClass($("sloop"), "on", !!repeatOne);
+    setAttr($("sloop"), "aria-pressed", repeatOne ? "true" : "false");
     savedAudio.loop = !!repeatOne;
   }
 
+  // ---- the saved player's own now-playing block --------------------
+  // A saved song is always a whole file - this device's copy, or the
+  // radio's over a range request - so unlike the live stream it always
+  // rewinds, and the row above the list is never grayed while one
+  // plays.
+  var updateSavedSeek = makeSeekRow("saved", function () {
+    return savedAudio.src ? savedAudio : null;
+  });
+  // paintSavedSeek follows the player when it knows how long the song
+  // is, and shows the length from the listing until it does: a song
+  // still loading has an honest duration to show and nothing to seek.
+  function paintSavedSeek() {
+    if (savedAudio.src && isFinite(savedAudio.duration) && savedAudio.duration > 0) {
+      updateSavedSeek(savedAudio);
+      return;
+    }
+    updateSavedSeek(null, "0:00", current && current.seconds ? fmtSecs(current.seconds) : null);
+  }
+  ["timeupdate", "loadedmetadata", "durationchange", "seeked"].forEach(function (ev) {
+    savedAudio.addEventListener(ev, paintSavedSeek);
+  });
+  // A song that dies after it started - the radio out of reach, a file
+  // pulled out from under it - has already resolved its play promise,
+  // so nothing catches it. The element's own error is the last place
+  // left to notice, and without it the position row keeps a frozen
+  // clock on an un-grayed row, which reads as playing.
+  savedAudio.addEventListener("error", function () {
+    if (!savedAudio.src) return; // the element being emptied on purpose
+    var err = savedAudio.error;
+    var code = err && err.code;
+    savedTrouble("could not play: " + (code === 2 ? "the radio went out of reach"
+      : code === 4 ? "this device cannot read the file"
+      : "the song stopped"));
+    setSavedPlayButton(false);
+    paintRowPlay();
+    // Grayed rather than frozen: there is nothing to seek in a song
+    // that is no longer arriving.
+    updateSavedSeek(null, "0:00", current && current.seconds ? fmtSecs(current.seconds) : null);
+  });
+
+  // paintSavedNow puts the song's name at the top of the screen the way
+  // the live page does, with its facts on the line under it rather than
+  // in brackets after it.
+  function paintSavedNow(c) {
+    var title = $("savednow");
+    var meta = $("savedmeta");
+    if (savedTroubleClear) { clearTimeout(savedTroubleClear); savedTroubleClear = null; }
+    setClass(meta, "err", false);
+    if (!c) {
+      setClass(title, "empty", true);
+      setText(title, "Pick a song, or press play.");
+      setText(meta, "");
+      return;
+    }
+    setClass(title, "empty", false);
+    setText(title, c.title);
+    var langBit = langOf(c) === "unknown" ? "" : langOf(c) + " · ";
+    setText(meta, (c.subtitle ? c.subtitle + " · " : "") + langBit + c.tag);
+  }
+  // Trouble is said under the song's name, where its facts were: the
+  // name is what tells the listener which song is refusing. It gives
+  // the facts back after a while rather than sitting on them for the
+  // rest of the drive.
+  var savedTroubleClear = null;
+  function savedTrouble(text) {
+    var meta = $("savedmeta");
+    setText(meta, text);
+    setClass(meta, "err", true);
+    say(text);
+    if (savedTroubleClear) clearTimeout(savedTroubleClear);
+    savedTroubleClear = setTimeout(function () {
+      savedTroubleClear = null;
+      paintSavedNow(current);
+    }, 10000);
+  }
+
+  // Every way of starting this player answers the same way: a refusal
+  // is said under the song's name rather than swallowed. The car's play
+  // button reaches it too, so it is one function rather than a handler
+  // that each caller remembers to attach.
+  function savedPlay() {
+    var p = savedAudio.play();
+    if (p && p["catch"]) p["catch"](function (e) { savedTrouble("could not play: " + e.message); });
+  }
+
   function playChunk(c) {
+    // Picking a different song means "play this one", the same as Prev
+    // and Next do - so the loop lets go of the song it was holding
+    // instead of silently transferring itself to the new one. Without
+    // this the transport's lamp stays lit for a song that stopped
+    // playing while savedAudio.loop, which survives a src change, keeps
+    // the new one repeating forever.
+    if (repeatOne && repeatOne.url !== c.url) {
+      repeatOne = null;
+      updateLoopState();
+    }
     current = c;
     // The device's own copy when it has one - that is the whole point
     // of banking them - and the radio's otherwise.
     var banked = sv.have[keyOf(c)];
     savedAudio.src = banked ? banked.url : c.url;
-    savedAudio.play().catch(function (e) { $("savednow").textContent = "could not play: " + e.message; });
-    $("savednow").className = "";
-    $("savednow").textContent = c.title + "  (" + c.tag + ")";
+    savedPlay();
+    paintSavedNow(c);
+    // The row starts over at the new song's own length rather than
+    // carrying the last one's clock until the file's metadata lands.
+    updateSavedSeek(null, "0:00", c.seconds ? fmtSecs(c.seconds) : null);
     lastNow = c.title;
     msArtist = c.subtitle ? c.subtitle + " · " + c.tag : c.tag;
     applyMediaMetadata();
@@ -3234,9 +3365,7 @@
   function toggleChunk(c) {
     if (current && current.url === c.url && savedAudio.src) {
       if (savedAudio.paused) {
-        savedAudio.play()["catch"](function (e) {
-          $("savednow").textContent = "could not play: " + e.message;
-        });
+        savedPlay();
       } else {
         savedAudio.pause();
       }
@@ -3271,12 +3400,6 @@
     if (!current || current.url !== c.url) playChunk(c); else renderChunks();
   }
 
-  $("backloop").addEventListener("click", function () {
-    repeatOne = null;
-    updateLoopState();
-    renderChunks();
-  });
-
   function step(dir) {
     if (!playlist.length) return;
     var i = -1;
@@ -3286,10 +3409,25 @@
     i = (i + dir + playlist.length) % playlist.length;
     playChunk(playlist[i]);
   }
+  $("sloop").addEventListener("click", function () {
+    buzz();
+    if (repeatOne) { unloopOne(); return; }
+    // Nothing picked yet: the loop starts the song the play button
+    // would have started, rather than doing nothing and saying nothing.
+    if (!current) step(1);
+    if (!current) {
+      setStatus([stateEl], "nothing to loop - check a song first", "warn");
+      return;
+    }
+    loopOne(current);
+  });
   $("snext").addEventListener("click", function () { repeatOne = null; updateLoopState(); step(1); });
   $("sprev").addEventListener("click", function () { repeatOne = null; updateLoopState(); step(-1); });
   $("splay").addEventListener("click", function () {
-    if (current && savedAudio.paused && savedAudio.src) { savedAudio.play(); return; }
+    if (current && savedAudio.paused && savedAudio.src) {
+      savedPlay();
+      return;
+    }
     if (current && !savedAudio.paused) { savedAudio.pause(); return; }
     step(1);
   });

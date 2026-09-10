@@ -247,12 +247,31 @@ func TestScreenshots(t *testing.T) {
 	w.screenshot(shot("remote-lyrics.png"))
 	w.exec(`document.getElementById('scroll').scrollTop = 0; return true;`, nil)
 
-	// --- the saved-songs shelf ---
+	// --- the saved-songs shelf, with one of them playing ---
 	w.click("#mode-saved")
 	waitFor(t, 10*time.Second, "the saved songs to be listed", func() bool {
 		var n int
 		w.exec(`return document.querySelectorAll('#chunks .chunk').length;`, &n)
 		return n == len(demoLibrary)
+	})
+	// The shelf is shown doing its job: a song playing, its name and
+	// facts at the top of the screen and the position row under them.
+	w.click(`#chunks button[aria-label="Play Harbour Lights"]`)
+	waitFor(t, 20*time.Second, "the saved position row to follow the song", func() bool {
+		var running bool
+		w.exec(`var r=document.getElementById('savedseekrow'), a=document.getElementById('savedaudio');
+			return !r.className.includes('disabled') && !!a && !a.paused
+				&& isFinite(a.duration) && a.duration > 0;`, &running)
+		return running
+	})
+	// A frame of a song a few seconds in reads as playing; one parked at
+	// zero reads as broken. The clock is put somewhere deliberate rather
+	// than wherever the shoot happened to catch it.
+	w.exec(`document.getElementById('savedaudio').currentTime = 41; return true;`, nil)
+	waitFor(t, 10*time.Second, "the position row to catch up", func() bool {
+		var at string
+		w.exec(`return document.getElementById('savedseeknow').textContent;`, &at)
+		return at == "0:41"
 	})
 	w.screenshot(shot("remote-saved.png"))
 	w.click("#mode-live")

@@ -1397,7 +1397,14 @@ func TestPlayerPageContainsControls(t *testing.T) {
 	_, page := admin.get("/")
 	for _, want := range []string{
 		`id="play"`, `id="next"`, `id="steer"`, `id="fresh"`, `id="save"`, `id="saveprev"`, `id="carsave"`, `id="carresume"`, `id="tag"`, `id="text"`, `id="now"`, `id="nowprompt"`,
-		`id="mode-live"`, `id="mode-saved"`, `id="tags"`, `id="chunks"`, `id="savedaudio"`, `id="backloop"`,
+		`id="mode-live"`, `id="mode-saved"`, `id="tags"`, `id="chunks"`, `id="savedaudio"`, `id="sloop"`,
+		// The saved player is the live one's twin: a name, its facts and
+		// a position row above the list, and a transport bar of the same
+		// shape under it. Both rows are listed - one painter serves the
+		// two of them, so a renamed element on either screen is a
+		// position row that silently stops moving.
+		`id="seekrow"`, `id="seek"`, `id="seeknow"`, `id="seekdur"`,
+		`id="savedmeta"`, `id="savedseekrow"`, `id="savedseek"`, `id="savedseeknow"`, `id="savedseekdur"`,
 		`id="steerstatus"`, `id="savestatus"`, `id="sessstatus"`,
 		// The per-device banking controls: one buffering level for both
 		// modes, the opt-in preload for the mode not on screen, the
@@ -1416,6 +1423,19 @@ func TestPlayerPageContainsControls(t *testing.T) {
 			t.Fatalf("page missing %q", want)
 		}
 	}
+	// The Saved screen's order is what was asked for, and source order
+	// is the template's own: the song playing first - its name, then
+	// the position row under it - and the tag switches and the list
+	// after them. The browser test measures the same thing in pixels,
+	// but that one needs a display stack; this is the tier that runs
+	// everywhere.
+	savedOrder := []string{`id="savednow"`, `id="savedmeta"`, `id="savedseekrow"`, `id="tags"`, `id="chunks"`}
+	for i := 1; i < len(savedOrder); i++ {
+		if at, before := strings.Index(page, savedOrder[i]), strings.Index(page, savedOrder[i-1]); at < before {
+			t.Fatalf("%s (at %d) comes before %s (at %d) on the saved screen", savedOrder[i], at, savedOrder[i-1], before)
+		}
+	}
+
 	// The page script is served publicly and drives the stream.
 	resp, script := admin.get("/app.js")
 	if resp.StatusCode != 200 || !strings.Contains(script, "stream.mp3") || !strings.Contains(script, "mediaSession") {

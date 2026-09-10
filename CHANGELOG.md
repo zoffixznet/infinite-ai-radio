@@ -6,6 +6,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A position row on the **Saved** screen, under the playing song's
+  name: the clock, a slider and the song's length. A saved song is a
+  whole file - this device's own copy, or the radio's - so it rewinds
+  wherever you drag the slider, which the direct live stream never
+  could.
+
+### Changed
+
+- The **Saved** screen leads with the song playing on the device, laid
+  out the way the live page lays out its own: the name at the top of
+  the screen, its genre, language and tag on the line under it, then
+  the position row. The tag switches and the song list follow
+  underneath.
+- The loop moved out of the song rows and into the transport bar,
+  beside Next - the slot the live bar gives its own loop - and says it
+  is on by wearing an accent ring, rather than by turning one small
+  icon in a list row a shade of colour. **Back to looping the checked
+  songs** went with the row icons: the loop button is its own way off,
+  and so are Prev and Next.
+- A saved song that will not play says so under its name rather than
+  replacing the name with the complaint, and gives the song's facts
+  back once the trouble has been read.
+
+### Fixed
+
+- The quiet lines on the player - the position clock either side of the
+  slider, the station and queue line, and the device's bank count - take
+  their colour from the palette again. They had been stuck on one fixed
+  grey that never changed with the theme and was too faint to read
+  comfortably in daylight.
+
 ## [1.2.0] - 2026-09-09
 
 ### Added

@@ -517,7 +517,8 @@ Below it the page counts what is banked on this device, and the *Flush*
 button next to that count dumps the bank and rejoins the live stream at
 its edge. If the stream drops or stalls, the page reconnects on its own
 and picks up the moment the stream is reachable again; only an expired
-login stops it.
+login stops it. The Saved screen has a bar of its own, and a saved song
+always rewinds.
 
 **Preload songs for the inactive mode** is off by default. Switched on,
 the device keeps a few saved songs ready while you are on the live
@@ -591,15 +592,26 @@ Two car conveniences live under Settings, remembered per device:
 ### Saved songs
 
 The remote's **Saved** mode plays your saved songs entirely on the
-phone; the live stream and the machine's speakers are untouched. Tick
-the tags and sung languages you want and it loops through the checked
-songs forever; uncheck a song to skip it without deleting anything, or
-loop just one. Each row's own button plays that song and turns into a
-pause while it is the one playing, so a tap is always answered. Tapping
-the rest of the row opens the song's panel: full lyrics, details, and
-buttons to download, rename, move or delete it. Renaming here works the
-same way as the pencil on the live page: the file and its title tag
-both change.
+phone; the live stream and the machine's speakers are untouched. It
+leads with the song playing, laid out the way the live page lays out
+its own: the name at the top of the screen, its genre, language and tag
+on the line under it, and a position row under those. A saved song is a
+whole file, so that slider rewinds - drag it anywhere in the song.
+
+Tick the tags and sung languages you want and it loops through the
+checked songs forever; uncheck a song to skip it without deleting
+anything. The transport bar under it has the same shape as the live
+one, loop button and all, in the same places: **Loop** sits beside
+**Next**, where the live bar keeps its own beside Skip, and wears an
+accent ring while it is on - that one song plays over and over until
+you tap it again. Prev and Next turn it off too, since each of those
+means "move on".
+
+Each row's own button plays that song and turns into a pause while it
+is the one playing, so a tap is always answered. Tapping the rest of
+the row opens the song's panel: full lyrics, details, and buttons to
+download, rename, move or delete it. Renaming here works the same way
+as the pencil on the live page: the file and its title tag both change.
 
 Saved songs are banked on the device exactly like the live stream's, to
 the same buffering level under Settings, so a song starts on the tap

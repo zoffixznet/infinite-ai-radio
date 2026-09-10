@@ -629,6 +629,19 @@ func TestRealBrowser(t *testing.T) {
 		t.Fatalf("stream pill says %q while audio advances", live.Pill)
 	}
 	t.Logf("live stream: currentTime %.1fs readyState %d pill %q", live.Time, live.Ready, live.Pill)
+	// The live row and the saved one are painted by the same code now.
+	// The direct stream has no rewind, so its row stays grayed with the
+	// slider parked - the half of that shared code the saved screen
+	// never exercises.
+	var liveRow struct {
+		Class string `json:"class"`
+		Value string `json:"value"`
+	}
+	waitFor(t, 10*time.Second, "the live position row grayed on the direct stream", func() bool {
+		w.exec(`return {class: document.getElementById('seekrow').className,
+			value: document.getElementById('seek').value};`, &liveRow)
+		return strings.Contains(liveRow.Class, "disabled") && liveRow.Value == "0"
+	})
 	waitFor(t, 10*time.Second, "firefox stream on the null sink", func() bool {
 		got, ok := firefoxSinkIndex()
 		return ok && got == sinkIndex
@@ -648,9 +661,102 @@ func TestRealBrowser(t *testing.T) {
 	if !liveGone {
 		t.Fatal("switching to saved mode must stop the live stream element")
 	}
+	// The song playing on this device is the top of the screen, the way
+	// it is on the live page: name, facts, position row - all of it
+	// above the tag switches and the list.
+	var order struct {
+		Now   float64 `json:"now"`
+		Seek  float64 `json:"seek"`
+		Tags  float64 `json:"tags"`
+		Songs float64 `json:"songs"`
+	}
+	w.exec(`function top(id){return document.getElementById(id).getBoundingClientRect().top;}
+		return {now: top('savednow'), seek: top('savedseekrow'),
+			tags: top('tags'), songs: top('chunks')};`, &order)
+	if !(order.Now < order.Seek && order.Seek < order.Tags && order.Tags < order.Songs) {
+		t.Fatalf("saved screen order (name %.0f, position row %.0f, tags %.0f, songs %.0f) is not name-then-position-then-the-rest",
+			order.Now, order.Seek, order.Tags, order.Songs)
+	}
+	// Nothing playing yet: the row is grayed and shows no length, the
+	// same as the live row does on the direct stream.
+	var idle struct {
+		Class string `json:"class"`
+		Dur   string `json:"dur"`
+	}
+	w.exec(`return {class: document.getElementById('savedseekrow').className,
+		dur: document.getElementById('savedseekdur').textContent};`, &idle)
+	if !strings.Contains(idle.Class, "disabled") || idle.Dur != "\u2013:\u2013\u2013" {
+		t.Fatalf("the saved position row before anything plays: class %q length %q (expected grayed, with no length)", idle.Class, idle.Dur)
+	}
 	w.click(`#chunks .chunk button[data-action="Play"]`)
 	saved := assertPlays(t, w, "savedaudio", 1.5, 20*time.Second)
 	t.Logf("saved chunk: currentTime %.1fs readyState %d", saved.Time, saved.Ready)
+	// The name is the name; the tag moved to its own line under it.
+	var block struct {
+		Title string `json:"title"`
+		Meta  string `json:"meta"`
+	}
+	w.exec(`return {title: document.getElementById('savednow').textContent,
+		meta: document.getElementById('savedmeta').textContent};`, &block)
+	if strings.Contains(block.Title, "(") || block.Title == "" {
+		t.Fatalf("the saved song's name = %q (expected the title alone)", block.Title)
+	}
+	if !strings.Contains(block.Meta, "demo") {
+		t.Fatalf("the line under the saved song's name = %q (expected its tag)", block.Meta)
+	}
+	// The position row runs with the song and the slider rewinds it -
+	// a saved song is a whole file, so unlike the live stream it seeks.
+	var pos struct {
+		Class string `json:"class"`
+		Now   string `json:"now"`
+		Dur   string `json:"dur"`
+		Value string `json:"value"`
+	}
+	waitFor(t, 15*time.Second, "the saved position row to follow the song", func() bool {
+		w.exec(`return {class: document.getElementById('savedseekrow').className,
+			now: document.getElementById('savedseeknow').textContent,
+			dur: document.getElementById('savedseekdur').textContent,
+			value: document.getElementById('savedseek').value};`, &pos)
+		return !strings.Contains(pos.Class, "disabled") &&
+			pos.Now != "0:00" && pos.Dur != "0:00" && pos.Dur != "\u2013:\u2013\u2013" && pos.Value != "0"
+	})
+	t.Logf("saved position row: %s / %s (slider %s)", pos.Now, pos.Dur, pos.Value)
+	// Rewinding is the whole point: the song is parked near its end and
+	// the slider dragged back to a tenth of it. The whole drag is one
+	// synchronous script so nothing moves in the middle of it - and the
+	// script bails rather than acting when the duration is not known
+	// yet, because a three-second song that has just rolled over spends
+	// a moment reloading with duration NaN, and NaN into currentTime is
+	// a TypeError, not a failed assertion. The pause on the first
+	// attempt is what makes a retry find a still song.
+	var seeked struct {
+		OK     bool    `json:"ok"`
+		Dur    float64 `json:"dur"`
+		Before float64 `json:"before"`
+		After  float64 `json:"after"`
+	}
+	waitFor(t, 15*time.Second, "a still song to rewind", func() bool {
+		w.exec(`var a=document.getElementById('savedaudio'), s=document.getElementById('savedseek');
+			a.pause();
+			if (!isFinite(a.duration) || a.duration <= 0) return {ok: false};
+			a.currentTime = a.duration * 0.8;
+			var before = a.currentTime;
+			s.value = "100";
+			s.dispatchEvent(new Event('input', {bubbles: true}));
+			s.dispatchEvent(new Event('change', {bubbles: true}));
+			return {ok: true, dur: a.duration, before: before, after: a.currentTime};`, &seeked)
+		return seeked.OK
+	})
+	if seeked.After >= seeked.Before-0.5 || math.Abs(seeked.After-seeked.Dur*0.1) > 0.3 {
+		t.Fatalf("dragging the saved position row back moved a %.1fs song from %.1fs to %.1fs (expected about %.1fs)",
+			seeked.Dur, seeked.Before, seeked.After, seeked.Dur*0.1)
+	}
+	t.Logf("saved rewind: %.1fs -> %.1fs of %.1fs", seeked.Before, seeked.After, seeked.Dur)
+	// Playing again: what follows is about the row buttons answering a
+	// tap, which is not a question about a stopped player.
+	w.exec(`var p=document.getElementById('savedaudio').play();
+		if (p && p.catch) p.catch(function () {});
+		return true;`, nil)
 	// The row's own button answers the tap: while that song is the one
 	// playing it IS the pause, and pressing it pauses the player rather
 	// than doing something of its own. Without that, a song that takes
@@ -693,17 +799,36 @@ func TestRealBrowser(t *testing.T) {
 		t.Fatalf("the saved bank's count says %q", bankNote)
 	}
 	w.click(`#chunks .chunk button[data-action="Play"]`)
-	w.click(`#chunks .chunk button[data-action="Loop"]`)
-	var loopText string
-	w.exec(`return document.getElementById('loopstate').textContent;`, &loopText)
-	if !strings.Contains(loopText, "Looping one song") {
-		t.Fatalf("loop indicator = %q", loopText)
+	// The loop is one button in the transport bar, where the live page
+	// keeps it, and it says it is on by wearing the ring rather than by
+	// changing an icon's shade in a list row.
+	var noLoopRows int
+	w.exec(`return document.querySelectorAll('#chunks button[data-action="Loop"]').length;`, &noLoopRows)
+	if noLoopRows != 0 {
+		t.Fatalf("%d per-row loop buttons left in the list", noLoopRows)
+	}
+	w.click("#sloop")
+	var looped struct {
+		Text    string `json:"text"`
+		Class   string `json:"class"`
+		Pressed string `json:"pressed"`
+	}
+	w.exec(`var b=document.getElementById('sloop');
+		return {text: document.getElementById('loopstate').textContent,
+			class: b.className, pressed: b.getAttribute('aria-pressed')};`, &looped)
+	if !strings.Contains(looped.Text, "Looping one song") {
+		t.Fatalf("loop indicator = %q", looped.Text)
+	}
+	if !strings.Contains(looped.Class, "on") || looped.Pressed != "true" {
+		t.Fatalf("the loop button while looping: class %q aria-pressed %q", looped.Class, looped.Pressed)
 	}
 	w.screenshot(shot("remote-saved.png"))
-	w.click("#backloop")
-	w.exec(`return document.getElementById('loopstate').textContent;`, &loopText)
-	if strings.Contains(loopText, "one song") {
-		t.Fatalf("loop indicator after back = %q", loopText)
+	w.click("#sloop")
+	w.exec(`var b=document.getElementById('sloop');
+		return {text: document.getElementById('loopstate').textContent,
+			class: b.className, pressed: b.getAttribute('aria-pressed')};`, &looped)
+	if strings.Contains(looped.Text, "one song") || looped.Pressed != "false" || strings.Contains(looped.Class, "on") {
+		t.Fatalf("loop indicator after turning it off = %q (class %q, aria-pressed %q)", looped.Text, looped.Class, looped.Pressed)
 	}
 	w.click("#mode-live")
 
@@ -2247,5 +2372,89 @@ func TestRealBrowserAutoResume(t *testing.T) {
 		return n;`, &playing)
 	if playing != 1 {
 		t.Fatalf("%d elements playing after resume", playing)
+	}
+}
+
+// seedChunk writes one more saved song into a sandbox's library, so a
+// test can be about which of two songs a control acts on.
+func seedChunk(t *testing.T, sb *sandbox, tag, file, title string, seconds int) {
+	t.Helper()
+	samples := make([]int16, seconds*audio.SampleRate*audio.Channels)
+	for i := 0; i < len(samples); i += 2 {
+		v := int16(6000 * math.Sin(2*math.Pi*440*float64(i/2)/audio.SampleRate))
+		samples[i], samples[i+1] = v, v
+	}
+	path := filepath.Join(sb.dir, "data", "snippets", tag, file)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	if err := export.EncodeMP3(context.Background(), samples, path,
+		export.MP3Options{Title: title, Album: tag}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRealBrowserSavedLoopFollowsTheSongPlaying guards the one thing the
+// loop's move into the transport bar has to get right: the lamp says
+// whether THIS song repeats. The element's loop property survives a
+// change of source, so a loop left set while another song is picked
+// would repeat the new song forever behind a lamp still naming the old
+// one - and, because a looping element never fires "ended", the
+// playlist could never advance again.
+func TestRealBrowserSavedLoopFollowsTheSongPlaying(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb := prepareSandbox(t, "noise", "")
+	// Long enough that it is still playing while the loop is turned on
+	// and the other song picked: this test is about which song the loop
+	// holds, which is not a question if the song ends underneath it.
+	seedChunk(t, sb, "demo", "20260821-121000-long-tone.mp3", "long tone", 25)
+	finishSandbox(t, sb)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+
+	w.click("#mode-saved")
+	waitFor(t, 10*time.Second, "both saved songs listed", func() bool {
+		var n int
+		w.exec(`return document.querySelectorAll('#chunks .chunk').length;`, &n)
+		return n == 2
+	})
+	w.click(`#chunks button[aria-label="Play long tone"]`)
+	assertPlays(t, w, "savedaudio", 0.5, 20*time.Second)
+	w.click("#sloop")
+	var on struct {
+		Loop  bool   `json:"loop"`
+		Class string `json:"class"`
+		State string `json:"state"`
+	}
+	waitFor(t, 10*time.Second, "the loop to take hold of the long tone", func() bool {
+		w.exec(`var b=document.getElementById('sloop');
+			return {loop: document.getElementById('savedaudio').loop, class: b.className,
+				state: document.getElementById('loopstate').textContent};`, &on)
+		return on.Loop && strings.Contains(on.Class, "on") && strings.Contains(on.State, "long tone")
+	})
+
+	// Picking the other song is "play this one", the same as Skip: the
+	// loop lets go rather than transferring itself.
+	w.click(`#chunks button[aria-label="Play demo tone"]`)
+	var off struct {
+		Loop    bool   `json:"loop"`
+		Class   string `json:"class"`
+		Pressed string `json:"pressed"`
+		State   string `json:"state"`
+		Now     string `json:"now"`
+	}
+	waitFor(t, 10*time.Second, "the loop to let go with the song it held", func() bool {
+		w.exec(`var b=document.getElementById('sloop');
+			return {loop: document.getElementById('savedaudio').loop, class: b.className,
+				pressed: b.getAttribute('aria-pressed'),
+				state: document.getElementById('loopstate').textContent,
+				now: document.getElementById('savednow').textContent};`, &off)
+		return !off.Loop && !strings.Contains(off.Class, "on") && off.Pressed == "false"
+	})
+	if strings.Contains(off.State, "long tone") {
+		t.Fatalf("the loop readout still names the song that stopped playing: %q", off.State)
+	}
+	if !strings.Contains(off.Now, "demo tone") {
+		t.Fatalf("the name at the top of the screen = %q (expected the song just picked)", off.Now)
 	}
 }

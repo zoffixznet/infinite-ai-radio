@@ -96,21 +96,25 @@
   </section>
 
   <section id="saved" aria-label="Saved songs" hidden>
+    <section class="nowblock" aria-label="Playing on this device">
+      <div id="savednow" class="empty">Pick a song, or press play.</div>
+      <div id="savedmeta"></div>
+      <div class="seekrow disabled" id="savedseekrow">
+        <span class="seektime" id="savedseeknow">0:00</span>
+        <input type="range" id="savedseek" min="0" max="1000" value="0" step="1" aria-label="Song position">
+        <span class="seektime" id="savedseekdur">&ndash;:&ndash;&ndash;</span>
+      </div>
+      <audio id="savedaudio" preload="none"></audio>
+      <p class="hint" id="savedbank"></p>
+      <p class="hint">Plays here only. The stream and the speakers keep going.</p>
+    </section>
+
     <section class="group" aria-label="Tags and languages">
       <div class="grouphead"><span class="grouplabel">Tags to loop</span></div>
       <div id="tags" class="chips"><span class="empty">no saved songs yet</span></div>
       <div class="grouphead"><span class="grouplabel">Languages to loop</span></div>
       <div id="slangs" class="chips"></div>
       <div id="loopstate">Looping every checked song in the selected tags and languages</div>
-      <button class="action tap" id="backloop" type="button" hidden>Back to looping the checked songs</button>
-    </section>
-
-    <section class="group" aria-label="Playing on this device">
-      <div class="grouphead"><span class="grouplabel">On this device</span></div>
-      <div id="savednow" class="empty">Pick a song, or press play.</div>
-      <audio id="savedaudio" preload="none"></audio>
-      <p class="hint" id="savedbank"></p>
-      <p class="hint">Plays here only. The stream and the speakers keep going.</p>
     </section>
 
     <section class="group" aria-label="Songs">
@@ -148,15 +152,22 @@
       </div>
     </div>
     <div class="transport" id="savedtransport" hidden>
-      <button class="tbtn tap" id="sprev" type="button" aria-label="Previous chunk">
-        <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><rect x="5.6" y="6" width="2.4" height="12" rx="1.2"/><path d="M18 6l-8.5 6 8.5 6V6z"/></svg></span><span class="sr-only">Prev</span>
-      </button>
-      <button class="tbtn main tap" id="splay" type="button" aria-label="Play the selected chunk">
+      <div class="tslot">
+        <button class="tbtn tap" id="sprev" type="button" aria-label="Play the previous song">
+          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><rect x="5.6" y="6" width="2.4" height="12" rx="1.2"/><path d="M18 6l-8.5 6 8.5 6V6z"/></svg></span><span class="sr-only">Prev</span>
+        </button>
+      </div>
+      <button class="tbtn main tap" id="splay" type="button" aria-label="Play the selected song">
         <span class="glyph" id="splayglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="splaylabel">Play</span>
       </button>
-      <button class="tbtn tap" id="snext" type="button" aria-label="Next chunk">
-        <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Next</span>
-      </button>
+      <div class="tslot">
+        <button class="tbtn tap" id="sloop" type="button" aria-label="Loop this song" aria-pressed="false">
+          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></span><span class="sr-only">Loop</span>
+        </button>
+        <button class="tbtn tap" id="snext" type="button" aria-label="Play the next song">
+          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Next</span>
+        </button>
+      </div>
     </div>
   </div>
 </div>
