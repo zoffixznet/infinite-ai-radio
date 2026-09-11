@@ -522,22 +522,26 @@ details.grp > summary .chip { margin-left: auto; min-height: 34px; padding: 0 va
 /* Glyph only: play, stop, skip and a heart do not need captions, and
    the words were costing a row of height on the one bar that must
    never scroll. The accessible name still changes with the state. */
+/* Sized so that the bar, with the position row above the buttons,
+   stands about as tall as it did with the buttons alone: the row is
+   paid for out of the buttons' height, not the page's. 56px is still
+   well over a thumb. */
 .tbtn {
   display: flex; align-items: center; justify-content: center;
-  width: 64px; height: 64px;
-  background: transparent; border: 0; border-radius: 20px;
+  width: 56px; height: 56px;
+  background: transparent; border: 0; border-radius: 18px;
   color: var(--text); font: inherit; cursor: pointer;
 }
 .tbtn .glyph { display: flex; }
-.tbtn .glyph svg { width: 28px; height: 28px; display: block; }
+.tbtn .glyph svg { width: 26px; height: 26px; display: block; }
 /* The outline heart reads heavier than a solid arrow at the same box,
    so the solid ones are nudged up to match optically. */
-#save .glyph svg { width: 26px; height: 26px; }
+#save .glyph svg { width: 24px; height: 24px; }
 .tbtn.main {
-  width: 76px; height: 76px; border-radius: 26px;
+  width: 64px; height: 64px; border-radius: 22px;
   background: var(--accent); color: var(--accent-ink);
 }
-.tbtn.main .glyph svg { width: 32px; height: 32px; }
+.tbtn.main .glyph svg { width: 30px; height: 30px; }
 .tbtn.main.playing { background: var(--danger); color: var(--danger-ink); }
 .tbtn.main.is-pressed, .tbtn.main:active { background: var(--accent-press); }
 .tbtn.main.playing.is-pressed, .tbtn.main.playing:active { background: var(--danger-press); }
@@ -700,9 +704,13 @@ button.action.saving { color: var(--warn); border-color: var(--warn); }
 .panelactions a.chip { text-decoration: none; }
 .chip.danger { color: var(--danger); border-color: var(--danger); }
 
-/* The song position row: times flanking a seek slider. Grayed while
-   the direct live stream plays - a stream has no rewind. */
-.seekrow { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
+/* The song position row: times flanking a seek slider. It lives on
+   the transport bar, above the buttons, so it is under the thumb from
+   anywhere on the page - finding a moment in a saved song is a matter
+   of playing it from the list and dragging, not of scrolling to the top
+   to drag and back down to find the list again. Grayed while the direct
+   live stream plays - a stream has no rewind. */
+.seekrow { display: flex; align-items: center; gap: 8px; margin: 0 0 var(--s1); }
 .seekrow .seektime { font-size: 12px; color: var(--text-3); min-width: 34px; }
 .seekrow input[type="range"] { flex: 1; accent-color: var(--accent, #b04a17); height: 20px; }
 .seekrow.disabled { opacity: 0.45; }

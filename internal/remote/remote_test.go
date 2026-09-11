@@ -1423,16 +1423,21 @@ func TestPlayerPageContainsControls(t *testing.T) {
 			t.Fatalf("page missing %q", want)
 		}
 	}
-	// The Saved screen's order is what was asked for, and source order
-	// is the template's own: the song playing first - its name, then
-	// the position row under it - and the tag switches and the list
-	// after them. The browser test measures the same thing in pixels,
-	// but that one needs a display stack; this is the tier that runs
+	// Source order is the template's own, and it is what was asked for:
+	// the Saved screen leads with the song playing - its name and its
+	// facts - then the tag switches and the list; and each position row
+	// sits inside its mode's block on the transport bar, under the thumb
+	// from anywhere on the page. The browser test measures the same in
+	// pixels, but that one needs a display stack; this tier runs
 	// everywhere.
-	savedOrder := []string{`id="savednow"`, `id="savedmeta"`, `id="savedseekrow"`, `id="tags"`, `id="chunks"`}
-	for i := 1; i < len(savedOrder); i++ {
-		if at, before := strings.Index(page, savedOrder[i]), strings.Index(page, savedOrder[i-1]); at < before {
-			t.Fatalf("%s (at %d) comes before %s (at %d) on the saved screen", savedOrder[i], at, savedOrder[i-1], before)
+	for _, order := range [][]string{
+		{`id="savednow"`, `id="savedmeta"`, `id="tags"`, `id="chunks"`},
+		{`id="chunks"`, `id="livetransport"`, `id="seekrow"`, `id="savedtransport"`, `id="savedseekrow"`},
+	} {
+		for i := 1; i < len(order); i++ {
+			if at, before := strings.Index(page, order[i]), strings.Index(page, order[i-1]); at < before {
+				t.Fatalf("%s (at %d) comes before %s (at %d)", order[i], at, order[i-1], before)
+			}
 		}
 	}
 

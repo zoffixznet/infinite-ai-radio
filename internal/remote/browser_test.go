@@ -663,21 +663,37 @@ func TestRealBrowser(t *testing.T) {
 		t.Fatal("switching to saved mode must stop the live stream element")
 	}
 	// The song playing on this device is the top of the screen, the way
-	// it is on the live page: name, facts, position row - all of it
-	// above the tag switches and the list.
+	// it is on the live page: name and facts above the tag switches and
+	// the list. The position row is not up there - it is on the
+	// transport bar, where the thumb can reach it from any depth of the
+	// list, which is where a listener hunting for a moment in a saved
+	// song actually is.
 	var order struct {
 		Now   float64 `json:"now"`
-		Seek  float64 `json:"seek"`
 		Tags  float64 `json:"tags"`
 		Songs float64 `json:"songs"`
 	}
 	w.exec(`function top(id){return document.getElementById(id).getBoundingClientRect().top;}
-		return {now: top('savednow'), seek: top('savedseekrow'),
-			tags: top('tags'), songs: top('chunks')};`, &order)
-	if !(order.Now < order.Seek && order.Seek < order.Tags && order.Tags < order.Songs) {
-		t.Fatalf("saved screen order (name %.0f, position row %.0f, tags %.0f, songs %.0f) is not name-then-position-then-the-rest",
-			order.Now, order.Seek, order.Tags, order.Songs)
+		return {now: top('savednow'), tags: top('tags'), songs: top('chunks')};`, &order)
+	if !(order.Now < order.Tags && order.Tags < order.Songs) {
+		t.Fatalf("saved screen order (name %.0f, tags %.0f, songs %.0f) is not name-then-the-rest",
+			order.Now, order.Tags, order.Songs)
 	}
+	var reach struct {
+		Top    float64 `json:"top"`
+		Bottom float64 `json:"bottom"`
+		BarTop float64 `json:"barTop"`
+		Height float64 `json:"height"`
+	}
+	w.exec(`var sc=document.getElementById('scroll'); sc.scrollTop = sc.scrollHeight;
+		var r=document.getElementById('savedseekrow').getBoundingClientRect();
+		var b=document.querySelector('.transportbar').getBoundingClientRect();
+		return {top: r.top, bottom: r.bottom, barTop: b.top, height: window.innerHeight};`, &reach)
+	if reach.Top < reach.BarTop || reach.Bottom > reach.Height {
+		t.Fatalf("with the list scrolled to its end, the saved position row sits at %.0f-%.0f, outside the bar (from %.0f) or the screen (%.0f tall)",
+			reach.Top, reach.Bottom, reach.BarTop, reach.Height)
+	}
+	w.exec(`document.getElementById('scroll').scrollTop = 0; return true;`, nil)
 	// Nothing playing yet: the row is grayed and shows no length, the
 	// same as the live row does on the direct stream.
 	var idle struct {

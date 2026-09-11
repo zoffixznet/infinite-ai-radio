@@ -8,19 +8,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- A position row on the **Saved** screen, under the playing song's
-  name: the clock, a slider and the song's length. A saved song is a
-  whole file - this device's own copy, or the radio's - so it rewinds
-  wherever you drag the slider, which the direct live stream never
-  could.
+- A position row for the **Saved** screen: the clock, a slider and the
+  song's length. A saved song is a whole file - this device's own copy,
+  or the radio's - so it rewinds wherever you drag the slider, which
+  the direct live stream never could.
 
 ### Changed
 
 - The **Saved** screen leads with the song playing on the device, laid
   out the way the live page lays out its own: the name at the top of
-  the screen, its genre, language and tag on the line under it, then
-  the position row. The tag switches and the song list follow
-  underneath.
+  the screen, its genre, language and tag on the line under it. The tag
+  switches and the song list follow underneath.
+- The position row - on both screens - moved down onto the player bar,
+  above the buttons, so it is under your thumb wherever the page is
+  scrolled to. Finding a moment in a saved song is now a matter of
+  playing it from the list and dragging, not of scrolling to the top to
+  drag and back down to find your place in the list. The buttons gave
+  up a little height to make the room, so the bar stands about as tall
+  as before.
 - The loop moved out of the song rows and into the transport bar,
   beside Next - the slot the live bar gives its own loop - and says it
   is on by wearing an accent ring, rather than by turning one small

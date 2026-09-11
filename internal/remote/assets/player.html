@@ -41,11 +41,6 @@
         <button class="iconbtn tap" id="rename" type="button" data-perm="save"{{if not .Perms.Save}} hidden{{end}} aria-label="Rename this song"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"><path d="M4 20.4h4.2L19.1 9.5a2.4 2.4 0 0 0-3.4-3.4L4.8 17v3.4z"/><path d="M14.3 7.5l2.9 2.9"/></svg></button>
       </div>
       <div id="meta"></div>
-      <div class="seekrow" id="seekrow">
-        <span class="seektime" id="seeknow">0:00</span>
-        <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Song position">
-        <span class="seektime" id="seekdur">0:00</span>
-      </div>
       <div id="srvline" class="srvline"></div>
       <div id="devrow" class="devrow" hidden>
         <span id="devbank"><span id="devcount"></span><span id="devnote"></span></span>
@@ -99,11 +94,6 @@
     <section class="nowblock" aria-label="Playing on this device">
       <div id="savednow" class="empty">Pick a song, or press play.</div>
       <div id="savedmeta"></div>
-      <div class="seekrow disabled" id="savedseekrow">
-        <span class="seektime" id="savedseeknow">0:00</span>
-        <input type="range" id="savedseek" min="0" max="1000" value="0" step="1" aria-label="Song position">
-        <span class="seektime" id="savedseekdur">&ndash;:&ndash;&ndash;</span>
-      </div>
       <audio id="savedaudio" preload="none"></audio>
       <p class="hint" id="savedbank"></p>
       <p class="hint">Plays here only. The stream and the speakers keep going.</p>
@@ -133,151 +123,167 @@
 <div class="transportbar">
   <div class="inner">
     <div id="streamstate"></div>
-    <div class="transport" id="livetransport">
-      <div class="tslot">
-        <button class="tbtn tap" id="save" type="button" data-perm="save"{{if not .Perms.Save}} hidden{{end}} aria-label="Save this track">
-          <span class="glyph" id="saveglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></span><span class="sr-only" id="savelabel">Save</span>
-        </button>
+    <div id="livetransport">
+      <div class="seekrow" id="seekrow">
+        <span class="seektime" id="seeknow">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Song position">
+        <span class="seektime" id="seekdur">0:00</span>
       </div>
-      <button class="tbtn main tap" id="play" type="button" aria-label="Play the live stream">
-        <span class="glyph" id="playglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="playlabel">Play</span>
-      </button>
-      <div class="tslot">
-        <button class="tbtn tap" id="loop" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Loop this track" aria-pressed="false">
-          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></span><span class="sr-only">Loop</span>
+      <div class="transport">
+        <div class="tslot">
+          <button class="tbtn tap" id="save" type="button" data-perm="save"{{if not .Perms.Save}} hidden{{end}} aria-label="Save this track">
+            <span class="glyph" id="saveglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></span><span class="sr-only" id="savelabel">Save</span>
+          </button>
+        </div>
+        <button class="tbtn main tap" id="play" type="button" aria-label="Play the live stream">
+          <span class="glyph" id="playglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="playlabel">Play</span>
         </button>
-        <button class="tbtn tap" id="next" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Skip to the next track">
-          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Skip</span>
-        </button>
+        <div class="tslot">
+          <button class="tbtn tap" id="loop" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Loop this track" aria-pressed="false">
+            <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></span><span class="sr-only">Loop</span>
+          </button>
+          <button class="tbtn tap" id="next" type="button" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}} aria-label="Skip to the next track">
+            <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Skip</span>
+          </button>
+        </div>
       </div>
     </div>
-    <div class="transport" id="savedtransport" hidden>
-      <div class="tslot">
-        <button class="tbtn tap" id="sprev" type="button" aria-label="Play the previous song">
-          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><rect x="5.6" y="6" width="2.4" height="12" rx="1.2"/><path d="M18 6l-8.5 6 8.5 6V6z"/></svg></span><span class="sr-only">Prev</span>
-        </button>
+    <div id="savedtransport" hidden>
+      <div class="seekrow disabled" id="savedseekrow">
+        <span class="seektime" id="savedseeknow">0:00</span>
+        <input type="range" id="savedseek" min="0" max="1000" value="0" step="1" aria-label="Song position">
+        <span class="seektime" id="savedseekdur">&ndash;:&ndash;&ndash;</span>
       </div>
-      <button class="tbtn main tap" id="splay" type="button" aria-label="Play the selected song">
-        <span class="glyph" id="splayglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="splaylabel">Play</span>
-      </button>
-      <div class="tslot">
-        <button class="tbtn tap" id="sloop" type="button" aria-label="Loop this song" aria-pressed="false">
-          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></span><span class="sr-only">Loop</span>
+      <div class="transport">
+        <div class="tslot">
+          <button class="tbtn tap" id="sprev" type="button" aria-label="Play the previous song">
+            <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><rect x="5.6" y="6" width="2.4" height="12" rx="1.2"/><path d="M18 6l-8.5 6 8.5 6V6z"/></svg></span><span class="sr-only">Prev</span>
+          </button>
+        </div>
+        <button class="tbtn main tap" id="splay" type="button" aria-label="Play the selected song">
+          <span class="glyph" id="splayglyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span><span class="sr-only" id="splaylabel">Play</span>
         </button>
-        <button class="tbtn tap" id="snext" type="button" aria-label="Play the next song">
-          <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Next</span>
-        </button>
+        <div class="tslot">
+          <button class="tbtn tap" id="sloop" type="button" aria-label="Loop this song" aria-pressed="false">
+            <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></span><span class="sr-only">Loop</span>
+          </button>
+          <button class="tbtn tap" id="snext" type="button" aria-label="Play the next song">
+            <span class="glyph"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg></span><span class="sr-only">Next</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
+
+
 <dialog class="sheet" id="sheet" aria-label="Settings and more">
-  <div class="sheethead">
-    <div class="sheettitle">
-      <h2>Settings</h2>
-      <p class="sheetversion">{{.Nav.Product}} {{.Version}}</p>
+    <div class="sheethead">
+      <div class="sheettitle">
+        <h2>Settings</h2>
+        <p class="sheetversion">{{.Nav.Product}} {{.Version}}</p>
+      </div>
+      <button class="iconbtn tap" id="sheetclose" type="button" aria-label="Close settings"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
-    <button class="iconbtn tap" id="sheetclose" type="button" aria-label="Close settings"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
-  </div>
-  <div class="sheetbody" tabindex="-1" autofocus>
+    <div class="sheetbody" tabindex="-1" autofocus>
 
-    <section class="card" aria-label="The radio itself">
-      <h2>The radio itself</h2>
-      <label class="check tap">
-        <input type="checkbox" id="standby"{{if not .Perms.Steer}} disabled{{end}}> Standby
-      </label>
-      <p class="settingnote">Stops the radio for everyone: nothing plays and nothing is generated, so a machine left on is not spending its graphics card on music nobody is hearing. What is already made is kept, and waking starts from it.</p>
-      <div id="bufflushrow" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}}>
-        <button class="action tap danger" id="bufflush" type="button">Empty the buffer and start over</button>
-        <p class="settingnote">Throws away every song the radio has made ahead and starts generating again from one quick song, then a small batch, then deeper ones as the sound settles. The station, its steering and your saved songs are untouched. This is for when the songs already waiting in the buffer are not the ones you want to hear.</p>
-        <div id="bufflushstatus" class="cardstatus"></div>
-      </div>
-    </section>
-
-    <section class="card" aria-label="Playback on this device">
-      <h2>Playback on this device</h2>
-      <label class="check tap" id="transportrow">
-        <input type="checkbox" id="buffered"> Buffered playback
-      </label>
-      <p class="settingnote">Downloads whole tracks ahead of time, so a dead zone does not interrupt the music.</p>
-      <label class="hint" for="buflevel">How much to keep on this device</label>
-      <div class="row" id="bufopts">
-        <select id="buflevel" aria-label="How much to keep on this device">
-          <option value="eco">Economical &mdash; one song ahead (~3 min), least data</option>
-          <option value="auto">Automatic &mdash; a couple ahead on cellular, ~15&ndash;20 min on Wi&#8209;Fi</option>
-          <option value="steady">Steady &mdash; about 20 min banked</option>
-          <option value="max">Maximum &mdash; about 45 min banked</option>
-          <option value="ultra">Ultra &mdash; about 3 hours banked, for flights and dead zones</option>
-        </select>
-      </div>
-      <p class="settingnote">Applies to the live stream while buffered playback is on, and to your saved songs either way &mdash; so a saved song starts on the tap instead of loading first, and the next one is ready before it is needed.</p>
-      <p class="settingnote" id="bufmins"></p>
-      <label class="check tap" id="preloadotherrow">
-        <input type="checkbox" id="preloadother"> Preload songs for the inactive mode
-      </label>
-      <p class="settingnote">Keeps a few saved songs ready while you are on the live stream, and a few live songs ready while you are on the saved ones, so switching between them away from a good signal plays straight away. Off by default, because it spends data on music you may not listen to.</p>
-      <label class="check tap">
-        <input type="checkbox" id="audiocues" checked> Audio cues for trouble
-      </label>
-      <p class="settingnote">Six soft beeps when the radio stops delivering new music and starts repeating itself, so a stuck stream is heard rather than discovered an hour later.</p>
-      <label class="check tap" id="carresumerow">
-        <input type="checkbox" id="carresume"> Resume when the car reconnects
-      </label>
-      <p class="settingnote">Only when the car asks to play or you tap - never on a timer, so a phone in a pocket stays silent. For hands-free resume, turn on &ldquo;Automatically resume media&rdquo; in Android Auto.</p>
-      <label class="check tap" id="hapticsrow">
-        <input type="checkbox" id="haptics"> Buzz on save and skip
-      </label>
-    </section>
-
-    <section class="card" id="savecard" aria-label="Saving" data-perm="save"{{if not .Perms.Save}} hidden{{end}}>
-      <h2>Saving</h2>
-      <label class="hint" for="tag">Tag new saves with</label>
-      <input id="tag" type="text" placeholder="gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
-      <button class="action tap" id="saveprev" type="button">Save the previous track</button>
-      <div id="savestatus" class="cardstatus"></div>
-      <label class="check tap" id="carsaverow">
-        <input type="checkbox" id="carsave"> Car &#9198;&#xFE0E; button saves the track
-      </label>
-      <p class="settingnote">An endless stream has no previous track, so the car's previous-track button saves what you are hearing instead. The icon itself cannot be relabelled.</p>
-      <div id="sessionsave" data-perm="save"{{if not .Perms.Save}} hidden{{end}}>
-        <label class="hint" for="sessname">Save this session as</label>
-        <div class="linkbox">
-          <input id="sessname" type="text" placeholder="gym, focus&hellip;" maxlength="60" autocomplete="off">
-          <button class="action primary tap" id="sesssave" type="button">Save</button>
+      <section class="card" aria-label="The radio itself">
+        <h2>The radio itself</h2>
+        <label class="check tap">
+          <input type="checkbox" id="standby"{{if not .Perms.Steer}} disabled{{end}}> Standby
+        </label>
+        <p class="settingnote">Stops the radio for everyone: nothing plays and nothing is generated, so a machine left on is not spending its graphics card on music nobody is hearing. What is already made is kept, and waking starts from it.</p>
+        <div id="bufflushrow" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}}>
+          <button class="action tap danger" id="bufflush" type="button">Empty the buffer and start over</button>
+          <p class="settingnote">Throws away every song the radio has made ahead and starts generating again from one quick song, then a small batch, then deeper ones as the sound settles. The station, its steering and your saved songs are untouched. This is for when the songs already waiting in the buffer are not the ones you want to hear.</p>
+          <div id="bufflushstatus" class="cardstatus"></div>
         </div>
-        <div id="sessstatus" class="cardstatus"></div>
-      </div>
-    </section>
+      </section>
 
-    <section class="card" id="vocalscard" aria-label="Vocals"{{if not (or .Perms.Steer .Perms.Admin)}} hidden{{end}}>
-      <h2>Vocals</h2>
-      <div id="lyricsrow" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}}>
-        <label class="hint" for="lyricsgen">Lyric writer</label>
-        <select id="lyricsgen"></select>
-      </div>
-      <div id="langedit" data-perm="admin"{{if not .Perms.Admin}} hidden{{end}}>
-        <label class="hint" for="langnames">Sing in these languages</label>
-        <input id="langnames" type="text" placeholder="English, Russian, French, Bisaya (Cebuano)" maxlength="1200" autocomplete="off">
-        <p class="settingnote">Each song picks a language at random from the ones you list here, and the switches on the Live screen narrow that down. Saving drops the tracks queued ahead and starts generating in the new languages. Leave it empty to let the music engine sing in whatever language it likes.</p>
-        <button class="action tap" id="langsave" type="button">Save languages</button>
-        <div id="langstatus" class="cardstatus"></div>
-      </div>
-    </section>
+      <section class="card" aria-label="Playback on this device">
+        <h2>Playback on this device</h2>
+        <label class="check tap" id="transportrow">
+          <input type="checkbox" id="buffered"> Buffered playback
+        </label>
+        <p class="settingnote">Downloads whole tracks ahead of time, so a dead zone does not interrupt the music.</p>
+        <label class="hint" for="buflevel">How much to keep on this device</label>
+        <div class="row" id="bufopts">
+          <select id="buflevel" aria-label="How much to keep on this device">
+            <option value="eco">Economical &mdash; one song ahead (~3 min), least data</option>
+            <option value="auto">Automatic &mdash; a couple ahead on cellular, ~15&ndash;20 min on Wi&#8209;Fi</option>
+            <option value="steady">Steady &mdash; about 20 min banked</option>
+            <option value="max">Maximum &mdash; about 45 min banked</option>
+            <option value="ultra">Ultra &mdash; about 3 hours banked, for flights and dead zones</option>
+          </select>
+        </div>
+        <p class="settingnote">Applies to the live stream while buffered playback is on, and to your saved songs either way &mdash; so a saved song starts on the tap instead of loading first, and the next one is ready before it is needed.</p>
+        <p class="settingnote" id="bufmins"></p>
+        <label class="check tap" id="preloadotherrow">
+          <input type="checkbox" id="preloadother"> Preload songs for the inactive mode
+        </label>
+        <p class="settingnote">Keeps a few saved songs ready while you are on the live stream, and a few live songs ready while you are on the saved ones, so switching between them away from a good signal plays straight away. Off by default, because it spends data on music you may not listen to.</p>
+        <label class="check tap">
+          <input type="checkbox" id="audiocues" checked> Audio cues for trouble
+        </label>
+        <p class="settingnote">Six soft beeps when the radio stops delivering new music and starts repeating itself, so a stuck stream is heard rather than discovered an hour later.</p>
+        <label class="check tap" id="carresumerow">
+          <input type="checkbox" id="carresume"> Resume when the car reconnects
+        </label>
+        <p class="settingnote">Only when the car asks to play or you tap - never on a timer, so a phone in a pocket stays silent. For hands-free resume, turn on &ldquo;Automatically resume media&rdquo; in Android Auto.</p>
+        <label class="check tap" id="hapticsrow">
+          <input type="checkbox" id="haptics"> Buzz on save and skip
+        </label>
+      </section>
 
-    <section class="card" aria-label="Pages">
-      <h2>This account</h2>
-      {{template "nav" .Nav}}
-    </section>
+      <section class="card" id="savecard" aria-label="Saving" data-perm="save"{{if not .Perms.Save}} hidden{{end}}>
+        <h2>Saving</h2>
+        <label class="hint" for="tag">Tag new saves with</label>
+        <input id="tag" type="text" placeholder="gym, focus, favourites&hellip;" maxlength="60" autocomplete="off">
+        <button class="action tap" id="saveprev" type="button">Save the previous track</button>
+        <div id="savestatus" class="cardstatus"></div>
+        <label class="check tap" id="carsaverow">
+          <input type="checkbox" id="carsave"> Car &#9198;&#xFE0E; button saves the track
+        </label>
+        <p class="settingnote">An endless stream has no previous track, so the car's previous-track button saves what you are hearing instead. The icon itself cannot be relabelled.</p>
+        <div id="sessionsave" data-perm="save"{{if not .Perms.Save}} hidden{{end}}>
+          <label class="hint" for="sessname">Save this session as</label>
+          <div class="linkbox">
+            <input id="sessname" type="text" placeholder="gym, focus&hellip;" maxlength="60" autocomplete="off">
+            <button class="action primary tap" id="sesssave" type="button">Save</button>
+          </div>
+          <div id="sessstatus" class="cardstatus"></div>
+        </div>
+      </section>
 
-    <section class="card" aria-label="About">
-      <h2>About</h2>
-      <p class="settingnote">The live stream runs a few seconds behind the speakers at the machine. Add this page to your home screen and it starts playing without a tap.</p>
-    </section>
+      <section class="card" id="vocalscard" aria-label="Vocals"{{if not (or .Perms.Steer .Perms.Admin)}} hidden{{end}}>
+        <h2>Vocals</h2>
+        <div id="lyricsrow" data-perm="steer"{{if not .Perms.Steer}} hidden{{end}}>
+          <label class="hint" for="lyricsgen">Lyric writer</label>
+          <select id="lyricsgen"></select>
+        </div>
+        <div id="langedit" data-perm="admin"{{if not .Perms.Admin}} hidden{{end}}>
+          <label class="hint" for="langnames">Sing in these languages</label>
+          <input id="langnames" type="text" placeholder="English, Russian, French, Bisaya (Cebuano)" maxlength="1200" autocomplete="off">
+          <p class="settingnote">Each song picks a language at random from the ones you list here, and the switches on the Live screen narrow that down. Saving drops the tracks queued ahead and starts generating in the new languages. Leave it empty to let the music engine sing in whatever language it likes.</p>
+          <button class="action tap" id="langsave" type="button">Save languages</button>
+          <div id="langstatus" class="cardstatus"></div>
+        </div>
+      </section>
 
-  </div>
-</dialog>
+      <section class="card" aria-label="Pages">
+        <h2>This account</h2>
+        {{template "nav" .Nav}}
+      </section>
 
-<script src="/app.js"></script>
-</body>
-</html>
+      <section class="card" aria-label="About">
+        <h2>About</h2>
+        <p class="settingnote">The live stream runs a few seconds behind the speakers at the machine. Add this page to your home screen and it starts playing without a tap.</p>
+      </section>
+
+    </div>
+  </dialog>
+
+  <script src="/app.js"></script>
+  </body>
+  </html>

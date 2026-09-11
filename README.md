@@ -510,15 +510,16 @@ for the whole radio (speakers, stream and all) on the direct stream.
 Skipping, steering or changing the session turns the loop off, since
 each of those means "move on".
 
-A seek bar sits under the now-playing song: buffered songs are whole
+A seek bar sits on the player bar, above the buttons, so it is under
+your thumb wherever the page is scrolled to: buffered songs are whole
 files on the device, so you can jump anywhere in them; the direct
 stream, like any live stream, has no rewind and shows just the clock.
 Below it the page counts what is banked on this device, and the *Flush*
 button next to that count dumps the bank and rejoins the live stream at
 its edge. If the stream drops or stalls, the page reconnects on its own
 and picks up the moment the stream is reachable again; only an expired
-login stops it. The Saved screen has a bar of its own, and a saved song
-always rewinds.
+login stops it. The Saved screen's player has a bar of its own, and a
+saved song always rewinds.
 
 **Preload songs for the inactive mode** is off by default. Switched on,
 the device keeps a few saved songs ready while you are on the live
@@ -594,9 +595,11 @@ Two car conveniences live under Settings, remembered per device:
 The remote's **Saved** mode plays your saved songs entirely on the
 phone; the live stream and the machine's speakers are untouched. It
 leads with the song playing, laid out the way the live page lays out
-its own: the name at the top of the screen, its genre, language and tag
-on the line under it, and a position row under those. A saved song is a
-whole file, so that slider rewinds - drag it anywhere in the song.
+its own: the name at the top of the screen with its genre, language and
+tag on the line under it, and the position row down on the player bar
+where your thumb can reach it from anywhere in the list. A saved song is
+a whole file, so that slider rewinds - play one from the list and drag
+to find the part you liked, without scrolling to the top and back.
 
 Tick the tags and sung languages you want and it loops through the
 checked songs forever; uncheck a song to skip it without deleting
