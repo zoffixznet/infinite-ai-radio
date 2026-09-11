@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -2457,4 +2458,116 @@ func TestRealBrowserSavedLoopFollowsTheSongPlaying(t *testing.T) {
 	if !strings.Contains(off.Now, "demo tone") {
 		t.Fatalf("the name at the top of the screen = %q (expected the song just picked)", off.Now)
 	}
+}
+
+// TestRealBrowserLiveSaveFollowsTheRadio guards the car's save button on
+// a phone whose screen has been off for a while. On the live stream the
+// page's idea of the playing track is only as fresh as its last /state
+// poll, and a backgrounded page stops polling - so a save that named the
+// id this page happens to be holding asked the radio for a song it had
+// already moved past ("that track is no longer available to save") while
+// the song the listener could hear sat there perfectly saveable. The
+// radio resolves "the one playing" for itself, which is never stale.
+//
+// The frozen /state below is what a locked phone has - a page still on
+// screen, still able to reach the radio, holding a snapshot from
+// minutes ago - with the id replaced by one the radio has never heard
+// of. That is the same thing an old enough snapshot amounts to, without
+// the test having to sit through three songs to get there.
+func TestRealBrowserLiveSaveFollowsTheRadio(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb, fe := startMusicSandbox(t)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+	waitFor(t, 60*time.Second, "tracks generating", func() bool { return fe.generated() >= 2 })
+
+	// Live mode, not buffered: this is the path that asks the radio
+	// what is playing rather than playing out of the device's own bank.
+	var buffered bool
+	w.exec(`return document.getElementById('buffered').checked;`, &buffered)
+	if buffered {
+		t.Fatal("this test needs direct live playback, but buffered is on by default")
+	}
+
+	// The page keeps talking to the radio; only its own /state poll is
+	// frozen, which is what a screen-off phone does to it.
+	w.exec(`(function () {
+		var real = window.fetch.bind(window);
+		window.__realFetch = real;
+		window.__saveBodies = [];
+		window.__frozen = null;
+		window.fetch = function (url, opts) {
+			var u = String(url);
+			if (u.indexOf('/save') > -1 && opts && opts.body) window.__saveBodies.push(String(opts.body));
+			if (window.__frozen !== null && u.indexOf('/state') > -1) {
+				return Promise.resolve(new Response(window.__frozen,
+					{status: 200, headers: {'Content-Type': 'application/json'}}));
+			}
+			return real(url, opts);
+		};
+	})(); return true;`, nil)
+
+	const goneID = "t-the-radio-has-moved-past-this"
+	var froze bool
+	waitFor(t, 90*time.Second, "a generated track to go stale on", func() bool {
+		w.execAsync(`var cb = arguments[arguments.length - 1];
+			window.__realFetch('/state').then(function (r) { return r.json(); }).then(function (s) {
+				if (!s.track || !s.track.id) { cb(false); return; }
+				s.track.id = `+strconv.Quote(goneID)+`;
+				if (s.prev) s.prev.id = `+strconv.Quote(goneID)+` + '-prev';
+				s.saved_ids = [];
+				window.__frozen = JSON.stringify(s);
+				cb(true);
+			}, function () { cb(false); });`, &froze)
+		return froze
+	})
+	// Two /state polls, so the page has taken the frozen snapshot as its
+	// own truth before the car button asks it to save anything.
+	time.Sleep(5 * time.Second)
+
+	// The car's previous-track button, dispatched exactly as Chrome
+	// would from the lock screen.
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "previoustrack"})); return true;`, nil)
+	var ack string
+	waitFor(t, 30*time.Second, "the radio to answer the car save", func() bool {
+		w.exec(`return document.getElementById('savestatus').textContent;`, &ack)
+		return strings.Contains(ack, "saving this track to ") ||
+			strings.Contains(ack, "already saved:") ||
+			strings.Contains(ack, "no longer available") ||
+			strings.Contains(ack, "nothing to save")
+	})
+	if !strings.Contains(ack, "saving this track to ") && !strings.Contains(ack, "already saved:") {
+		t.Fatalf("a stale page could not save the song the radio was playing: %q", ack)
+	}
+	t.Logf("car save on a stale page: %q", ack)
+
+	// The request must not have named a track at all: on the live
+	// stream the radio is the only one that knows what is playing.
+	var bodies []string
+	w.exec(`return window.__saveBodies;`, &bodies)
+	if len(bodies) != 1 {
+		t.Fatalf("the car save sent %d requests: %q", len(bodies), bodies)
+	}
+	if strings.Contains(bodies[0], "which=") {
+		t.Fatalf("the live-stream save named a track of its own: %q", bodies[0])
+	}
+
+	// And what landed in the snippets is a real track of the radio's,
+	// never the id the frozen page was holding.
+	var saved struct {
+		IDs []string `json:"ids"`
+	}
+	waitFor(t, 30*time.Second, "the radio to list the saved track", func() bool {
+		w.execAsync(`var cb = arguments[arguments.length - 1];
+			window.__realFetch('/state').then(function (r) { return r.json(); }).then(function (s) {
+				cb({ids: s.saved_ids || []});
+			}, function () { cb({ids: []}); });`, &saved)
+		return len(saved.IDs) > 0
+	})
+	if slices.Contains(saved.IDs, goneID) {
+		t.Fatalf("the radio saved the frozen page's stale id (saved: %q)", saved.IDs)
+	}
+	t.Logf("saved %q while the frozen page held %q", saved.IDs, goneID)
 }

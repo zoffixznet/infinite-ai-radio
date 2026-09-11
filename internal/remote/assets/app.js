@@ -2288,9 +2288,9 @@
   // failures that are worth queueing - the request never arrived, or
   // the radio is up but not answering - apart from the ones that mean
   // the song is simply gone, which no amount of retrying fixes.
-  function postSave(id, tag) {
+  function postSave(which, tag) {
     var body = "tag=" + encodeURIComponent(tag || "");
-    if (id) body += "&which=" + encodeURIComponent(id);
+    if (which) body += "&which=" + encodeURIComponent(which);
     return fetch("/save", { method: "POST", headers: headers, body: body })
       .then(function (r) {
         if (r.status === 401) { loggedOut(); throw new Error("logged out"); }
@@ -2429,49 +2429,72 @@
     statusEl = statusEl || $("savestatus");
     var ids = saveTargets();
     var id = wantPrev ? ids.prev : ids.cur;
-    if (isSaved(id)) {
+    // which is what the radio is asked to save. A buffered device has
+    // to name its own track, because the radio cannot know which one
+    // this device is playing. On the live stream the radio resolves
+    // "the one playing" for itself, and that is the point: this page's
+    // idea of the playing track is only as fresh as its last poll, and
+    // a phone with its screen off stops polling. Naming an id there
+    // meant a locked phone asking for a song the radio had already
+    // moved past - "that track is no longer available to save" - while
+    // the song the listener was actually hearing sat there saveable.
+    // The id is still what the buttons and the offline queue are keyed
+    // on; it just no longer decides what gets saved.
+    var authoritative = pf.active || wantPrev;
+    var which = pf.active ? id : (wantPrev ? "prev" : "");
+    if (authoritative && isSaved(id)) {
       setStatus(statusEl, "already saved", "ok");
       return Promise.resolve({ ack: "already saved" });
     }
-    // Always a concrete track id, even where the old code could get
-    // away with "the one playing": a save that waits out a dead patch
-    // has to name the song the listener meant, not whichever song is
-    // playing when the signal returns.
-    if (!id) {
+    if (pf.active && !id) {
       setStatus(statusEl, wantPrev
-        ? "no previous track to save yet"
-        : (pf.active ? "nothing is playing on this device yet" : "nothing is playing yet"), "err");
+        ? "no previous track on this device yet"
+        : "nothing is playing on this device yet", "err");
       return Promise.resolve(null);
     }
-    if (savingIds[id]) {
+    if (authoritative && savingIds[id]) {
       setStatus(statusEl, "already saving that track", "ok");
       return Promise.resolve({ ack: "already saving" });
     }
     var tag = saveTag();
     var named = wantPrev ? ((lastPrev && lastPrev.title) || "") : (lastNow || "");
     buzz();
-    savingIds[id] = true;
-    updateSaveButtons(null);
+    // The marker in front of the song's name is keyed on the id this
+    // page knows. A stale one still clears when the save settles, so
+    // it can say "Saving" and then stop, rather than stick.
+    if (id) {
+      savingIds[id] = true;
+      updateSaveButtons(null);
+    }
     if (btn) {
       btn.setAttribute("aria-disabled", "true");
       btn.classList.add("is-working");
       releasePress();
     }
     setStatus(statusEl, wantPrev ? "saving the previous track…" : "saving this track…", "");
-    return postSave(id, tag).then(function (d) {
-      saveSettled(id, !!(d && d.saved));
+    return postSave(which, tag).then(function (d) {
+      if (id) saveSettled(id, !!(d && d.saved));
       setStatus(statusEl, d.ack || "done", "ok");
       say(d.ack || "done");
       if (mode === "saved") loadChunks();
       return d;
     })["catch"](function (e) {
       if (e && e.offline) {
-        queueSave(id, tag, named);
-        setStatus(statusEl, "no signal - queued; this song saves itself when the radio is reachable", "warn");
-        say("queued to save when the connection is back");
-        return { queued: true };
+        // Only a named song can wait for the signal: by the time the
+        // queue drains, "the one playing" is a different song. A page
+        // that has not heard from the radio yet has no name to queue
+        // under, and says so rather than promising a save it dropped.
+        if (id) {
+          queueSave(id, tag, named);
+          setStatus(statusEl, "no signal - queued; this song saves itself when the radio is reachable", "warn");
+          say("queued to save when the connection is back");
+          return { queued: true };
+        }
+        setStatus(statusEl, "no answer from the radio - it is out of reach from here", "err");
+        say("the radio did not answer");
+        return null;
       }
-      saveSettled(id, false);
+      if (id) saveSettled(id, false);
       setStatus(statusEl, "failed: " + e.message, "err");
       say("failed: " + e.message);
       return null;

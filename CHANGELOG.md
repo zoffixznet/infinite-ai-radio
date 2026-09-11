@@ -33,6 +33,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The car's save button works again from a locked phone on the live
+  stream. The page had started naming the track to save, and a phone
+  with its screen off stops asking the radio what is playing - so the
+  name it sent was minutes old and the radio answered "that track is no
+  longer available to save" while the song in the listener's ears sat
+  there perfectly saveable. On the live stream the radio works out what
+  is playing for itself again, which is never stale. A device playing
+  from its own bank still names its own track, because the radio cannot
+  know which one that is, and a save queued behind a dead patch still
+  names the song the listener meant.
 - The quiet lines on the player - the position clock either side of the
   slider, the station and queue line, and the device's bank count - take
   their colour from the palette again. They had been stuck on one fixed
