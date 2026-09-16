@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-16
+
 ### Fixed
 
 - A phone with songs banked on it plays them the moment you press play,
@@ -236,7 +238,8 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.1.0...v1.1.1
