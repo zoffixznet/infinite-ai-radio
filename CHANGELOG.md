@@ -6,6 +6,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A phone with songs banked on it plays them the moment you press play,
+  rather than waiting on the radio first. Coming back to the page after
+  a while - a tab left open on a signal that has gone stale, a radio
+  woken from standby - meant sitting in front of *waiting for the radio
+  to send a song* while the line underneath counted fifty songs already
+  on the device. It plays what it holds and asks what is next
+  afterwards, and on a link that is up but carrying nothing it no
+  longer waits at all: the request for the listing has a deadline now,
+  and a listing that misses it counts as being off the network.
+- Banked songs the radio has since played past are no longer thrown
+  away when you reopen the page. Hours banked for a flight survived
+  being carried around and did not survive the tab being reloaded.
+  Steering the radio somewhere new still retires them, which is the
+  point at which you have said you want something else.
+- The status line stops blaming the radio for a silence that is not its
+  doing. A device holding nothing it is allowed to play says that; a
+  device that has given up on songs that will not start keeps saying
+  how to try again, instead of having that wiped two seconds later; and
+  a device playing its own bank out of reach of the radio keeps
+  reporting what it is doing rather than freezing on whatever the last
+  answered poll left behind. The count of songs ready to play counts
+  everything on the device, not only the part the radio's listing still
+  names.
+- A song arriving at a crawl no longer holds the one download slot
+  indefinitely, on the live bank or the saved one: the ninety-second
+  deadline covers the whole song rather than only the radio's first
+  byte. Two downloads can no longer run at once after steering.
+
 ## [1.3.0] - 2026-09-11
 
 ### Added

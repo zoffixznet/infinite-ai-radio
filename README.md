@@ -496,6 +496,15 @@ a long dead zone (a phone that runs out of room says so rather than
 failing quietly). That one choice governs your saved songs as well, so
 *Maximum* means the same depth in both modes.
 
+Play starts from the songs that are already there. The device makes
+sound out of its own bank first and asks the radio what is coming next
+afterwards, so a bank built for a dead zone starts playing inside one -
+on a signal that has gone, and on the worse kind that is present and
+carries nothing. Songs the radio has since played past stay banked and
+stay playable, and reopening the page keeps them; steering the radio
+somewhere new retires them, because that is the moment you have said
+you want something else.
+
 In buffered mode the Next button skips only on that device; other
 listeners and the machine keep their own position. Next also means *not
 this one*: the skipped song is deleted from the device and never

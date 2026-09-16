@@ -2587,3 +2587,174 @@ func TestRealBrowserLiveSaveFollowsTheRadio(t *testing.T) {
 	}
 	t.Logf("saved %q while the frozen page held %q", saved.IDs, goneID)
 }
+
+// TestRealBrowserBankPlaysBeforeTheRadioAnswers is the hibernate-and-wake
+// report, in a test: a phone holding banked songs must make sound out of
+// its own store on the tap, before it knows anything about the radio's
+// queue. The device used to adopt its bank, print "51 songs on this
+// device", and then hand the whole question of first sound to a listing
+// request - so the link a phone wakes onto out of doors, up but carrying
+// nothing, left it silent in front of hours of music while the status
+// line blamed the radio.
+//
+// Two shapes of bad link are covered, because the listener complained
+// about both: one that never answers, and one that answers slowly.
+func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	// No library filler: every banked song is one the radio generated
+	// and has since played past, which is what a real bank is made of.
+	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":3,"library_max_mb":0`)
+	// Long enough that the device stays on one song across each check.
+	fe.setTrackSeconds(60)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+
+	pill := func() string {
+		var s string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &s)
+		return s
+	}
+	devcount := func() string {
+		var s string
+		w.exec(`return (document.getElementById('devcount')||{}).textContent||"";`, &s)
+		return s
+	}
+	// banked reads the device's own store, not the page's memory: this
+	// is the bank that has to survive a reload.
+	banked := func() []string {
+		var keys []string
+		w.execAsync(`var cb = arguments[arguments.length - 1];
+			var req = indexedDB.open("iar-radio");
+			req.onerror = function () { cb([]); };
+			req.onsuccess = function () {
+				try {
+					var st = req.result.transaction("tracks", "readonly").objectStore("tracks");
+					st.getAllKeys().onsuccess = function (e) { cb(e.target.result); };
+				} catch (err) { cb([]); }
+			};`, &keys)
+		return keys
+	}
+	sounding := func() float64 {
+		var at float64
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var t=0;
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused && a[i].currentTime>t) t=a[i].currentTime; }
+			return t;`, &at)
+		return at
+	}
+
+	w.exec(`document.getElementById('buffered').click();
+		var s=document.getElementById('buflevel');
+		s.value='max'; s.dispatchEvent(new Event('change'));
+		return true;`, nil)
+	w.click("#play")
+	waitFor(t, 120*time.Second, "two songs banked on this device", func() bool {
+		return len(banked()) >= 2
+	})
+
+	// The reported trigger: the radio is put on standby (which stops
+	// this device too), and the tab is reloaded while the listener is
+	// away - so the page comes back knowing nothing but what is in the
+	// store.
+	w.click("#hold")
+	waitFor(t, 20*time.Second, "the device to fall silent", func() bool {
+		var on bool
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			return a.some(function (x) { return x && !x.paused; });`, &on)
+		return !on
+	})
+	w.navigate(sb.base + "/")
+	waitFor(t, 20*time.Second, "the standby banner on the reloaded page", func() bool {
+		var shown bool
+		w.exec(`var b=document.getElementById('standbybar'); return !!b && !b.hidden;`, &shown)
+		return shown
+	})
+	w.click("#standbywake")
+	waitFor(t, 20*time.Second, "the radio awake again", func() bool {
+		var shown bool
+		w.exec(`var b=document.getElementById('standbybar'); return !!b && !b.hidden;`, &shown)
+		return !shown
+	})
+	before := len(banked())
+	if before < 2 {
+		t.Fatalf("the reload cost the device its bank before the test began: %d songs", before)
+	}
+
+	// --- the link that never answers ---
+	// Alive enough for /state, a hole for the queue listing: the
+	// request is accepted and nothing ever comes back, so fetch neither
+	// resolves nor rejects. This is the stale route / captive portal /
+	// one-bar-in-a-valley case, and it is the one with no timeout to
+	// save it.
+	w.exec(`(function () {
+		var real = window.fetch;
+		window.__realFetch = real;
+		window.__holdQueue = true;
+		window.fetch = function (url, opts) {
+			if (window.__holdQueue && String(url).indexOf('/api/queue') > -1) {
+				return new Promise(function () {});
+			}
+			return real(url, opts);
+		};
+	})(); return true;`, nil)
+
+	start := time.Now()
+	w.click("#play")
+	deadline := time.Now().Add(8 * time.Second)
+	for sounding() < 0.2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the device made no sound in %v while advertising a bank of %d: devcount=%q status=%q",
+				time.Since(start), before, devcount(), pill())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Logf("first sound %v after the tap, with the listing black-holed", time.Since(start))
+
+	// Getting there must not have cost the bank a single song, and the
+	// status line must not be blaming the radio over songs it holds.
+	if after := len(banked()); after < before {
+		t.Fatalf("playing from the bank cost it songs: %d before, %d after", before, after)
+	}
+	if p := pill(); strings.Contains(p, "waiting for the radio to send a song") {
+		t.Fatalf("the page blames the radio while playing its own bank: %q", p)
+	}
+
+	// The refill resumes by itself once a listing can land again.
+	w.exec(`window.__holdQueue = false; return true;`, nil)
+	waitFor(t, 90*time.Second, "the refill to resume behind the music", func() bool {
+		return strings.Contains(pill(), "playing (buffered)")
+	})
+
+	// --- the link that answers, slowly ---
+	// "Even on a good network this takes a while" was the other half of
+	// the report: the listing landing in a few seconds, and a whole
+	// song downloaded before the first note, are both waits the device
+	// has no business making anyone sit through.
+	w.click("#play") // stop
+	waitFor(t, 20*time.Second, "the device to stop", func() bool { return sounding() == 0 })
+	w.exec(`window.__slowQueue = 6000;
+		window.fetch = function (url, opts) {
+			var real = window.__realFetch;
+			if (String(url).indexOf('/api/queue') > -1) {
+				return new Promise(function (resolve, reject) {
+					setTimeout(function () { real(url, opts).then(resolve, reject); }, window.__slowQueue);
+				});
+			}
+			return real(url, opts);
+		};
+		return true;`, nil)
+
+	start = time.Now()
+	w.click("#play")
+	deadline = time.Now().Add(3 * time.Second)
+	for sounding() < 0.2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("a six-second listing delayed the first note by %v: devcount=%q status=%q",
+				time.Since(start), devcount(), pill())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Logf("first sound %v after the tap, with the listing six seconds behind", time.Since(start))
+}
