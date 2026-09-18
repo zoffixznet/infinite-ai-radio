@@ -29,6 +29,9 @@ func telemetryRows(s *telemetry.Sample) []telemetryRow {
 	}
 	rows := []telemetryRow{cpuRow(s), ramRow(s), vramRow(s)}
 	rows = append(rows, modelRow(s))
+	if row, ok := sharedRow(s); ok {
+		rows = append(rows, row)
+	}
 	return rows
 }
 
@@ -113,6 +116,41 @@ func modelRow(s *telemetry.Sample) telemetryRow {
 		r.Text += fmt.Sprintf("  [engine total %s]", gib(s.EngineVRAM))
 	}
 	return r
+}
+
+// sharedRow names what else is on the card. The radio's own share is
+// counted through the engine daemon's ancestry, which leaves two things
+// unaccounted for and looking identical: another program sharing the
+// machine, and the radio's own lyric helper, which runs as a service of
+// its own rather than as a child of anything here. Without this row the
+// only honest thing the readout could say while the helper held the
+// card was that the radio was holding nothing - true of the engine, and
+// a poor answer to "what is using my graphics card". Named by process
+// and never folded into the radio's own figure: a process list can say
+// who is holding memory, not whose work they are doing.
+func sharedRow(s *telemetry.Sample) (telemetryRow, bool) {
+	r := telemetryRow{Label: "shared", Frac: -1}
+	parts := make([]string, 0, len(s.Procs))
+	for _, p := range s.Procs {
+		if p.Engine || p.VRAM == 0 {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = fmt.Sprintf("pid %d", p.PID)
+		}
+		parts = append(parts, name+" "+gib(p.VRAM))
+	}
+	if len(parts) == 0 {
+		return r, false
+	}
+	// Largest first already; a card with a crowd on it says so rather
+	// than pushing every other row off a narrow terminal.
+	if len(parts) > 3 {
+		parts = append(parts[:3], fmt.Sprintf("and %d more", len(parts)-3))
+	}
+	r.Text = strings.Join(parts, " · ")
+	return r, true
 }
 
 // gib formats a byte count the way a person reads memory: gibibytes

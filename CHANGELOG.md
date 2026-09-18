@@ -20,6 +20,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   flight finishes and is banked; coming back counts what is on the
   shelf and on disk and writes only the remainder, so a deep batch is
   covered across as many holds as it takes.
+- The resource readout names what else is holding the graphics card.
+  The radio's own share is worked out through the engine daemon's
+  ancestry, and the lyric helper runs as a service of its own - so
+  while it held the card the only thing the screen could say was that
+  the radio was holding nothing, which is true of the engine and no
+  answer at all to "what is using my graphics card". Another program
+  sharing the machine had the same problem. Both are named now, by
+  process, and neither is ever folded into the radio's own figure.
 - A held radio that had left the engine warm now hibernates it.
   Hibernation only ever happened on the way out of a cycle, so a cycle
   that ended staying warm and then met a hold left the daemon holding

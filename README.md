@@ -328,10 +328,15 @@ typed at the same prompt. A leading slash is optional: `skip` and
 and - the point of it - nothing is generated: the buffer stops being
 consumed and stops being refilled, so a machine left running overnight
 sits idle with a full buffer instead of rendering songs nobody is
-awake to hear. `standby` again wakes it, playing from exactly where it
-left off and generating again once the buffer runs down. The hold is
-remembered across restarts, so a radio put on standby comes back up on
-standby.
+awake to hear. Work already under way stops at the next clean seam
+rather than being abandoned: the song being written or rendered when
+you press it is finished and kept, the graphics card is handed back,
+and nothing further is started. Nothing is thrown away to stop there,
+so a deep batch interrupted halfway is picked up from where it stopped
+and only the remainder is done. `standby` again wakes it, playing from
+exactly where it left off and generating again once the buffer runs
+down. The hold is remembered across restarts, so a radio put on
+standby comes back up on standby.
 
 The phone remote holds it from the button beside the settings gear, on
 the app bar where every screen can reach it - it wears the banner's
