@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Standby stops what the radio is *doing*, not only what it would start
+  next. The hold was checked once, on the way into a generation cycle,
+  so a cycle already under way ran to the end regardless: on one
+  machine that meant twenty minutes of writing song words after the
+  button was pressed, and then the graphics card woken back up to
+  render the whole batch - the exact spend the button exists to
+  prevent. It now stops at the next clean seam, in the writer and
+  between songs alike, and hands the card back.
+- Nothing is thrown away to stop there. The sheet, plan or song in
+  flight finishes and is banked; coming back counts what is on the
+  shelf and on disk and writes only the remainder, so a deep batch is
+  covered across as many holds as it takes.
+- A held radio that had left the engine warm now hibernates it.
+  Hibernation only ever happened on the way out of a cycle, so a cycle
+  that ended staying warm and then met a hold left the daemon holding
+  the graphics card with nothing left to run that would put it down.
+
 ## [1.3.1] - 2026-09-16
 
 ### Fixed

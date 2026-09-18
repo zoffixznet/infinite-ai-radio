@@ -314,3 +314,59 @@ func TestInstrumentalsAreNamedFromTheirDescription(t *testing.T) {
 		t.Fatalf("instrumental name = %q / %q", spec.Title, spec.Subtitle)
 	}
 }
+
+// A hold, a steer or an export stops the writer between sheets, and the
+// whole promise of stopping there is that nothing written is lost: a
+// listener who holds the radio twenty minutes into a deep batch comes
+// back to the sheets that were already on the shelf, not to an empty
+// one.
+func TestStockLyricsKeepsEverySheetItWroteWhenAskedToStop(t *testing.T) {
+	f := &fakeOllama{
+		reply:     "[Verse]\nsteel in the water\n\n[Chorus]\nhold the line",
+		jsonReply: `{"title":"Steel In The Water","subtitle":"nu-metal, driving"}`,
+	}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	s := wordsmithSession()
+
+	// The caller's stop rule, the way wordsmithPhase's is: asked after
+	// each sheet, and answering "yes" once two are written.
+	stop := func(wrote int) bool { return wrote >= 2 }
+	if wrote := b.StockLyrics(context.Background(), s, 5, stop); wrote != 2 {
+		t.Fatalf("StockLyrics wrote %d sheets before stopping, want 2", wrote)
+	}
+	// Both are banked, not dropped on the way out.
+	if b.AwaitingLyrics(s) {
+		t.Fatal("the shelf is empty after two sheets were written")
+	}
+}
+
+// And the other half of the promise: coming back writes the remainder,
+// not the batch over again. The target is counted against the shelf, so
+// a deep batch is covered across as many rounds as it takes.
+func TestStockLyricsResumesWithoutRewritingTheShelf(t *testing.T) {
+	f := &fakeOllama{
+		reply:     "[Verse]\nsteel in the water\n\n[Chorus]\nhold the line",
+		jsonReply: `{"title":"Steel In The Water","subtitle":"nu-metal, driving"}`,
+	}
+	srv := f.server(t)
+	defer srv.Close()
+	b := probedBuilder(t, srv)
+	s := wordsmithSession()
+
+	if wrote := b.StockLyrics(context.Background(), s, 5, func(w int) bool { return w >= 2 }); wrote != 2 {
+		t.Fatalf("first round wrote %d sheets, want 2", wrote)
+	}
+	before := f.fills.Load()
+
+	if wrote := b.StockLyrics(context.Background(), s, 5, nil); wrote != 3 {
+		t.Fatalf("the resumed round wrote %d sheets, want the remaining 3", wrote)
+	}
+	// Three sheets, and each sheet is one lyric call plus its naming
+	// calls - what matters is that the two already on the shelf were
+	// not written a second time.
+	if grew := f.fills.Load() - before; grew < 3 {
+		t.Fatalf("the resumed round made %d helper calls for 3 sheets", grew)
+	}
+}
