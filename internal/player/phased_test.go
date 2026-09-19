@@ -318,3 +318,76 @@ func TestStatusReportsTheBatchItActuallyRan(t *testing.T) {
 		t.Errorf("rendered = %d, want 10", st.BatchRendered)
 	}
 }
+
+// instrumentalSession is a session with no singing in it: the words to
+// write are descriptions of each song, not lyrics.
+func instrumentalSession() *session.Session {
+	s := session.New()
+	s.Vocal = false
+	s.BasePrompt = "warm analog dub techno, deep, hypnotic"
+	return s
+}
+
+// An instrumental batch gets a description written for each of its
+// songs, the same way a vocal batch gets words. The phase used to turn
+// every non-vocal session away at the door, three lines above the
+// branch written to serve it, so this had never once run and every
+// track of a batch went out under the one terse steering caption.
+func TestInstrumentalBatchGetsItsDescriptionsWritten(t *testing.T) {
+	srv := fakeWordsmith(t, 0)
+	builder := prompting.NewBuilder(prompting.NewOllama(srv.URL, "", 0), testLogger())
+	builder.ProbeAsync(context.Background())
+	if !builder.AwaitHelper(context.Background(), 5*time.Second) {
+		t.Fatal("the helper never became usable")
+	}
+	sess := instrumentalSession()
+	o := heldOrchestrator(t, &pausableMock{}, builder, sess)
+	// Past the opener, with a healthy buffer: the state in which a
+	// whole batch is described rather than one emergency caption.
+	o.mu.Lock()
+	o.queue = append(o.queue, &engine.Track{
+		Samples: make([]int16, 200*audio.SampleRate*audio.Channels),
+	})
+	o.mu.Unlock()
+
+	if !builder.AwaitingInstrumentalCaptions(sess) {
+		t.Fatal("the shelf should start bare")
+	}
+	o.wordsmithPhase(context.Background())
+	if builder.AwaitingInstrumentalCaptions(sess) {
+		t.Fatal("the instrumental batch came out of the wordsmith phase with nothing written")
+	}
+}
+
+// And the cost of that, which was paid in graphics card time: with the
+// shelf permanently bare, planning refused on every cycle, so the radio
+// woke the engine, described nothing, planned nothing and hibernated
+// again - once a minute, for as long as the buffer stayed healthy.
+func TestInstrumentalCycleRendersInsteadOfWakingForNothing(t *testing.T) {
+	srv := fakeWordsmith(t, 0)
+	builder := prompting.NewBuilder(prompting.NewOllama(srv.URL, "", 0), testLogger())
+	builder.ProbeAsync(context.Background())
+	if !builder.AwaitHelper(context.Background(), 5*time.Second) {
+		t.Fatal("the helper never became usable")
+	}
+	sess := instrumentalSession()
+	eng := &pausableMock{}
+	o := heldOrchestrator(t, eng, builder, sess)
+	o.mu.Lock()
+	o.queue = append(o.queue, &engine.Track{
+		Samples: make([]int16, 200*audio.SampleRate*audio.Channels),
+	})
+	o.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	failures, oomStreak := 0, 0
+	o.runCycle(ctx, &failures, &oomStreak)
+
+	if eng.plans.Load() == 0 {
+		t.Fatal("the cycle woke the engine and planned nothing")
+	}
+	if eng.renders.Load() == 0 {
+		t.Fatal("the cycle woke the engine and rendered nothing")
+	}
+}

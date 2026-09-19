@@ -758,9 +758,15 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 		return
 	}
 	epoch, sess := o.snapshotSession()
-	if sess == nil || !sess.Vocal {
+	if sess == nil {
 		return
 	}
+	// An instrumental session comes through here too. It has no words
+	// to write, but it has the same need and the same one chance at the
+	// card: something of its own to describe each song of the batch,
+	// rather than the one terse steering caption under every track. The
+	// branch further down has always been written for it; this guard
+	// used to turn it away at the door, so it had never once run.
 	want := o.wordsmithWant(epoch)
 	o.mu.Lock()
 	playedNow := o.playedInEpoch

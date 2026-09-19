@@ -20,6 +20,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   flight finishes and is banked; coming back counts what is on the
   shelf and on disk and writes only the remainder, so a deep batch is
   covered across as many holds as it takes.
+- Instrumental sessions get a description written for each song of a
+  batch, which is what they were always supposed to get. The phase that
+  writes them turned every non-vocal session away three lines above the
+  branch written to serve it, so it had never once run: every track
+  went out under the same terse steering caption. It cost graphics card
+  time as well as variety - with nothing ever written, planning refused
+  on every cycle, so the radio woke the engine, planned nothing and
+  hibernated again, once a minute for as long as the buffer stayed
+  healthy.
 - The resource readout names what else is holding the graphics card.
   The radio's own share is worked out through the engine daemon's
   ancestry, and the lyric helper runs as a service of its own - so

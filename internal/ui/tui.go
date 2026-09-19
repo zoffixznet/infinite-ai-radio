@@ -374,8 +374,15 @@ func (m *tuiModel) renderChrome() string {
 	case st.WordsmithWant > 0:
 		// The engine sleeps while the writer holds the card; that is
 		// the pipeline's busiest quiet moment, not idleness.
-		text := fmt.Sprintf("writing song words on the freed card (%d of %d)",
-			st.WordsmithWrote, st.WordsmithWant)
+		// An instrumental batch is described rather than worded, and
+		// the line says which, because "writing song words" over a
+		// session with no singing in it is just wrong.
+		work := "song words"
+		if !st.Vocal {
+			work = "song descriptions"
+		}
+		text := fmt.Sprintf("writing %s on the freed card (%d of %d)",
+			work, st.WordsmithWrote, st.WordsmithWant)
 		genLine += m.pulseBar(barWidth) + " " + s.value.Render(clip(text, m.textRoom()))
 	default:
 		genLine += m.bar(0, barWidth) + " " + s.muted.Render(clip(genIdle(st), m.textRoom()))
