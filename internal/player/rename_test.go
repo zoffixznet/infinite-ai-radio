@@ -128,13 +128,13 @@ func TestRenamingFollowsASongOutOfTheBuffer(t *testing.T) {
 func TestRenamingReachesTheBankedCopy(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	o := New(testConfig(), enginetest.NewMock(), b, session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
-	lib := library.New(t.TempDir(), 100, testLogger())
+	lib := library.New(t.TempDir(), 100, 9, testLogger())
 	o.Library = lib
 
 	key := "test-vibe"
 	banked := namedTrack("b")
 	banked.Samples = make([]int16, 9600)
-	libID, err := lib.Put(key, banked)
+	libID, err := lib.Put(context.Background(), key, banked)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestRenamingReachesTheBankedCopy(t *testing.T) {
 	o.cur = newTrackSource(live, "music")
 	o.curTrack = live
 	o.mu.Unlock()
-	id2, err := lib.Put(key, live)
+	id2, err := lib.Put(context.Background(), key, live)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,13 +247,13 @@ func TestRenamingASongTheMachineHasFinishedWith(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	o := New(testConfig(), enginetest.NewMock(), b, session.NewStore(t.TempDir()),
 		session.New(), &capturePlayer{}, testLogger())
-	lib := library.New(t.TempDir(), 100, testLogger())
+	lib := library.New(t.TempDir(), 100, 9, testLogger())
 	o.Library = lib
 
 	gone := namedTrack("old")
 	gone.Samples = make([]int16, 9600)
 	key := "test-vibe"
-	libID, err := lib.Put(key, gone)
+	libID, err := lib.Put(context.Background(), key, gone)
 	if err != nil {
 		t.Fatal(err)
 	}

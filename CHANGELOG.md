@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The instant-start bank stores songs as MP3 rather than uncompressed
+  audio, which is what the rendered buffer, your saved songs and the
+  phone have always used. The bank was the last uncompressed store on
+  disk, dating from when it was the only one and a banked song had to
+  be readable without spawning a decoder. At the default cap it held
+  about twenty songs in 600 MB; the same space now holds roughly a
+  hundred. Any uncompressed tracks from before are cleared out on the
+  next start - re-encoding them would be re-encoding music the radio
+  can simply make again - so expect the bank to refill from scratch.
+
 ## [1.3.2] - 2026-09-18
 
 ### Fixed

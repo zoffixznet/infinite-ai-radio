@@ -795,7 +795,9 @@ everything else keeps its default. The complete set, with defaults:
   subdirectory per tag (`untagged/` for saves without one). Empty means
   `snippets/` under the data directory.
 - `library_max_mb`: total size cap for the on-disk track library that
-  powers instant starts (0 disables the library).
+  powers instant starts (0 disables the library). Tracks are banked as
+  MP3 at `mp3_quality`, so the 600 MB default holds roughly a hundred
+  songs; raise it if you want the radio to reach further back.
 
 - `lyrics_generator`: which lyric writer pens the words on vocal
   tracks: `"scribe"` (default; plans, drafts and revises against
@@ -1023,7 +1025,8 @@ Inside the data directory:
   checkpoints
 - `sessions/` - one JSON file per saved session, plus `deleted-presets`
   (the list of presets hidden with `iar sessions delete`)
-- `library/` - banked tracks for instant starts (size-capped)
+- `library/` - banked tracks for instant starts: MP3s with a JSON
+  metadata sidecar, the same shape as the buffer's (size-capped)
 - `buffer/` - phased generation's disk buffer: `plans/` (small JSON song
   plans), `tracks/` (rendered MP3s, each with a JSON metadata sidecar),
   and the stored steering context. The largest directory after `engine/`

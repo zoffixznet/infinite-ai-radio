@@ -723,7 +723,7 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		o.wg.Add(1)
 		go func() {
 			defer o.wg.Done()
-			id, err := o.Library.Put(key, &banked)
+			id, err := o.Library.Put(ctx, key, &banked)
 			if err != nil {
 				o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
 				return

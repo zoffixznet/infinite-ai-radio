@@ -808,7 +808,7 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			o.wg.Add(1)
 			go func() {
 				defer o.wg.Done()
-				id, err := o.Library.Put(key, &banked)
+				id, err := o.Library.Put(ctx, key, &banked)
 				if err != nil {
 					o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
 					return
@@ -1102,7 +1102,11 @@ func (o *Orchestrator) seedFromLibrary() {
 	if o.eng == nil || mode != session.ModeMusic {
 		return
 	}
-	track, libID, ok := o.Library.Pick(library.Key(sessCopy))
+	ctx := o.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	track, libID, ok := o.Library.Pick(ctx, library.Key(sessCopy))
 	if !ok {
 		return
 	}

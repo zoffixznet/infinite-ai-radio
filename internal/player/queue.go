@@ -171,7 +171,11 @@ func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 		if !found {
 			return nil, false
 		}
-		t, ok := o.Library.Load(key, fileID)
+		ctx := o.runCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		t, ok := o.Library.Load(ctx, key, fileID)
 		if ok && t.Title == "" {
 			t.Title, t.Subtitle = prompting.TrackTitle(t.Prompt)
 		}

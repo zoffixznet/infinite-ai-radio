@@ -347,13 +347,13 @@ func TestNewSessionFromPromptCommand(t *testing.T) {
 
 func TestLibraryInstantStart(t *testing.T) {
 	dir := t.TempDir()
-	lib := library.New(dir, 100, testLogger())
+	lib := library.New(dir, 100, 9, testLogger())
 	banked := &engine.Track{Samples: make([]int16, audio.SampleRate*2*2), Prompt: "banked lofi"}
 	for i := range banked.Samples {
 		banked.Samples[i] = int16(i % 2000)
 	}
 	sess := session.New()
-	if _, err := lib.Put(library.Key(sess), banked); err != nil {
+	if _, err := lib.Put(context.Background(), library.Key(sess), banked); err != nil {
 		t.Fatal(err)
 	}
 
@@ -557,13 +557,13 @@ func TestTapCarriesEveryAudiblePath(t *testing.T) {
 
 	t.Run("library track", func(t *testing.T) {
 		dir := t.TempDir()
-		lib := library.New(dir, 100, testLogger())
+		lib := library.New(dir, 100, 9, testLogger())
 		banked := &engine.Track{Samples: make([]int16, audio.SampleRate*2*2), Prompt: "banked"}
 		for i := range banked.Samples {
 			banked.Samples[i] = int16(1500)
 		}
 		sess := session.New()
-		if _, err := lib.Put(library.Key(sess), banked); err != nil {
+		if _, err := lib.Put(context.Background(), library.Key(sess), banked); err != nil {
 			t.Fatal(err)
 		}
 		eng := enginetest.NewMock()
@@ -1074,7 +1074,7 @@ func TestLanguageSwitchesSurviveAReload(t *testing.T) {
 }
 
 func TestQueueListingDuringASwitchover(t *testing.T) {
-	lib := library.New(t.TempDir(), 100, testLogger())
+	lib := library.New(t.TempDir(), 100, 9, testLogger())
 	sess := session.New()
 	sess.Vocal = true
 	o, _ := newTestOrchestrator(t, enginetest.NewMock(), sess)
@@ -1085,7 +1085,7 @@ func TestQueueListingDuringASwitchover(t *testing.T) {
 	for _, lang := range []string{"English", "Russian"} {
 		tr := mkTrack("banked "+lang, 1)
 		tr.Spec.VocalLanguageName = lang
-		if _, err := lib.Put(library.Key(sess), tr); err != nil {
+		if _, err := lib.Put(context.Background(), library.Key(sess), tr); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(1100 * time.Millisecond) // ids start with a whole-second timestamp
@@ -1133,7 +1133,7 @@ func TestQueueTracksAndTrackData(t *testing.T) {
 	sess := session.New()
 	o, pl := newTestOrchestrator(t, eng, sess)
 	dir := t.TempDir()
-	o.Library = library.New(dir, 100, testLogger())
+	o.Library = library.New(dir, 100, 9, testLogger())
 	// Read the listing inside the wait: checking Status first and
 	// listing after leaves a window for the mixer to take the only
 	// queued track, which makes this test flake under load.
@@ -1239,7 +1239,7 @@ func TestSaveSnippetByIDAndIdempotency(t *testing.T) {
 	eng := enginetest.NewMock()
 	o, _ := newTestOrchestrator(t, eng, session.New())
 	o.SnippetsDir = t.TempDir()
-	o.Library = library.New(t.TempDir(), 100, testLogger())
+	o.Library = library.New(t.TempDir(), 100, 9, testLogger())
 	waitFor(t, 10*time.Second, "a track playing", func() bool { return o.Status().TrackID != "" })
 
 	// Saving by explicit track id (what a buffered phone sends).

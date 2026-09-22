@@ -237,7 +237,7 @@ func loadConfig(paths config.Paths) (config.Config, error) {
 
 // library returns the on-disk track cache (nil when disabled).
 func (a *app) library() *library.Library {
-	return library.New(filepath.Join(a.paths.DataDir, "library"), a.cfg.LibraryMaxMB, a.log)
+	return library.New(filepath.Join(a.paths.DataDir, "library"), a.cfg.LibraryMaxMB, a.cfg.MP3Quality, a.log)
 }
 
 // snippetsDir resolves where saved tracks land.

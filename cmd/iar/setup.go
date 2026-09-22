@@ -112,7 +112,7 @@ func bankPresetTracks(ctx context.Context, a *app) error {
 			if a.cfg.NormalizeLoudness {
 				audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
 			}
-			if _, err := lib.Put(p.Name, track); err != nil {
+			if _, err := lib.Put(ctx, p.Name, track); err != nil {
 				return err
 			}
 		}

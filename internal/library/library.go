@@ -1,10 +1,18 @@
 // Package library caches generated tracks on disk so a launch can start
 // playing within seconds while fresh generation warms up. Tracks are
-// stored per vibe key (preset name or prompt slug) as WAV plus a small
+// stored per vibe key (preset name or prompt slug) as MP3 plus a small
 // metadata file, with a rolling size cap across the whole library.
+//
+// The audio was uncompressed until 2026-09-21, from when this was the
+// only store on disk and a banked track had to be readable without
+// spawning anything. The rendered buffer has stored MP3 and decoded it
+// on the playback path for every song since; that settles the question
+// of whether the decode is affordable, and the cap buys about five
+// times the music at the same quality the listener already hears.
 package library
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -15,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"iar/internal/audio"
 	"iar/internal/engine"
+	"iar/internal/export"
 	"iar/internal/session"
 )
 
@@ -31,6 +39,10 @@ type meta struct {
 	// before it was recorded.
 	Language string    `json:"language,omitempty"`
 	Created  time.Time `json:"created"`
+	// Seconds is the track's play time. A WAV could be measured by
+	// dividing its size; a compressed file cannot, so it is recorded
+	// here when the track is banked.
+	Seconds float64 `json:"seconds,omitempty"`
 }
 
 // Library is a size-capped on-disk track cache. A nil *Library is valid
@@ -38,19 +50,71 @@ type meta struct {
 type Library struct {
 	dir      string
 	maxBytes int64
+	quality  int
 	log      *slog.Logger
 }
 
-// New returns a library rooted at dir with a total size cap of maxMB.
-// maxMB <= 0 disables the library (returns nil).
-func New(dir string, maxMB int, log *slog.Logger) *Library {
+// New returns a library rooted at dir with a total size cap of maxMB,
+// banking at the given libmp3lame VBR quality. maxMB <= 0 disables the
+// library (returns nil).
+func New(dir string, maxMB, quality int, log *slog.Logger) *Library {
 	if maxMB <= 0 {
 		return nil
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Library{dir: dir, maxBytes: int64(maxMB) * 1024 * 1024, log: log}
+	l := &Library{dir: dir, maxBytes: int64(maxMB) * 1024 * 1024, quality: quality, log: log}
+	l.dropUncompressed()
+	return l
+}
+
+// dropUncompressed clears out the WAV era. Transcoding the old files
+// would be re-encoding music the radio can simply make again, and they
+// are the reason the cap held twenty songs instead of a hundred - so
+// they go, along with any sidecar left without audio beside it.
+func (l *Library) dropUncompressed() {
+	keys, err := os.ReadDir(l.dir)
+	if err != nil {
+		return
+	}
+	freed, dropped := int64(0), 0
+	for _, k := range keys {
+		if !k.IsDir() {
+			continue
+		}
+		dir := filepath.Join(l.dir, k.Name())
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		have := map[string]bool{}
+		for _, f := range files {
+			if name, ok := strings.CutSuffix(f.Name(), ".mp3"); ok {
+				have[name] = true
+			}
+		}
+		for _, f := range files {
+			name := f.Name()
+			stale := strings.HasSuffix(name, ".wav") || strings.HasSuffix(name, ".wav.tmp")
+			if id, ok := strings.CutSuffix(name, ".json"); ok && !have[id] {
+				stale = true
+			}
+			if !stale {
+				continue
+			}
+			if fi, err := f.Info(); err == nil {
+				freed += fi.Size()
+			}
+			if os.Remove(filepath.Join(dir, name)) == nil {
+				dropped++
+			}
+		}
+	}
+	if dropped > 0 {
+		l.log.Info("uncompressed library tracks cleared", "event", "library_wav_dropped",
+			"files", dropped, "freed_mb", freed/(1024*1024))
+	}
 }
 
 // Key derives the library key for a session: the preset name when the
@@ -70,7 +134,7 @@ func Key(s *session.Session) string {
 }
 
 // Put banks a track under key and enforces the size cap.
-func (l *Library) Put(key string, t *engine.Track) (string, error) {
+func (l *Library) Put(ctx context.Context, key string, t *engine.Track) (string, error) {
 	if l == nil || t == nil || len(t.Samples) == 0 {
 		return "", nil
 	}
@@ -79,23 +143,34 @@ func (l *Library) Put(key string, t *engine.Track) (string, error) {
 		return "", err
 	}
 	id := time.Now().UTC().Format("20060102-150405") + fmt.Sprintf("-%04d", rand.IntN(10000))
-	wavTmp := filepath.Join(dir, "."+id+".wav.tmp")
-	if err := os.WriteFile(wavTmp, audio.EncodeWAV(t.Samples), 0o644); err != nil {
+	// Encoded beside its final name and renamed into place, so a crash
+	// mid-encode leaves a dot-file the next scan ignores rather than a
+	// half-written song something later tries to play.
+	mp3Tmp := filepath.Join(dir, "."+id+".mp3.tmp")
+	if err := export.EncodeMP3(ctx, t.Samples, mp3Tmp, export.MP3Options{
+		Quality:  l.quality,
+		Title:    t.Title,
+		Subtitle: t.Subtitle,
+		Artist:   "Infinite AI Radio",
+		Comment:  "banked track",
+	}); err != nil {
+		os.Remove(mp3Tmp)
 		return "", err
 	}
 	m, err := json.Marshal(meta{
 		Prompt: t.Prompt, Lyrics: t.Lyrics, Title: t.Title, Subtitle: t.Subtitle,
 		Language: t.Spec.VocalLanguageName, Created: time.Now(),
+		Seconds: t.Duration().Seconds(),
 	})
 	if err != nil {
-		os.Remove(wavTmp)
+		os.Remove(mp3Tmp)
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(dir, id+".json"), m, 0o644); err != nil {
-		os.Remove(wavTmp)
+		os.Remove(mp3Tmp)
 		return "", err
 	}
-	if err := os.Rename(wavTmp, filepath.Join(dir, id+".wav")); err != nil {
+	if err := os.Rename(mp3Tmp, filepath.Join(dir, id+".mp3")); err != nil {
 		return "", err
 	}
 	l.log.Info("track banked", "event", "library_put", "key", key, "id", id)
@@ -126,7 +201,7 @@ func (l *Library) SetTitle(key, id, title, subtitle string) bool {
 	if err != nil {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(dir, id+".wav")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, id+".mp3")); err != nil {
 		return false
 	}
 	tmp := metaPath + ".tmp"
@@ -140,7 +215,7 @@ func (l *Library) SetTitle(key, id, title, subtitle string) bool {
 // Pick loads a random banked track for key, returning its file id so
 // callers can tell it apart from the same track offered as filler. ok is
 // false when none exist.
-func (l *Library) Pick(key string) (*engine.Track, string, bool) {
+func (l *Library) Pick(ctx context.Context, key string) (*engine.Track, string, bool) {
 	if l == nil {
 		return nil, "", false
 	}
@@ -150,19 +225,16 @@ func (l *Library) Pick(key string) (*engine.Track, string, bool) {
 		return nil, "", false
 	}
 	id := ids[rand.IntN(len(ids))]
-	data, err := os.ReadFile(filepath.Join(dir, id+".wav"))
-	if err != nil {
-		return nil, "", false
-	}
-	w, err := audio.DecodeWAV(data)
-	if err != nil {
+	samples, err := export.DecodePCM(ctx, filepath.Join(dir, id+".mp3"))
+	if err != nil || len(samples) == 0 {
+		// A cancelled context fails every decode; a shutdown must not
+		// be read as a corrupt bank and delete the library.
+		if ctx.Err() != nil {
+			return nil, "", false
+		}
 		l.log.Warn("banked track unreadable, removing", "event", "library_corrupt", "id", id)
-		os.Remove(filepath.Join(dir, id+".wav"))
+		os.Remove(filepath.Join(dir, id+".mp3"))
 		os.Remove(filepath.Join(dir, id+".json"))
-		return nil, "", false
-	}
-	samples, err := w.ToInternal()
-	if err != nil {
 		return nil, "", false
 	}
 	var m meta
@@ -190,7 +262,7 @@ type Entry struct {
 	// Title and Subtitle are the short display names, when banked.
 	Title    string
 	Subtitle string
-	// Seconds is the track's play time, derived from the file size.
+	// Seconds is the track's play time, as recorded when it was banked.
 	Seconds float64
 	// Language is the language the track was sung in, in the listener's
 	// own wording. Empty for instrumentals and for tracks banked before
@@ -210,8 +282,7 @@ func (l *Library) Entries(key string) []Entry {
 	sort.Sort(sort.Reverse(sort.StringSlice(ids))) // ids start with a timestamp
 	var out []Entry
 	for _, id := range ids {
-		fi, err := os.Stat(filepath.Join(dir, id+".wav"))
-		if err != nil {
+		if _, err := os.Stat(filepath.Join(dir, id+".mp3")); err != nil {
 			continue
 		}
 		e := Entry{ID: id}
@@ -222,12 +293,10 @@ func (l *Library) Entries(key string) []Entry {
 			e.Title = m.Title
 			e.Subtitle = m.Subtitle
 			e.Language = m.Language
+			e.Seconds = m.Seconds
 			if m.Lyrics != engine.InstrumentalLyrics {
 				e.Lyrics = m.Lyrics
 			}
-		}
-		if bytes := fi.Size() - 44; bytes > 0 {
-			e.Seconds = float64(bytes) / (audio.SampleRate * audio.Channels * 2)
 		}
 		out = append(out, e)
 	}
@@ -236,21 +305,13 @@ func (l *Library) Entries(key string) []Entry {
 
 // Load reads one banked track by key and id. ok is false when the track
 // is gone (eviction races are expected and harmless).
-func (l *Library) Load(key, id string) (*engine.Track, bool) {
+func (l *Library) Load(ctx context.Context, key, id string) (*engine.Track, bool) {
 	if l == nil {
 		return nil, false
 	}
 	dir := filepath.Join(l.dir, session.SanitizeName(key))
-	data, err := os.ReadFile(filepath.Join(dir, session.SanitizeName(id)+".wav"))
-	if err != nil {
-		return nil, false
-	}
-	w, err := audio.DecodeWAV(data)
-	if err != nil {
-		return nil, false
-	}
-	samples, err := w.ToInternal()
-	if err != nil {
+	samples, err := export.DecodePCM(ctx, filepath.Join(dir, session.SanitizeName(id)+".mp3"))
+	if err != nil || len(samples) == 0 {
 		return nil, false
 	}
 	var m meta
@@ -280,7 +341,7 @@ func (l *Library) ids(dir string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if name, ok := strings.CutSuffix(e.Name(), ".wav"); ok && !strings.HasPrefix(name, ".") {
+		if name, ok := strings.CutSuffix(e.Name(), ".mp3"); ok && !strings.HasPrefix(name, ".") {
 			out = append(out, name)
 		}
 	}
@@ -293,7 +354,7 @@ func (l *Library) ids(dir string) []string {
 // other vibe's instant-start tracks.
 func (l *Library) evict() {
 	type file struct {
-		wav, json string
+		mp3, json string
 		size      int64
 		mod       time.Time
 	}
@@ -309,13 +370,13 @@ func (l *Library) evict() {
 		}
 		dir := filepath.Join(l.dir, kd.Name())
 		for _, id := range l.ids(dir) {
-			wav := filepath.Join(dir, id+".wav")
-			fi, err := os.Stat(wav)
+			mp3 := filepath.Join(dir, id+".mp3")
+			fi, err := os.Stat(mp3)
 			if err != nil {
 				continue
 			}
 			byKey[kd.Name()] = append(byKey[kd.Name()],
-				file{wav: wav, json: filepath.Join(dir, id+".json"), size: fi.Size(), mod: fi.ModTime()})
+				file{mp3: mp3, json: filepath.Join(dir, id+".json"), size: fi.Size(), mod: fi.ModTime()})
 			total += fi.Size()
 		}
 	}
@@ -346,9 +407,9 @@ func (l *Library) evict() {
 		}
 		f := byKey[victim][0]
 		byKey[victim] = byKey[victim][1:]
-		os.Remove(f.wav)
+		os.Remove(f.mp3)
 		os.Remove(f.json)
 		total -= f.size
-		l.log.Info("library track evicted", "event", "library_evict", "path", f.wav)
+		l.log.Info("library track evicted", "event", "library_evict", "path", f.mp3)
 	}
 }
