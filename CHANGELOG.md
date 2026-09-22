@@ -8,6 +8,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The phone says how much music is on the device in hours and minutes,
+  the way the machine's own readout says it. "~189 min banked" is
+  arithmetic nobody should have to do to answer "how long can I drive
+  on this"; it reads "~3h09m" now.
 - The instant-start bank stores songs as MP3 rather than uncompressed
   audio, which is what the rendered buffer, your saved songs and the
   phone have always used. The bank was the last uncompressed store on

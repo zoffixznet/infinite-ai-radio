@@ -887,21 +887,36 @@
   // listening to it, or it is being kept warm behind the saved songs.
   function pfLive() { return pf.active || pf.warm; }
 
-  // pfMinutes reports how much audio is banked on this device.
-  function pfMinutes() {
+  // pfBankSeconds reports how much audio is banked on this device.
+  function pfBankSeconds() {
     var secs = 0;
     Object.keys(pf.have).forEach(function (id) { secs += pf.have[id].dur || 0; });
-    return Math.round(secs / 60);
+    return secs;
+  }
+
+  // fmtSpan says how long a stretch of music runs, in the machine's own
+  // wording, so a span means the same thing on the phone as it does on
+  // the screen the radio is running on. Bare minutes were fine when a
+  // bank held twenty of them; a bank meant for a flight reads as "3h12m"
+  // rather than "192 min", which is arithmetic nobody should have to do
+  // to answer "how long can I drive on this".
+  function fmtSpan(secs) {
+    secs = Math.max(0, Math.round(secs));
+    var h = Math.floor(secs / 3600);
+    var m = Math.floor(secs / 60) % 60;
+    if (h > 0) return h + "h" + (m < 10 ? "0" : "") + m + "m";
+    if (secs >= 60) return m + "m";
+    return secs + "s";
   }
 
   function pfShowMinutes() {
     var n = Object.keys(pf.have).length;
-    setText($("bufmins"), n ? "~" + pfMinutes() + " min banked on this device" : "");
+    setText($("bufmins"), n ? "~" + fmtSpan(pfBankSeconds()) + " banked on this device" : "");
     var row = $("devrow");
     if (!row) return;
     row.hidden = !pf.active;
     if (!pf.active) return;
-    setText($("devcount"), n + " song" + (n === 1 ? "" : "s") + " on this device (~" + pfMinutes() + " min)");
+    setText($("devcount"), n + " song" + (n === 1 ? "" : "s") + " on this device (~" + fmtSpan(pfBankSeconds()) + ")");
     var note = "";
     if (pf.wrapped) note = "replaying earlier songs, nothing new yet";
     else if (pf.storeFull) note = "no room left on this device - these play now but are not saved";
