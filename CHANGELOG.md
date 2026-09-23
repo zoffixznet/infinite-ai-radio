@@ -29,6 +29,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the phone must not read that as being at the end of the stream,
   where it would stop fetching new songs and play backwards through
   old ones.
+- A song can be saved or renamed while the radio is fading into it.
+  For the few seconds of the crossfade it had left the play queue but
+  was not yet the song playing, and was in no list the radio looked in
+  - so a phone running ahead of the speakers, playing exactly that song,
+  was told it was "no longer here". A skip opens that window at the
+  moment a listener is most likely to be reaching for the pencil.
 
 ### Changed
 

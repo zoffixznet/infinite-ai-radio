@@ -255,6 +255,12 @@ type Orchestrator struct {
 	queue    []*engine.Track
 	epoch    int
 	lastGood *engine.Track
+	// incoming is the song the mixer is fading in: taken off the queue,
+	// not yet the current one. For the length of the crossfade it is in
+	// no other field, so without this a listener whose phone is already
+	// playing it - the usual case, a phone runs ahead of the speakers -
+	// could neither save nor rename it for those seconds.
+	incoming *engine.Track
 	// lastGoodEpoch is the steering epoch lastGood was generated in.
 	// When it is behind, looping lastGood replays the sound the
 	// listener has just moved away from, which is worth saying out loud

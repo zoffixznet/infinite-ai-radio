@@ -320,3 +320,70 @@ func TestAnInstantStartKeepsTheBankedSongsID(t *testing.T) {
 		t.Fatalf("one banked song is offered as %d rows: %v", len(rows), rows)
 	}
 }
+
+// A phone runs ahead of the speakers, so the song it is playing is very
+// often the one the machine is just fading in: off the play queue, not
+// yet the current song. For the length of the crossfade it used to be in
+// no list the radio looked in, and a save or rename of it failed with
+// "no longer here" - a few seconds' window that a skip opens exactly
+// when a listener is most likely to be reaching for the pencil.
+func TestASongBeingFadedInCanBeFoundAndRenamed(t *testing.T) {
+	o, _ := idOrchestrator(t)
+	fading := &engine.Track{ID: "t-1790000000000-0010", Prompt: "the song fading in",
+		Samples: make([]int16, 2*audio.SampleRate*audio.Channels)}
+	o.mu.Lock()
+	o.queue = []*engine.Track{fading}
+	o.mu.Unlock()
+
+	// A full output holds the mixer on the fade's first write: mid-fade,
+	// with the song off the queue and not yet current.
+	if _, err := o.ring.Write(make([]byte, 2*audio.BytesPerSecond)); err != nil {
+		t.Fatal(err)
+	}
+	var cur source = silenceSource{}
+	next := o.chooseNext(cur)
+	if next == nil {
+		t.Fatal("the mixer chose nothing to fade in")
+	}
+	faded := make(chan struct{})
+	go func() {
+		defer close(faded)
+		o.crossfade(context.Background(), cur, next, audio.SampleRate/2, audio.SampleRate/10)
+	}()
+	waitFor(t, 5*time.Second, "the fade under way", func() bool {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		return o.incoming == fading && len(o.queue) == 0
+	})
+
+	if _, ok := o.TrackData(fading.ID); !ok {
+		t.Fatal("the song being faded in cannot be found, so it cannot be saved")
+	}
+	if ack := o.Retitle(fading.ID, "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
+		t.Fatalf("renaming the song being faded in: ack = %q", ack)
+	}
+
+	// Let the fade finish: the song is current, and nothing is incoming.
+	drain := make([]byte, audio.BytesPerSecond/10)
+	deadline := time.After(10 * time.Second)
+	for waiting := true; waiting; {
+		select {
+		case <-faded:
+			waiting = false
+		case <-deadline:
+			t.Fatal("the fade never finished")
+		default:
+			o.ring.Read(drain)
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	o.mu.Lock()
+	now, still := o.curTrack, o.incoming
+	o.mu.Unlock()
+	if now != fading || still != nil {
+		t.Fatalf("after the fade: current %v, incoming %v", now, still)
+	}
+	if fading.Title != "Harbour Lights" {
+		t.Fatalf("the rename did not reach the song: %q", fading.Title)
+	}
+}

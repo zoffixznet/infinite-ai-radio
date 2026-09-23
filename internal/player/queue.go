@@ -235,7 +235,7 @@ func (o *Orchestrator) liveTrack(id string) (*engine.Track, bool) {
 			return &cp, true
 		}
 	}
-	for _, t := range []*engine.Track{o.curTrack, o.prevTrack, o.lastGood} {
+	for _, t := range []*engine.Track{o.incoming, o.curTrack, o.prevTrack, o.lastGood} {
 		if t != nil && t.ID == id {
 			cp := *t
 			return &cp, true

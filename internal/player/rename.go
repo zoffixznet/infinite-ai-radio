@@ -86,7 +86,7 @@ func (o *Orchestrator) pruneBankRefs() {
 	if ts, ok := o.cur.(*trackSource); ok {
 		live[ts.track.ID] = true
 	}
-	for _, t := range []*engine.Track{o.prevTrack, o.lastGood, o.curTrack} {
+	for _, t := range []*engine.Track{o.incoming, o.prevTrack, o.lastGood, o.curTrack} {
 		if t != nil {
 			live[t.ID] = true
 		}
@@ -163,6 +163,7 @@ func (o *Orchestrator) retitleLive(which, title string) string {
 		if ts, ok := o.cur.(*trackSource); ok {
 			take(ts.track)
 		}
+		take(o.incoming)
 		take(o.curTrack)
 		take(o.prevTrack)
 		take(o.lastGood)

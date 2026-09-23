@@ -291,6 +291,11 @@ func (o *Orchestrator) crossfade(ctx context.Context, cur, next source, fadeFram
 	if rem := next.remaining(); rem >= 0 && rem/2 < fade {
 		fade = rem / 2
 	}
+	if ts, ok := next.(*trackSource); ok {
+		o.mu.Lock()
+		o.incoming = ts.track
+		o.mu.Unlock()
+	}
 	done := 0
 	for done < fade && ctx.Err() == nil {
 		n := chunkFrames
@@ -341,6 +346,7 @@ func mixSegment(tail, head []int16, frames, offset, total int) []int16 {
 func (o *Orchestrator) setCurrent(s source) {
 	o.mu.Lock()
 	o.cur = s
+	o.incoming = nil // whatever was fading in is current now, or was passed over
 	ts, isTrack := s.(*trackSource)
 	// A song of this session's is now audible, so its sound is worth
 	// keeping if the listener changes it.
