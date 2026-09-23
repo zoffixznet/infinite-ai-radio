@@ -283,3 +283,32 @@ func writeFile(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 }
+
+// A banked song keeps the id it had everywhere else, so it is still the
+// same song: listed under it, handed back under it, and found by it from
+// any vibe - which is how a listener saves a song the radio played long
+// ago, even after a restart has forgotten where it was banked.
+func TestABankedSongKeepsItsOwnID(t *testing.T) {
+	needFFmpeg(t)
+	lib := newLib(t, t.TempDir(), 100)
+	ctx := context.Background()
+	tr := track(audio.SampleRate/2, 70)
+	tr.ID = "t-1790000000000-0007"
+	if _, err := lib.Put(ctx, "some-vibe", tr); err != nil {
+		t.Fatal(err)
+	}
+	if es := lib.Entries("some-vibe"); len(es) != 1 || es[0].TrackID != tr.ID {
+		t.Fatalf("entries: %+v", es)
+	}
+	picked, _, ok := lib.Pick(ctx, "some-vibe")
+	if !ok || picked.ID != tr.ID {
+		t.Fatalf("picked id = %q ok=%v", picked.ID, ok)
+	}
+	found, ok := lib.Find(ctx, tr.ID)
+	if !ok || found.ID != tr.ID || len(found.Samples) == 0 {
+		t.Fatalf("found by id: ok=%v track=%+v", ok, found)
+	}
+	if _, ok := lib.Find(ctx, "t-never-banked"); ok {
+		t.Fatal("found a song that was never banked")
+	}
+}

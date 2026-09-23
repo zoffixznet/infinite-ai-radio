@@ -932,15 +932,27 @@
   // the silence.
   var pfStallMs = 8000;
 
-  // pfListedPlaying reports whether the playing track is still in the
-  // server listing. Once the stream consumes it, every listed row is
-  // upcoming from this device's point of view.
-  function pfListedPlaying() {
+  // pfOrdered reports whether a listing row belongs to the stream's own
+  // order: the play queue, then the songs waiting on disk. Filler does
+  // not. It is banked songs offered as spares at the end of the list,
+  // and a banked song goes out under its own id - so the very song this
+  // device is playing can turn up among them. Reading its place there
+  // put the device at the end of the stream: it stopped taking fresh
+  // songs and walked backwards through ones the radio had played.
+  function pfOrdered(row) { return row.kind !== "library"; }
+
+  // pfOrderedId reports whether an id is listed in the stream's order.
+  function pfOrderedId(id) {
     for (var i = 0; i < pf.rows.length; i++) {
-      if (pf.rows[i].id === pf.playingId) return true;
+      if (pf.rows[i].id === id && pfOrdered(pf.rows[i])) return true;
     }
     return false;
   }
+
+  // pfListedPlaying reports whether the playing track is still in the
+  // stream's order. Once the stream consumes it, every ordered row is
+  // upcoming from this device's point of view.
+  function pfListedPlaying() { return pfOrderedId(pf.playingId); }
 
   // pfReady is how many songs this device could play after the one it
   // is playing: the upcoming ones it has downloaded AND the ones the
@@ -963,10 +975,43 @@
     var n = 0;
     var passed = !pfListedPlaying();
     pf.rows.forEach(function (row) {
+      // Spares are not ahead of anything: a banked song is more often
+      // one this device has already played than one it has yet to.
+      if (!pfOrdered(row)) return;
       if (row.id === pf.playingId) { passed = true; return; }
       if (passed && pf.have[row.id]) n++;
     });
     return n;
+  }
+
+  // pfSpares counts the filler this device holds, other than the song it
+  // is playing.
+  function pfSpares() {
+    var n = 0;
+    pf.rows.forEach(function (row) {
+      if (!pfOrdered(row) && row.id !== pf.playingId && pf.have[row.id]) n++;
+    });
+    return n;
+  }
+
+  // pfNextDownload is the row worth fetching next, or null when there is
+  // none or enough is held already: the first row after the one playing
+  // that this device neither holds nor has thrown away. The stream's own
+  // rows come first. A spare only pads a thin stream up to the chosen
+  // depth, so the spares already held count against it - which keeps the
+  // economical level from pulling every banked song it is offered.
+  function pfNextDownload(depth, starving) {
+    var next = null;
+    var passed = !pfListedPlaying();
+    for (var i = 0; i < pf.rows.length; i++) {
+      var row = pf.rows[i];
+      if (row.id === pf.playingId) { passed = true; continue; }
+      if (passed && !pf.have[row.id] && !pfTossed(row.id, row.title)) { next = row; break; }
+    }
+    if (!next) return null;
+    var ahead = pfAhead();
+    if (!pfOrdered(next)) ahead += pfSpares();
+    return (ahead >= depth && !starving) ? null : next;
   }
 
   // pfAdoptRecords brings the device's stored songs back into memory.
@@ -1283,23 +1328,15 @@
     // the device playing, which is the line above.
     if (pf.ctrl) return;
     var starving = pf.wantPlay && !pf.playingId && pfNextId(null) === null;
-    // The next row in play order that is not stored yet.
-    var next = null;
-    var passed = !pfListedPlaying();
-    for (var i = 0; i < pf.rows.length; i++) {
-      var row = pf.rows[i];
-      if (row.id === pf.playingId) { passed = true; continue; }
-      if (passed && !pf.have[row.id] && !pfTossed(row.id, row.title)) { next = row; break; }
-    }
     // A bank kept warm behind the saved songs takes a few songs and
     // stops; the depth the listener chose is for the mode they are
     // actually listening to.
     var depth = pf.active ? pfDepth() : warmDepth;
+    var row = pfNextDownload(depth, starving);
     // Nothing (more) to download right now; new rows arrive with the
     // next listing. Playback was already seen to above.
-    if (!next || (pfAhead() >= depth && !starving)) return;
+    if (!row) return;
     pf.ctrl = new AbortController();
-    var row = next;
     // A download that never finishes would wedge the device for good:
     // one request is in flight at a time, and the next only starts
     // when this one settles. Give it a deadline so a stalled fetch
@@ -1401,11 +1438,18 @@
     pf.rows.forEach(function (row) {
       if (pf.have[row.id] && pfPlayable(row.id, row.title)) ids.push(row.id);
     });
-    if (!ids.length) {
+    var listed = ids.length > 0;
+    if (!listed) {
       ids = Object.keys(pf.have).filter(function (id) { return pfPlayable(id, pf.have[id].title); });
     }
     if (!ids.length) return null;
     var at = ids.indexOf(afterId);
+    // Where to carry on from is read off the stream's order alone. A song
+    // listed only as a spare - which is where the radio's own playing and
+    // previous songs land - leaves this device at the head of the stream,
+    // not at the end of the list. The offline store has no order but its
+    // own, and keeps cycling through it.
+    if (listed && at >= 0 && !pfOrderedId(afterId)) at = -1;
     // Prefer something not heard yet in this context: a store of three
     // tracks otherwise cycles the same three forever.
     pf.wrapped = false;
@@ -2389,15 +2433,19 @@
   //
   // Every entry names one concrete track id, never "the one playing":
   // by the time the queue drains, the one playing is a different song
-  // and saving that would be saving the wrong thing. The radio keeps a
-  // song reachable while it is the playing or the previous one, so the
-  // honest reach of this is a few minutes - long enough for the dead
-  // patches that lose saves, and no promise beyond that.
+  // and saving that would be saving the wrong thing. The radio can save
+  // a song long after it has played it - every song is banked in its
+  // library the moment it is fed - so the reach of this is as deep as
+  // that library, and the radio is the one that says when a song is
+  // gone: its answer settles the entry either way.
   var saveQueue = [];
-  // How long a queued save is worth retrying. Past this the radio has
-  // moved on and there is nothing left to save, so the entry is
-  // dropped and said so rather than retried forever.
-  var saveQueueMaxAge = 15 * 60 * 1000;
+  // How long to go on retrying while the radio cannot be reached at
+  // all. Every answer it gives settles an entry, so this bounds nothing
+  // but a device that stays off the network: a day covers a flight or a
+  // long drive, and past that the entry is dropped and said so rather
+  // than kept for ever. It was a quarter of an hour, back when the radio
+  // could only save the song playing or the one before it.
+  var saveQueueMaxAge = 24 * 60 * 60 * 1000;
   var saveRetryMs = 10000;
   var saveFlushing = false;
   var saveRetryTimer = null;
@@ -2483,7 +2531,7 @@
       persistSaveQueue();
       delete savingIds[item.id];
       updateSaveButtons(null);
-      setStatus(saveNews(), "gave up saving " + named + " - the radio has moved past it", "err");
+      setStatus(saveNews(), "gave up saving " + named + " - the radio was out of reach for a day", "err");
       flushSaveQueue();
       return;
     }

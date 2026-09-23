@@ -557,10 +557,13 @@ as that song plays - on the page and on the car screen alike, rather
 than a confirmation you had to be looking at the right second to catch.
 A save that cannot reach the radio at all, in a tunnel or on a mountain
 road, is queued on the device and goes through by itself when the signal
-comes back. The radio keeps a song saveable while it is the playing or
-the previous one, so this covers the dead patches of a drive rather than
-an afternoon offline; past a quarter of an hour the phone says it has
-given up instead of retrying for ever.
+comes back. The radio can save a song long after it has played it -
+every song is kept in its track library once it has been fed to the
+stream - so a phone playing its own copy well behind the speakers can
+still save what it is hearing, for as long as the library holds it
+(see `library_max_mb`). A queued save waits up to a day for the radio
+to come back into reach; past that the phone says it has given up
+instead of retrying for ever.
 
 The pencil beside the song's name renames it, so a name you disagree
 with can be fixed while the song is still playing instead of from the

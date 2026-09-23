@@ -1812,10 +1812,54 @@ func TestRealBrowserResilience(t *testing.T) {
 	if after, _ := filepath.Glob(filepath.Join(sb.dir, "data", "snippets", "untagged", "*.mp3")); len(after) > len(before)+1 {
 		t.Fatalf("car-button spam produced %d new files", len(after)-len(before))
 	}
-	// At maximum depth the prefetcher reaches the library-kind filler
-	// rows, whose ids contain a slash and travel through the escaped
-	// track route; a banked track landing in IndexedDB proves that
-	// path end to end in a real browser.
+	// At maximum depth the prefetcher reaches the filler rows. Songs the
+	// radio banks keep their own ids, so the one kind of filler still
+	// offered under a library name - with a slash in it, travelling
+	// through the escaped track route - is a song banked without an id:
+	// a starter track, or one from before songs carried ids. One is put
+	// in the radio's own library the way setup leaves them, dated to sort
+	// newest, and landing in IndexedDB under that name proves the route
+	// end to end in a real browser.
+	var libDir string
+	waitFor(t, 60*time.Second, "the radio's library to hold a song", func() bool {
+		dirs, _ := filepath.Glob(filepath.Join(sb.dir, "data", "library", "*"))
+		for _, d := range dirs {
+			if mp3s, _ := filepath.Glob(filepath.Join(d, "*.mp3")); len(mp3s) > 0 {
+				libDir = d
+				return true
+			}
+		}
+		return false
+	})
+	starter := make([]int16, 4*audio.SampleRate*audio.Channels)
+	for i := 0; i < len(starter); i += 2 {
+		v := int16(6000 * math.Sin(2*math.Pi*220*float64(i/2)/audio.SampleRate))
+		starter[i], starter[i+1] = v, v
+	}
+	// Sung in the language this vibe's own songs are: a session with a
+	// language list skips filler whose language is unknown, which is
+	// the right call for a real song and would hide this one.
+	var language string
+	if sidecars, _ := filepath.Glob(filepath.Join(libDir, "*.json")); len(sidecars) > 0 {
+		var m struct {
+			Language string `json:"language"`
+		}
+		if raw, err := os.ReadFile(sidecars[0]); err == nil && json.Unmarshal(raw, &m) == nil {
+			language = m.Language
+		}
+	}
+	const starterID = "29990101-000000-0001"
+	if err := export.EncodeMP3(context.Background(), starter, filepath.Join(libDir, starterID+".mp3"),
+		export.MP3Options{Title: "starter tone"}); err != nil {
+		t.Fatal(err)
+	}
+	sidecar, _ := json.Marshal(map[string]any{
+		"prompt": "starter tone", "title": "Starter Tone", "seconds": 4,
+		"language": language, "created": "2026-01-01T00:00:00Z",
+	})
+	if err := os.WriteFile(filepath.Join(libDir, starterID+".json"), sidecar, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	w.exec(`var sel=document.getElementById('buflevel'); sel.value='max';
 		sel.dispatchEvent(new Event('change')); return true;`, nil)
 	waitFor(t, 60*time.Second, "a library-kind track prefetched", func() bool {
@@ -1830,7 +1874,7 @@ func TestRealBrowserResilience(t *testing.T) {
 				} catch (err) { cb([]); }
 			};`, &keys)
 		for _, k := range keys {
-			if strings.HasPrefix(k, "lib:") {
+			if strings.HasPrefix(k, "lib:") && strings.HasSuffix(k, "/"+starterID) {
 				return true
 			}
 		}

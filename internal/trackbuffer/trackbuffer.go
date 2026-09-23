@@ -304,6 +304,11 @@ type storedPlan struct {
 
 // trackMeta is the JSON sidecar of a rendered song.
 type trackMeta struct {
+	// ID is the song's own identity, minted when its audio is rendered
+	// and kept for its whole life: on disk here, in the play queue once
+	// it is fed, and in the library once it has played. Empty for songs
+	// rendered before songs carried one.
+	ID      string        `json:"id,omitempty"`
 	Prompt  string        `json:"prompt"`
 	Lyrics  string        `json:"lyrics,omitempty"`
 	Seconds float64       `json:"seconds"`
@@ -371,6 +376,7 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) e
 	}
 	base := filepath.Join(s.tracksDir(), name(epoch, seq))
 	meta := trackMeta{
+		ID:       t.ID,
 		Prompt:   t.Prompt,
 		Lyrics:   t.Lyrics,
 		Seconds:  float64(len(t.Samples)) / float64(audio.SampleRate*audio.Channels),
@@ -437,6 +443,7 @@ func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string
 			continue
 		}
 		return &engine.Track{
+			ID:       meta.ID,
 			Samples:  samples,
 			Spec:     meta.Spec,
 			Prompt:   meta.Prompt,
@@ -656,7 +663,10 @@ func (s *Store) each(dir string, epoch int, ext string, fn func(path string)) {
 // Entry summarizes one rendered song awaiting play, without touching
 // its audio.
 type Entry struct {
-	Base     string
+	Base string
+	// ID is the song's own identity (see trackMeta.ID); empty for songs
+	// rendered before songs carried one.
+	ID       string
 	Prompt   string
 	Lyrics   string
 	Seconds  float64
@@ -679,6 +689,7 @@ func (s *Store) List(epoch int) []Entry {
 		}
 		out = append(out, Entry{
 			Base:     strings.TrimSuffix(filepath.Base(path), ".json"),
+			ID:       m.ID,
 			Prompt:   m.Prompt,
 			Lyrics:   m.Lyrics,
 			Seconds:  m.Seconds,
@@ -712,6 +723,7 @@ func (s *Store) Peek(ctx context.Context, epoch int, base string) (*engine.Track
 		return nil, false
 	}
 	return &engine.Track{
+		ID:       meta.ID,
 		Samples:  samples,
 		Spec:     meta.Spec,
 		Prompt:   meta.Prompt,

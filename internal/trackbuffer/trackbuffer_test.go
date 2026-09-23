@@ -271,3 +271,33 @@ func TestPlansCarryTheSongsName(t *testing.T) {
 		t.Fatalf("the plan lost the song's name: %+v", got.Spec)
 	}
 }
+
+// A song's own id goes to disk with its audio and comes back out every
+// way the buffer is read: in the listing, when a phone downloads it, and
+// when the stream takes it. It used to be minted afresh at each stop.
+func TestASongsIDTravelsWithIt(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	s := New(t.TempDir(), 9, nil)
+	track := &engine.Track{
+		ID:      "t-1790000000000-0042",
+		Samples: make([]int16, audio.SampleRate*audio.Channels/2),
+		Prompt:  "test tone",
+	}
+	if err := s.PutTrack(context.Background(), 1, 7, track); err != nil {
+		t.Fatal(err)
+	}
+	entries := s.List(1)
+	if len(entries) != 1 || entries[0].ID != track.ID {
+		t.Fatalf("listing: %+v", entries)
+	}
+	peeked, ok := s.Peek(context.Background(), 1, entries[0].Base)
+	if !ok || peeked.ID != track.ID {
+		t.Fatalf("peeked id = %q ok=%v", peeked.ID, ok)
+	}
+	fed, _, ok := s.NextTrack(context.Background(), 1)
+	if !ok || fed.ID != track.ID {
+		t.Fatalf("fed id = %q ok=%v", fed.ID, ok)
+	}
+}

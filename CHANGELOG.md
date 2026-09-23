@@ -6,6 +6,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A song is one song from the moment it is made. It used to be given a
+  new name at each stop of its life - one while it waited on disk,
+  another when it joined the play queue, a third when it went into the
+  library - and a phone, which keeps its songs by name, downloaded the
+  same song two and three times over. A phone that had just been
+  flushed would count 34 songs on a radio holding 18, spend a download
+  on every copy, and could play a song it had already played.
+- A song the radio has already played can still be saved from the
+  phone that is playing it. Every song is kept in the track library as
+  it is played, but saving only ever looked at the song playing and the
+  one before, so a phone playing its own copy well behind the speakers
+  was told the song was "no longer available" while its audio sat on
+  disk. It is found in the library now, after a restart too, and a
+  save queued in a dead zone waits a day for the radio to come back
+  instead of giving up after a quarter of an hour.
+- A phone keeps its place in the stream. The songs the radio has just
+  played are offered at the end of the list as spares, and now that a
+  song keeps its name, the one a phone is playing can be among them;
+  the phone must not read that as being at the end of the stream,
+  where it would stop fetching new songs and play backwards through
+  old ones.
+
 ### Changed
 
 - The phone says how much music is on the device in hours and minutes,

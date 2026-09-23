@@ -331,13 +331,6 @@ type Orchestrator struct {
 	// it. Bounded by retiredOrder, oldest dropped first.
 	retired      map[string]string
 	retiredOrder []string
-	// bufFed maps a disk-buffer file base to the in-memory track it
-	// became. Feeding deletes the song from disk, so a listener still
-	// playing their own downloaded copy holds the only name anyone
-	// knows it by; this is how a rename of that name finds the song.
-	// Bounded by bufFedOrder, oldest dropped first.
-	bufFed      map[string]string
-	bufFedOrder []string
 	// properPlayedInEpoch counts played songs that carried written
 	// words (or were instrumental); the deep batch unlocks on these,
 	// not on the engine-worded openers a cold start may serve first.
@@ -394,7 +387,6 @@ func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store
 		events:   make(chan Event, 16),
 		wake:     make(chan struct{}, 1),
 		bankRefs: map[string]bankRef{},
-		bufFed:   map[string]string{},
 		// A session that has played before was heard before: resuming
 		// one and changing it straight away must still keep what it
 		// sounded like. A session made moments ago has nothing behind
@@ -1110,7 +1102,10 @@ func (o *Orchestrator) seedFromLibrary() {
 	if !ok {
 		return
 	}
-	track.ID = newTrackID()
+	if track.ID == "" {
+		// A starter track, or one banked before songs carried an id.
+		track.ID = newTrackID()
+	}
 	o.fillTitle(track)
 	o.mu.Lock()
 	o.queue = append(o.queue, track)

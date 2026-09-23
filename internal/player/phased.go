@@ -469,6 +469,12 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		// here on the plan and goes to disk with the audio. Nothing
 		// names it later.
 		o.nameTrack(track)
+		// The song gets its id here, with its audio, and keeps it for
+		// good: on disk, in the play queue, and in the library once it
+		// has played. It used to be named afresh at each of those
+		// stops, so a phone watching the listing saw one song as two
+		// or three and downloaded every one of them.
+		track.ID = newTrackID()
 		if err := o.Buffer.PutTrack(ctx, epoch, seq, track); err != nil {
 			storeFails++
 			o.log.Error("rendered track not stored", "event", "buffer_track_failed", "error", err.Error())
@@ -693,8 +699,11 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			o.kickGen() // nothing on disk: the cycle loop should wake
 			continue
 		}
-		track.ID = newTrackID()
-		o.rememberFed(base, track.ID)
+		if track.ID == "" {
+			// Rendered before songs carried their own id: the name the
+			// listing gave it on disk is the one it keeps.
+			track.ID = bufTrackPrefix + base
+		}
 		// Named when its words were written, and stored with the audio;
 		// the fallback covers songs the engine worded itself.
 		o.nameTrack(track)

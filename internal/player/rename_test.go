@@ -93,10 +93,11 @@ func TestRenamingASongStillOnDisk(t *testing.T) {
 	}
 }
 
-// The case a buffered phone actually hits: it downloaded the song an
-// hour ago, the machine has long since fed that file (which deletes it
-// from disk), and the listener renames the copy they are hearing. The
-// id they have is the file's; the song is in memory.
+// A phone downloaded a song while it was a file on disk, listed under
+// its file name because it was rendered before songs carried an id of
+// their own. The machine has since fed that file, which deletes it from
+// disk - but the song keeps the file name as its id in memory, so a
+// rename of the copy the listener is hearing still finds it.
 func TestRenamingFollowsASongOutOfTheBuffer(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	cfg := testConfig()
@@ -105,20 +106,20 @@ func TestRenamingFollowsASongOutOfTheBuffer(t *testing.T) {
 	o.Buffer = trackbuffer.New(t.TempDir(), 0, testLogger())
 
 	playing := namedTrack("p")
-	o.rememberFed("0000000003", playing.ID)
+	playing.ID = bufTrackPrefix + "e00000000-00000003"
 	o.mu.Lock()
 	o.cur = newTrackSource(playing, "music")
 	o.curTrack = playing
 	o.mu.Unlock()
 
-	if ack := o.Retitle(bufTrackPrefix+"0000000003", "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
+	if ack := o.Retitle(playing.ID, "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
 		t.Fatalf("rename ack = %q", ack)
 	}
 	if playing.Title != "Harbour Lights" {
 		t.Fatalf("the in-memory song was not renamed: %+v", playing)
 	}
 	// A file the machine never fed, and never had, is refused gently.
-	if ack := o.Retitle(bufTrackPrefix+"0000000009", "Nowhere"); !strings.Contains(ack, "no longer here") {
+	if ack := o.Retitle(bufTrackPrefix+"e00000000-00000009", "Nowhere"); !strings.Contains(ack, "no longer here") {
 		t.Fatalf("unknown file ack = %q", ack)
 	}
 }

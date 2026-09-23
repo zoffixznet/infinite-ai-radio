@@ -30,6 +30,12 @@ import (
 
 // meta is the sidecar metadata stored with each banked track.
 type meta struct {
+	// TrackID is the song's own id from the rest of the radio, so a
+	// banked song is still the same song: a phone that downloaded it
+	// before it played does not take it again as filler, and a listener
+	// saving it after the radio has moved on can still name it. Empty
+	// for starter tracks and for songs banked before songs carried one.
+	TrackID  string `json:"track_id,omitempty"`
 	Prompt   string `json:"prompt"`
 	Lyrics   string `json:"lyrics"`
 	Title    string `json:"title,omitempty"`
@@ -158,7 +164,8 @@ func (l *Library) Put(ctx context.Context, key string, t *engine.Track) (string,
 		return "", err
 	}
 	m, err := json.Marshal(meta{
-		Prompt: t.Prompt, Lyrics: t.Lyrics, Title: t.Title, Subtitle: t.Subtitle,
+		TrackID: t.ID,
+		Prompt:  t.Prompt, Lyrics: t.Lyrics, Title: t.Title, Subtitle: t.Subtitle,
 		Language: t.Spec.VocalLanguageName, Created: time.Now(),
 		Seconds: t.Duration().Seconds(),
 	})
@@ -243,6 +250,7 @@ func (l *Library) Pick(ctx context.Context, key string) (*engine.Track, string, 
 	}
 	l.log.Info("track loaded from library", "event", "library_pick", "key", key, "id", id)
 	return &engine.Track{
+		ID:          m.TrackID,
 		Samples:     samples,
 		Spec:        engine.Spec{VocalLanguageName: m.Language},
 		Prompt:      m.Prompt,
@@ -257,6 +265,9 @@ func (l *Library) Pick(ctx context.Context, key string) (*engine.Track, string, 
 type Entry struct {
 	// ID is the track's file id inside its key directory.
 	ID string
+	// TrackID is the song's own id from the rest of the radio; empty for
+	// starter tracks and songs banked before songs carried one.
+	TrackID string
 	// Prompt is the prompt that produced the track.
 	Prompt string
 	// Title and Subtitle are the short display names, when banked.
@@ -289,6 +300,7 @@ func (l *Library) Entries(key string) []Entry {
 		if raw, err := os.ReadFile(filepath.Join(dir, id+".json")); err == nil {
 			var m meta
 			json.Unmarshal(raw, &m)
+			e.TrackID = m.TrackID
 			e.Prompt = m.Prompt
 			e.Title = m.Title
 			e.Subtitle = m.Subtitle
@@ -319,10 +331,52 @@ func (l *Library) Load(ctx context.Context, key, id string) (*engine.Track, bool
 		json.Unmarshal(raw, &m)
 	}
 	return &engine.Track{
+		ID:      m.TrackID,
 		Samples: samples, Spec: engine.Spec{VocalLanguageName: m.Language},
 		Prompt: m.Prompt, Lyrics: m.Lyrics, Title: m.Title, Subtitle: m.Subtitle,
 		FromLibrary: true,
 	}, true
+}
+
+// Locate names the key and file a song was banked under, by the song's
+// own id, whichever vibe it went into. It is the long way round - every
+// sidecar in the library is read - and exists for the question nothing
+// faster can answer after a restart: is the song a listener is still
+// holding anywhere at all.
+func (l *Library) Locate(trackID string) (key, id string, ok bool) {
+	if l == nil || trackID == "" {
+		return "", "", false
+	}
+	keys, err := os.ReadDir(l.dir)
+	if err != nil {
+		return "", "", false
+	}
+	for _, k := range keys {
+		if !k.IsDir() {
+			continue
+		}
+		dir := filepath.Join(l.dir, k.Name())
+		for _, id := range l.ids(dir) {
+			raw, err := os.ReadFile(filepath.Join(dir, id+".json"))
+			if err != nil {
+				continue
+			}
+			var m meta
+			if json.Unmarshal(raw, &m) == nil && m.TrackID == trackID {
+				return k.Name(), id, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// Find loads a banked song by its own id (see Locate).
+func (l *Library) Find(ctx context.Context, trackID string) (*engine.Track, bool) {
+	key, id, ok := l.Locate(trackID)
+	if !ok {
+		return nil, false
+	}
+	return l.Load(ctx, key, id)
 }
 
 // Count reports how many tracks are banked under key.

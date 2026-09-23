@@ -1281,12 +1281,22 @@ func TestSaveSnippetByIDAndIdempotency(t *testing.T) {
 		t.Fatalf("unknown id ack = %q", ack)
 	}
 
-	// A banked library track saves through its lib: id.
+	// A banked song is still the song it was: the library holds the one
+	// just saved under the same id, not a new one of its own. (Asked of
+	// the library directly - this radio banks songs far faster than real
+	// time, and the newest few that are offered as filler move on in a
+	// fraction of a second.)
+	waitFor(t, 10*time.Second, "the saved song banked under its own id", func() bool {
+		_, _, ok := o.Library.Locate(id)
+		return ok
+	})
+
+	// Any other banked song saves through the id it is listed under.
 	var libID string
-	waitFor(t, 10*time.Second, "library filler listed", func() bool {
+	waitFor(t, 10*time.Second, "another library filler listed", func() bool {
 		_, tracks := o.QueueTracks()
 		for _, qt := range tracks {
-			if qt.Kind == "library" {
+			if qt.Kind == "library" && qt.ID != id {
 				libID = qt.ID
 				return true
 			}
