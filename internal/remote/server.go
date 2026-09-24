@@ -768,8 +768,20 @@ func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, u accounts.Us
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.SaveSnippet(textField(r, "which"), textField(r, "tag"))
 	s.ctl.Announce("remote save by " + u.Email + ": " + ack)
-	writeJSON(w, http.StatusOK, actionResponse{OK: true, Ack: ack, Saved: savedAck(ack),
+	writeJSON(w, saveStatus(ack), actionResponse{OK: true, Ack: ack, Saved: savedAck(ack),
 		Upload: ack == player.AckSendCopy})
+}
+
+// saveStatus is the HTTP status a save's answer goes out with. A radio
+// shutting down has nobody left to write the save and will be back,
+// so that answer goes out as the service being away - which the page
+// keeps the save queued for - rather than as a final no, which it
+// would drop the save on.
+func saveStatus(ack string) int {
+	if ack == player.AckClosing {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusOK
 }
 
 // handleSaveUpload saves a song from the copy in the request body. The
@@ -781,7 +793,7 @@ func (s *Server) handleSaveUpload(w http.ResponseWriter, r *http.Request, u acco
 	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	ack := s.ctl.SaveUpload(strings.TrimSpace(q.Get("hash")), strings.TrimSpace(q.Get("tag")), body)
 	s.ctl.Announce("remote save by " + u.Email + ": " + ack)
-	writeJSON(w, http.StatusOK, actionResponse{OK: true, Ack: ack, Saved: savedAck(ack)})
+	writeJSON(w, saveStatus(ack), actionResponse{OK: true, Ack: ack, Saved: savedAck(ack)})
 }
 
 // maxUploadBytes bounds a copy sent back to be saved (see the player's

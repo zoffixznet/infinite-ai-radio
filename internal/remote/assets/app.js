@@ -2255,9 +2255,53 @@
       function (r) { done(); return saveAnswer(r); },
       function (e) { done(); return noRadio(e); });
   }
-  // A song's copy is a few megabytes, and a slow connection that is
-  // still a connection deserves the time to carry it.
-  var uploadTimeout = 120000;
+  // uploadStallMs is how long a copy's transfer may make no progress
+  // before it is given up as no connection. A song's copy is a few
+  // megabytes, and a slow connection that is still a connection
+  // deserves the time to carry it, however long that is: the deadline
+  // moves with every byte that gets through, and only a transfer that
+  // has stopped moving - or an answer that never comes once the last
+  // byte is sent - runs out of it. A fixed deadline would give up on a
+  // slow link at the same point every time and send the song again
+  // from the start, for ever.
+  var uploadStallMs = 30000;
+  // sendCopy posts a song's bytes to the radio. It goes by
+  // XMLHttpRequest rather than fetch for the one thing fetch cannot
+  // do: say how much of a request body has gone out, which is how a
+  // stalled transfer is told from a slow one. The answer is read the
+  // way a fetch answer is, so a dead radio is queued for and an answer
+  // is final, as for the first step.
+  function sendCopy(url, blob) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      var stall = null;
+      function arm() {
+        if (stall) clearTimeout(stall);
+        stall = setTimeout(function () { try { xhr.abort(); } catch (e) {} }, uploadStallMs);
+      }
+      function settle(fn, v) {
+        if (stall) clearTimeout(stall);
+        stall = null;
+        fn(v);
+      }
+      xhr.open("POST", url);
+      xhr.setRequestHeader("X-IAR-Remote", "1");
+      xhr.setRequestHeader("Content-Type", "audio/mpeg");
+      if (xhr.upload) xhr.upload.onprogress = arm;
+      xhr.onload = function () {
+        settle(resolve, {
+          status: xhr.status,
+          ok: xhr.status >= 200 && xhr.status < 300,
+          json: function () { return new Promise(function (ok) { ok(JSON.parse(xhr.responseText)); }); }
+        });
+      };
+      xhr.onerror = xhr.onabort = xhr.ontimeout = function () {
+        settle(reject, new Error("the copy did not get through"));
+      };
+      arm();
+      xhr.send(blob);
+    }).then(saveAnswer, noRadio);
+  }
   // bankedBlob reads a song's bytes back out of this device's store.
   function bankedBlob(id) {
     return dbReady().then(function () { return idbReq(idbStore("readonly").get(id)); })
@@ -2285,8 +2329,7 @@
           var hash = (rec && rec.hash) || "";
           var url = "/save/upload?tag=" + encodeURIComponent(tag || "") +
             (hash ? "&hash=" + encodeURIComponent(hash) : "");
-          return savePost(url, { method: "POST", headers: { "X-IAR-Remote": "1", "Content-Type": "audio/mpeg" }, body: blob },
-            uploadTimeout);
+          return sendCopy(url, blob);
         });
       });
   }
@@ -2308,14 +2351,16 @@
   }
   // flushSaveQueue drains the queue oldest first, one at a time, and
   // stops at the first entry the network refuses so the rest keep
-  // their order and their turn.
+  // their order and their turn. The entry posted is settled by its
+  // id, never by its place: while its answer is on the way a poll can
+  // learn the radio already has the song and take the entry out, and
+  // taking "the first" then would take the next song, unposted.
   function flushSaveQueue() {
     if (saveFlushing || !saveQueue.length) return;
     var item = saveQueue[0];
     var named = item.title || "an earlier song";
     if (Date.now() - (item.at || 0) > saveQueueMaxAge) {
-      saveQueue.shift();
-      persistSaveQueue();
+      dropQueuedSave(item.id);
       delete savingIds[item.id];
       updateSaveButtons(null);
       setStatus(saveNews(), "gave up saving " + named + " - the radio was out of reach for a day", "err");
@@ -2325,8 +2370,7 @@
     saveFlushing = true;
     postSave(item.id, item.tag).then(function (d) {
       saveFlushing = false;
-      saveQueue.shift();
-      persistSaveQueue();
+      dropQueuedSave(item.id);
       var ok = !!(d && d.saved);
       saveSettled(item.id, ok);
       setStatus(saveNews(), ok ? "saved " + named : "could not save " + named, ok ? "ok" : "err");
@@ -2336,8 +2380,7 @@
     })["catch"](function (e) {
       saveFlushing = false;
       if (e && e.offline) { scheduleSaveFlush(); return; }
-      saveQueue.shift();
-      persistSaveQueue();
+      dropQueuedSave(item.id);
       saveSettled(item.id, false);
       setStatus(saveNews(), "could not save " + named + ": " + e.message, "err");
       flushSaveQueue();

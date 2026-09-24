@@ -471,6 +471,7 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	// heard) as an underrun right at launch.
 	o.ring.Write(make([]byte, audio.DurationToBytes(300*time.Millisecond)))
 	o.recordCurrent()
+	o.sweepSaveScraps()
 	if o.Telemetry != nil {
 		o.Telemetry.Start(ctx)
 	}

@@ -145,6 +145,38 @@ func TestSavingFromTheDevicesCopy(t *testing.T) {
 	}
 }
 
+// A save that reaches the radio as it shuts down goes out as the
+// service being away rather than as a final no: the page keeps the
+// save queued and delivers it once the radio is back. Every other
+// answer goes out as before.
+func TestASaveDuringShutdownIsAnsweredAsTheRadioBeingAway(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	var ans struct {
+		OK    bool   `json:"ok"`
+		Ack   string `json:"ack"`
+		Saved bool   `json:"saved"`
+	}
+	resp, body := admin.postAPI("/save", url.Values{"which": {"t-closing"}, "tag": {"gym"}})
+	if err := json.Unmarshal([]byte(body), &ans); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable || ans.Saved || ans.Ack != player.AckClosing {
+		t.Fatalf("/save during shutdown = %d %s, want 503 carrying the answer", resp.StatusCode, body)
+	}
+	resp, body = admin.postRaw("/save/upload?hash=hash-closing&tag=gym", "audio/mpeg", []byte("mp3-mp3-"))
+	ans.Saved = false
+	if err := json.Unmarshal([]byte(body), &ans); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable || ans.Saved || ans.Ack != player.AckClosing {
+		t.Fatalf("/save/upload during shutdown = %d %s, want 503 carrying the answer", resp.StatusCode, body)
+	}
+	if resp, _ := admin.postAPI("/save", url.Values{"which": {"t-1"}, "tag": {"gym"}}); resp.StatusCode != 200 {
+		t.Fatalf("/save of a song the radio can take = %d", resp.StatusCode)
+	}
+}
+
 // Every answer that means the track is in the snippets or on its way
 // there greys the page's save control: written, being written, or
 // waiting its turn behind another save. The rest do not.
@@ -169,7 +201,7 @@ func TestSavedAckKnowsEveryKeptAnswer(t *testing.T) {
 		"no previous track to save yet",
 		"that track is no longer available to save",
 		"saving the track failed: no space left on device",
-		"the radio is shutting down; that track was not saved",
+		player.AckClosing,
 		"that copy is not a song this radio made",
 	}
 	for _, ack := range notKept {

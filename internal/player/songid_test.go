@@ -42,11 +42,18 @@ func idOrchestrator(t *testing.T) (*Orchestrator, *session.Session) {
 // in the songbook. Returns the file's hash.
 func renderSong(t *testing.T, o *Orchestrator, seq int, id string) string {
 	t.Helper()
+	// Each song's bytes are its own, as a real render's are: the book
+	// knows songs by the hash of their file, and a copy of one must not
+	// pass for another.
+	samples := make([]int16, audio.SampleRate*audio.Channels/2)
+	for i := range samples {
+		samples[i] = int16((i * (seq + 1)) % 997)
+	}
 	tr := &engine.Track{
 		ID:      id,
 		Prompt:  "a song called " + id,
 		Lyrics:  "[Verse]\nthe words of " + id,
-		Samples: make([]int16, audio.SampleRate*audio.Channels/2),
+		Samples: samples,
 	}
 	hash, err := o.Buffer.PutTrack(context.Background(), 0, seq, tr)
 	if err != nil {

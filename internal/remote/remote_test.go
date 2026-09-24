@@ -263,8 +263,11 @@ func (f *fakeCtl) SaveSnippet(which, tag string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.saves = append(f.saves, [2]string{which, tag})
-	if which == "t-gone" {
+	switch which {
+	case "t-gone":
 		return player.AckSendCopy
+	case "t-closing":
+		return player.AckClosing
 	}
 	return "saving this track to " + tag + "/x.mp3"
 }
@@ -364,6 +367,9 @@ func (f *fakeCtl) SaveUpload(hash, tag string, body io.Reader) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.uploads = append(f.uploads, upload{hash: hash, tag: tag, size: len(data)})
+	if hash == "hash-closing" {
+		return player.AckClosing
+	}
 	return "track saved: " + tag + "/y.mp3"
 }
 

@@ -29,9 +29,11 @@ const ackAlreadySaved = "already saved: that track is in your snippets"
 // being written this moment: the same success, and the same one file.
 const ackAlreadySaving = "already saving: that track is on its way to your snippets"
 
-// ackClosing answers a save that arrives as the radio shuts down, when
-// nobody is left to write it.
-const ackClosing = "the radio is shutting down; that track was not saved"
+// AckClosing answers a save that arrives as the radio shuts down, when
+// nobody is left to write it. The radio will be back; the remote sends
+// this one out as the service being away, so a phone keeps the save
+// queued rather than taking it for a final no.
+const AckClosing = "the radio is shutting down; that track was not saved"
 
 // SaveSnippet captures a generated track as an MP3 in the snippets
 // folder, under the directory for tag (empty means untagged). which
@@ -50,15 +52,26 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			return ackAlreadySaved
 		}
 		// Still on disk: the saved copy is the file itself, not a second
-		// encode of it.
+		// encode of it. The file is held under a name of the save's own
+		// first: a save waits its turn behind others, and the store
+		// drops files on its own schedule meanwhile.
 		if path, ok := o.TrackFile(which); ok {
 			if song, known := o.Songbook.ByID(which); known {
-				return o.runSave(tag, &saveJob{
-					song: song,
-					write: func(ctx context.Context, dst string, opts export.MP3Options) error {
-						return export.CopyMP3(ctx, path, dst, opts)
-					},
-				})
+				held, release, err := o.holdSource(path)
+				if err == nil {
+					return o.runSave(tag, &saveJob{
+						song:    song,
+						release: release,
+						write: func(ctx context.Context, dst string, opts export.MP3Options) error {
+							return export.CopyMP3(ctx, held, dst, opts)
+						},
+					})
+				}
+				// Gone between the look and the hold, or nowhere to
+				// hold it: the song's audio may still be in memory, and
+				// the device asking may still have its copy.
+				o.log.Warn("stored song could not be held for its save", "event", "snippet_hold_failed",
+					"id", which, "error", err.Error())
 			}
 		}
 		t, ok := o.TrackData(which)
@@ -121,10 +134,84 @@ type saveJob struct {
 	live *engine.Track
 	// write produces the MP3 at dst under opts' tags.
 	write func(ctx context.Context, dst string, opts export.MP3Options) error
+	// release lets go of whatever write reads from, once the save is
+	// written, refused or dropped. Nil when there is nothing to let go.
+	release func()
 	// path, shown and opts are the file the save was promised - chosen
 	// when it joined the queue, so the acknowledgment names it.
 	path, shown string
 	opts        export.MP3Options
+}
+
+// done lets go of the job's source, if it had one to hold.
+func (j *saveJob) done() {
+	if j.release != nil {
+		j.release()
+	}
+}
+
+// holdSource keeps a song's stored file readable for a save that will
+// wait its turn. The store lets files go on its own schedule - a steer
+// or a restart empties it, a trim removes the oldest taken songs - and
+// a save queued behind others would otherwise find its source gone when
+// its turn came, after the device asking was told the song was on its
+// way. A hard link shares the bytes for free under a name of the
+// save's own, in the snippets folder, where nothing lists a hidden
+// file; when the store and the snippets live on different filesystems
+// the bytes are copied instead. Returns the held file and its release.
+func (o *Orchestrator) holdSource(src string) (held string, release func(), err error) {
+	if err := os.MkdirAll(o.SnippetsDir, 0o755); err != nil {
+		return "", nil, err
+	}
+	tmp, err := os.CreateTemp(o.SnippetsDir, ".hold-*.mp3")
+	if err != nil {
+		return "", nil, err
+	}
+	held = tmp.Name()
+	tmp.Close()
+	release = func() { os.Remove(held) }
+	os.Remove(held)
+	if os.Link(src, held) == nil {
+		return held, release, nil
+	}
+	if err := copyFile(src, held); err != nil {
+		release()
+		return "", nil, err
+	}
+	return held, release, nil
+}
+
+// sweepSaveScraps removes what a previous run's saves left in the
+// snippets folder when it died mid-way: the files queued saves held
+// their songs under, and copies half received from a device. Nothing
+// lists them, but each is a song's worth of disk.
+func (o *Orchestrator) sweepSaveScraps() {
+	for _, pattern := range []string{".hold-*.mp3", ".upload-*.mp3"} {
+		scraps, _ := filepath.Glob(filepath.Join(o.SnippetsDir, pattern))
+		for _, p := range scraps {
+			if os.Remove(p) == nil {
+				o.log.Info("scrap of an unfinished save removed", "event", "snippet_scrap_removed", "path", p)
+			}
+		}
+	}
+}
+
+// copyFile writes src's bytes to dst.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // runSave puts a save in the queue and answers straight away. Saves are
@@ -141,9 +228,20 @@ func (o *Orchestrator) runSave(tag string, job *saveJob) string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.saveClosed || ctx.Err() != nil {
-		return ackClosing
+		job.done()
+		return AckClosing
+	}
+	// The caller looked in the book before coming here, without the
+	// lock; the worker marks a song saved and then, under the lock,
+	// stops calling it pending. Looked at again here, one of the two
+	// is always true for a song already dealt with - a save arriving
+	// as the same song's write ends would otherwise be a second file.
+	if job.song.ID != "" && o.Songbook.SavedPath(job.song.ID) != "" {
+		job.done()
+		return ackAlreadySaved
 	}
 	if o.savePendingLocked(job.song.ID) {
+		job.done()
 		return ackAlreadySaving
 	}
 	job.path, job.shown, job.opts = o.claimTargetLocked(tag, job.song)
@@ -208,6 +306,7 @@ func (o *Orchestrator) saveLoop(ctx context.Context) {
 			o.saveWorker = false
 			o.mu.Unlock()
 			for _, j := range dropped {
+				j.done()
 				o.log.Warn("save dropped at shutdown", "event", "snippet_dropped", "id", j.song.ID, "path", j.path)
 			}
 			return
@@ -223,6 +322,7 @@ func (o *Orchestrator) saveLoop(ctx context.Context) {
 // writeSave writes one queued save and reports how it went through
 // Events.
 func (o *Orchestrator) writeSave(ctx context.Context, job *saveJob) {
+	defer job.done()
 	if err := os.MkdirAll(filepath.Dir(job.path), 0o755); err != nil {
 		o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
 		o.emit("saving the track failed: " + err.Error())
@@ -382,11 +482,25 @@ func (o *Orchestrator) SaveUpload(hash, tag string, body io.Reader) string {
 	if song.Saved != "" {
 		return ackAlreadySaved
 	}
+	ctx := o.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// One file per song: a copy of a song whose save is already on
 	// its way from the radio's own store is the same save, not a
 	// second one. The song is spoken for while its copy is written so
-	// a save from the store arriving meanwhile is told the same.
+	// a save from the store arriving meanwhile is told the same. The
+	// book is read again under the lock, as runSave does, for the
+	// same reason.
 	o.mu.Lock()
+	if o.saveClosed || ctx.Err() != nil {
+		o.mu.Unlock()
+		return AckClosing
+	}
+	if song.ID != "" && o.Songbook.SavedPath(song.ID) != "" {
+		o.mu.Unlock()
+		return ackAlreadySaved
+	}
 	if o.savePendingLocked(song.ID) {
 		o.mu.Unlock()
 		return ackAlreadySaving
@@ -405,13 +519,14 @@ func (o *Orchestrator) SaveUpload(hash, tag string, body io.Reader) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "saving the track failed: " + err.Error()
 	}
-	ctx := o.runCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	wctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if err := export.CopyMP3(ctx, tmp.Name(), path, opts); err != nil {
+	if err := export.CopyMP3(wctx, tmp.Name(), path, opts); err != nil {
+		if ctx.Err() != nil {
+			// The radio stopped under the write; the copy is still on
+			// the device, and the radio will be back.
+			return AckClosing
+		}
 		o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
 		return "saving the track failed: " + err.Error()
 	}

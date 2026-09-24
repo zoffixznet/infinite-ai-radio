@@ -558,7 +558,12 @@ A save that cannot reach the radio at all, in a tunnel or on a mountain
 road, is queued on the device and goes through by itself when the signal
 comes back; the radio writes saves one after another, so the several a
 phone delivers at once are all kept, in the order they were asked for,
-each as one file. The radio can save a song long after it has played it - a
+each as one file, and a save waiting its turn keeps its song even if
+the store lets it go meanwhile. A save that reaches the radio just as
+it is shutting down stays queued on the phone and goes through once
+the radio is back. A copy sent from the phone over a slow connection
+is given whatever time it needs; only a transfer that stops moving is
+given up, to be tried again later. The radio can save a song long after it has played it - a
 played song stays in the store for as long as `buffer.songs` allows,
 and the radio's book remembers every song it ever made - so a phone
 playing its own copy well behind the speakers can still save what it

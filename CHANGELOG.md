@@ -113,10 +113,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reach is delivered now, once, in the order it was asked for; a song
   whose save is already on its way is told so rather than saved twice;
   and two songs of one name saved in the same second get two files.
+  A save waiting its turn holds on to its song, so a steer, a restart
+  or the store trimming meanwhile no longer loses it; a save that
+  reaches the radio as it shuts down stays queued on the phone and
+  goes through once the radio is back, rather than being reported as
+  failed; and a queued save whose answer arrives after a poll has
+  already seen the song saved settles that song alone, where it used
+  to take the next queued song with it.
   The phone also gives up on a save post nothing answers - packets
   dropped in a dead zone - after the same short deadline as its other
   controls, and queues it, instead of holding the queue on the
   browser's own minutes-long timeout.
+- A song's copy sent from the phone over a slow connection is given
+  the time it needs: the transfer is given up only when it stops
+  moving, not at a fixed deadline that a slow link would miss at the
+  same point every time, sending the whole copy again and again and
+  never saving it.
 - A song is one song from the moment it is made. It used to be given a
   new name at each stop of its life - one while it waited on disk,
   another when it joined the play queue, a third when it went into the
