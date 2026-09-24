@@ -300,13 +300,7 @@ func (o *Orchestrator) wantCycle(epoch int) bool {
 	o.mu.Lock()
 	mode := o.sess.Mode
 	cooldown := o.cycleCooldown
-	held := o.standby
 	o.mu.Unlock()
-	if held {
-		// The hold outranks an empty tub: a radio nobody is listening
-		// to has no work worth waking the card for.
-		return false
-	}
 	if mode != session.ModeMusic {
 		return false
 	}
@@ -342,7 +336,7 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 		if !o.wantCycle(epoch) {
 			// Hibernation only ever happens inside runCycle's defer, so
 			// a cycle that ended staying warm and then found no work on
-			// its way back - a hold arrived, the mode changed, a
+			// its way back - the store filled, the mode changed, a
 			// cooldown started - left the daemon holding the card with
 			// nothing left to enter that would put it down. This
 			// goroutine is the only one that runs a cycle, so nothing
@@ -370,24 +364,7 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 // warm only when more work is already due.
 func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	pe := o.eng.(phasedEngine)
-	// Checked again here, before the wordsmith takes the card: the
-	// hold can arrive between wanting a cycle and starting one, and
-	// writing a deep batch's words is tens of minutes of work.
-	if o.standbyNow() {
-		return
-	}
 	o.wordsmithPhase(ctx)
-	// And again on the way out of it. The phase above can own the card
-	// for tens of minutes - a deep batch of words is exactly that - so
-	// the hold usually lands inside it rather than in the microseconds
-	// the check above covers. Waking the engine now is the spend the
-	// hold exists to prevent, and the sheets written so far are already
-	// on the shelf for the next cycle to count.
-	if o.standbyNow() {
-		o.log.Info("cycle held before the engine was woken",
-			"event", "cycle_standby_prewake")
-		return
-	}
 	// lyricStarved is set when planning runs out of written words; the
 	// defer hands the card back to the wordsmith instead of staying
 	// warm.
@@ -541,6 +518,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		o.rungMade++
 		o.rungSeconds += track.Duration().Seconds()
 		o.lastGen = elapsed
+		o.produced = true
 		delete(o.renderFails, seq)
 		o.mu.Unlock()
 		o.log.Info("render finished", "event", "render_finished",
@@ -551,16 +529,6 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 
 	for {
 		if ctx.Err() != nil {
-			return
-		}
-		if o.standbyNow() {
-			// Between songs nothing is in flight: the plan or render
-			// just finished is on disk, and NextPlan hands the same
-			// plan back to whoever comes next. A bare return, so the
-			// defer stays the one place that decides warm or asleep -
-			// and with a hold in force it decides asleep.
-			o.log.Info("cycle paused by the hold", "event", "cycle_standby",
-				"epoch", epoch, "planned_this_cycle", plannedThisCycle)
 			return
 		}
 		if cur := o.syncPhasedState(); cur != epoch {
@@ -728,7 +696,9 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		}
 		o.mu.Lock()
 		mode := o.sess.Mode
-		need := len(o.queue) < phasedPrefetch
+		// A stopped player takes nothing: the store fills for the
+		// others, and the song it was on is still its next.
+		need := len(o.queue) < phasedPrefetch && !o.stopped
 		o.mu.Unlock()
 		if mode != session.ModeMusic || !need {
 			continue
@@ -837,10 +807,10 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 	if want <= 0 {
 		return
 	}
-	// The phase ends when a steer makes its context stale, an export
-	// claims the card, or a hold arrives. Nothing else hurries it: no
-	// player draws straight from the generator, so a deep batch's words
-	// are written in full before the engine wakes.
+	// The phase ends when a steer makes its context stale or an export
+	// claims the card. Nothing else hurries it: no player draws straight
+	// from the generator, so a deep batch's words are written in full
+	// before the engine wakes.
 	stop := func(wrote int) bool {
 		o.mu.Lock()
 		steered := o.epoch != epoch
@@ -852,14 +822,6 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 		if o.exportingNow() {
 			// An export claims the engine and the card; the writer
 			// yields immediately and resumes on the next hibernation.
-			return true
-		}
-		if o.standbyNow() {
-			// A hold outranks the writer exactly as a steer does. The
-			// sheet just finished is already on the shelf - every
-			// stocker banks one before asking again - so the phase
-			// stops having lost nothing, and the next cycle counts what
-			// is there and writes only the rest.
 			return true
 		}
 		return false

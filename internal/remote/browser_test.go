@@ -923,72 +923,6 @@ func TestRealBrowser(t *testing.T) {
 	}
 	w.click("#sheetclose")
 
-	// The radio can be held from the phone, and a held radio says so
-	// where it cannot be scrolled past - the case that matters is the
-	// listener who forgot, whose device carries on playing songs it
-	// already has until they run out.
-	// Holding the radio is one tap on the app bar, not two taps and a
-	// scroll inside the settings sheet - and the button says which
-	// state the radio is in, with the switch in Settings following it,
-	// because they are the same act.
-	w.click("#hold")
-	waitFor(t, 15*time.Second, "the standby banner to appear", func() bool {
-		var v struct {
-			Hidden bool   `json:"hidden"`
-			Text   string `json:"text"`
-			Held   bool   `json:"held"`
-			Box    bool   `json:"box"`
-		}
-		w.exec(`var b=document.getElementById('standbybar');
-			return {hidden: !!b.hidden,
-				text: (document.getElementById('standbytext')||{}).textContent||"",
-				held: document.getElementById('hold').classList.contains('on'),
-				box: !!document.getElementById('standby').checked};`, &v)
-		return !v.Hidden && strings.Contains(v.Text, "standby") && v.Held && v.Box
-	})
-	// Pressing play into a held radio is allowed, and the banner
-	// switches to the wording for someone who is listening anyway:
-	// what they get ends in silence, whether it is this device's own
-	// banked songs running out or a stream carrying nothing.
-	w.click("#play")
-	waitFor(t, 15*time.Second, "the banner to warn a listener about the silence", func() bool {
-		var text string
-		w.exec(`return (document.getElementById('standbytext')||{}).textContent||"";`, &text)
-		return strings.Contains(text, "silen") && !strings.Contains(text, "wake it to start again")
-	})
-	// Waking clears it for everyone, and the app-bar button lets go of
-	// its held colour with it.
-	w.click("#standbywake")
-	waitFor(t, 15*time.Second, "the banner to clear on waking", func() bool {
-		var v struct {
-			Hidden bool `json:"hidden"`
-			Held   bool `json:"held"`
-			Button bool `json:"button"`
-		}
-		w.execAsync(`var cb = arguments[arguments.length - 1];
-			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
-				cb({hidden: !!document.getElementById('standbybar').hidden, held: !!st.standby,
-				    button: document.getElementById('hold').classList.contains('on')});
-			});`, &v)
-		return v.Hidden && !v.Held && !v.Button
-	})
-	// Leave listening off again: this device only asked for songs to
-	// prove the warning, and a page that remembers wanting them would
-	// start playing by itself on every later load.
-	waitFor(t, 20*time.Second, "the device to stop asking for songs", func() bool {
-		var v struct {
-			Playing bool `json:"playing"`
-			Wants   bool `json:"wants"`
-		}
-		w.exec(`var a = document.getElementById('liveaudio');
-			return {playing: !!(a && !a.paused),
-				wants: localStorage.getItem('iar.wasplaying') === 'true'};`, &v)
-		if !v.Playing && !v.Wants {
-			return true
-		}
-		w.exec(`document.getElementById('play').click(); return true;`, nil)
-		return false
-	})
 	// Emptying the radio's own buffer is the one button that replaces
 	// the preset detour - load something else, load this back - that
 	// used to be the only way to start the batch ladder over. It throws
@@ -2711,11 +2645,10 @@ func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 		return len(banked()) >= 2
 	})
 
-	// The reported trigger: the radio is put on standby (which stops
-	// this device too), and the tab is reloaded while the listener is
-	// away - so the page comes back knowing nothing but what is in the
-	// store.
-	w.click("#hold")
+	// The reported trigger: the device is stopped, and the tab is
+	// reloaded while the listener is away - so the page comes back
+	// knowing nothing but what is in the store.
+	w.click("#play")
 	waitFor(t, 20*time.Second, "the device to fall silent", func() bool {
 		var on bool
 		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
@@ -2723,16 +2656,10 @@ func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 		return !on
 	})
 	w.navigate(sb.base + "/")
-	waitFor(t, 20*time.Second, "the standby banner on the reloaded page", func() bool {
-		var shown bool
-		w.exec(`var b=document.getElementById('standbybar'); return !!b && !b.hidden;`, &shown)
-		return shown
-	})
-	w.click("#standbywake")
-	waitFor(t, 20*time.Second, "the radio awake again", func() bool {
-		var shown bool
-		w.exec(`var b=document.getElementById('standbybar'); return !!b && !b.hidden;`, &shown)
-		return !shown
+	waitFor(t, 20*time.Second, "the reloaded page", func() bool {
+		var ready bool
+		w.exec(`return !!document.getElementById('play');`, &ready)
+		return ready
 	})
 	before := len(banked())
 	if before < 2 {

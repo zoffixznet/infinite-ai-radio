@@ -110,30 +110,14 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	}
 }
 
-// A restart on a held radio empties the buffer all the same, but says
-// that generation waits for the wake instead of promising music that is
-// not coming. In noise mode nothing is generated ahead, so there is
-// nothing to start over and nothing is touched.
+// In noise mode nothing is generated ahead, so there is nothing to
+// start over and nothing is touched.
 func TestRestartGenerationIsHonestWhenNothingWillCome(t *testing.T) {
 	newRadio := func(t *testing.T, sess *session.Session) *Orchestrator {
 		t.Helper()
 		return New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()),
 			session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
 	}
-	t.Run("held", func(t *testing.T) {
-		o := newRadio(t, session.New())
-		o.mu.Lock()
-		o.standby = true
-		o.queue = []*engine.Track{mkTrack("staged", 2)}
-		o.mu.Unlock()
-		ack := o.RestartGeneration()
-		if !strings.Contains(ack, "1 song(s)") || !strings.Contains(ack, "standby") || strings.Contains(ack, "generating again") {
-			t.Fatalf("held ack = %q", ack)
-		}
-		if o.Status().Queued != 0 {
-			t.Fatal("the hold kept the staged song")
-		}
-	})
 	t.Run("noise", func(t *testing.T) {
 		sess := session.New()
 		sess.Mode = session.ModeNoise

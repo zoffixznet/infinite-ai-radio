@@ -108,7 +108,7 @@ Built-in presets (start with --preset, list with 'iar presets'):
 	fl.StringVar(&pf.player, "player", "", "audio backend: auto, pipe, null or file")
 	fl.StringVar(&pf.playerFile, "player-file", "", "output path for the file backend")
 	fl.BoolVar(&pf.plain, "plain", false, "plain line-based interface (no full-screen UI)")
-	fl.BoolVar(&pf.remote, "remote", false, "enable the phone remote (control page + live stream)")
+	fl.BoolVar(&pf.remote, "remote", false, "enable the phone remote; this machine's own player starts stopped (type play)")
 	fl.BoolVar(&pf.noLLM, "no-llm", false, "disable Ollama-assisted prompt rewriting")
 	fl.BoolVarP(&pf.verbose, "verbose", "v", false, "mirror logs to stderr")
 	fl.BoolVar(&pf.telemetry, "telemetry", false, "show system memory, graphics memory and which engine models are on the card")

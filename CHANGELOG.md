@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `play` and `stop` switch this machine's own player on and off:
+  stopped, nothing comes out of its speakers and it takes nothing from
+  the store, which goes on filling for the phones as before; `play`
+  picks up from the song it was on. `--remote` starts with the player
+  off instead of at volume 0 (which still consumed songs).
+- A change to the sound branches the session only if the session has
+  made a song, and a burst of changes within 30 seconds of each other
+  makes one branch rather than one per tap. Branching used to wait for
+  a song to come out of this machine's speakers, which a station whose
+  player is off never has.
 - The batch ladder climbs on the clock instead of on songs played
   through the speakers. After a rung is made the generator waits as
   long as that rung's music runs before making the next, less what
@@ -40,6 +50,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rename now outlive a restart, and a copy of a song the radio no
   longer holds can be recognised by its hash and saved under the
   recorded name.
+
+### Removed
+
+- Standby: the power button and banner on the phone, the `standby`
+  command and its hold across restarts. A full store is the off
+  switch now - the engine sleeps on its own once nobody is taking
+  songs - and `stop` covers this machine's speakers.
 
 ### Fixed
 

@@ -305,8 +305,8 @@ func (m *tuiModel) renderChrome() string {
 	if st.Paused {
 		header += "  " + s.warn.Render("[paused]")
 	}
-	if st.Standby {
-		header += "  " + s.warn.Render("[standby]")
+	if st.Stopped {
+		header += "  " + s.warn.Render("[stopped]")
 	}
 	header += "   " + s.label.Render("vol") + fmt.Sprintf(" %d%%", st.Volume)
 	under := fmt.Sprintf("underruns %d", st.Underruns)

@@ -26,13 +26,13 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 	// deliberate noise).
 	o.setCurrent(o.startupSource())
 
-	// Held, the mixer feeds the output silence instead of songs. It
-	// deliberately does NOT advance the source: the whole point of the
-	// hold is that the buffer is still there, unspent, when the
-	// listener comes back.
+	// Stopped, the mixer feeds the output silence instead of songs. It
+	// deliberately does NOT advance the source: the song that was
+	// playing is still the song that plays when the player comes back
+	// on.
 	hold := make([]byte, audio.FramesToBytes(chunkFrames))
 	for ctx.Err() == nil {
-		if o.standbyNow() {
+		if o.playerStopped() {
 			if _, err := o.ring.Write(hold); err != nil {
 				return // ring closed: shutting down
 			}
@@ -41,11 +41,10 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 		o.mu.Lock()
 		cur := o.cur
 		// A noise session's bed is its whole output, and it plays from
-		// the first moment - so this session has been heard, which is
-		// what makes a change to it worth branching. Music sessions
-		// wait for a track (setCurrent); their bed is a stand-in.
-		if !o.heard && o.sess.Mode == session.ModeNoise {
-			o.heard = true
+		// the first moment: a session that produces on its own has
+		// produced, which is what makes a change to it worth branching.
+		if !o.produced && o.sess.Mode == session.ModeNoise {
+			o.produced = true
 		}
 		o.mu.Unlock()
 		wantSwitch := o.takeSwitch()
@@ -338,11 +337,6 @@ func (o *Orchestrator) setCurrent(s source) {
 	o.cur = s
 	o.incoming = nil // whatever was fading in is current now, or was passed over
 	ts, isTrack := s.(*trackSource)
-	// A song of this session's is now audible, so its sound is worth
-	// keeping if the listener changes it.
-	if isTrack {
-		o.heard = true
-	}
 	var retiring *engine.Track
 	if isTrack && (o.curTrack == nil || o.curTrack != ts.track) {
 		retiring = o.prevTrack

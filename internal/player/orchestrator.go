@@ -79,10 +79,10 @@ type Status struct {
 	Volume int
 	// Paused reports whether output is paused.
 	Paused bool
-	// Standby reports the radio is held: nothing is consumed from the
-	// buffer and nothing is generated, so a machine left on stops
-	// making music nobody is there to hear.
-	Standby bool
+	// Stopped reports this machine's player is switched off: nothing
+	// plays here and nothing is taken from the store, which goes on
+	// filling for the other listeners.
+	Stopped bool
 	// Underruns counts output buffer underruns since start.
 	Underruns int64
 	// GenCount and LastGenTime describe generation throughput.
@@ -253,6 +253,10 @@ type Orchestrator struct {
 	// StateDir, when set, records which session is playing so other
 	// processes (the CLI's delete) can refuse to remove it.
 	StateDir *state.Dir
+	// Idle starts this machine's player switched off: the generator
+	// runs and the remote serves, but the speakers take nothing until
+	// the play command. Set before Start.
+	Idle bool
 	// Telemetry, when set before Start, samples system and graphics
 	// memory and the engine's model residency for the status display.
 	// Nil leaves those fields of Status empty.
@@ -291,16 +295,18 @@ type Orchestrator struct {
 	switchReq    bool
 	steerPending bool
 	paused       bool
-	// heard reports that something from the playing session has
-	// actually come out of the speakers. A change to the sound branches
-	// the session only once it has been heard: a state nobody has heard
-	// is not one anyone wants to go back to.
-	heard bool
-	// standby holds the whole radio: the mixer stops taking songs out
-	// of the buffer and the generator stops putting them in. Distinct
-	// from paused, which only silences this room's speakers while the
-	// station carries on.
-	standby  bool
+	// produced reports that the playing session has made a song - in
+	// this run, or before it was loaded. A change to the sound branches
+	// the session only once it has: a state that never made a song is
+	// not one anyone wants to go back to.
+	produced bool
+	// lastTweak is when the sound was last changed; changes within the
+	// branch window of it stay in the same branch.
+	lastTweak time.Time
+	// stopped switches this machine's player off: the mixer feeds the
+	// speakers silence and the taker takes nothing from the store.
+	// Distinct from paused, which only mutes what is playing.
+	stopped  bool
 	genBusy  bool
 	genCount int
 	// Phased-generation state: the epoch the buffer currently belongs
@@ -400,11 +406,11 @@ func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store
 		wake:     make(chan struct{}, 1),
 		bankRefs: map[string]bankRef{},
 		Songbook: songbook.Open("", log),
-		// A session that has played before was heard before: resuming
-		// one and changing it straight away must still keep what it
-		// sounded like. A session made moments ago has nothing behind
-		// it to keep.
-		heard: !sess.LastPlayed.IsZero(),
+		// A session that has played before has made songs before:
+		// resuming one and changing it straight away must still keep
+		// what it sounded like. A session made moments ago has nothing
+		// behind it to keep.
+		produced: !sess.LastPlayed.IsZero(),
 	}
 	o.volume.Store(int32(cfg.Volume))
 	o.adoptLanguages(sess)
@@ -457,15 +463,10 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	o.mu.Lock()
 	o.started = now
 	o.phaseStart = now
-	// A hold survives a restart on purpose: the machine is left on for
-	// days, and a radio that resumed on its own would start spending
-	// the card again with nobody there.
-	if o.StateDir != nil && o.StateDir.Standby() {
-		o.standby = true
-	}
+	o.stopped = o.Idle
 	o.mu.Unlock()
-	if o.standbyNow() {
-		o.log.Info("starting on standby", "event", "standby_restored")
+	if o.Idle {
+		o.log.Info("starting with the player off", "event", "player_idle")
 	}
 	o.seedFromLibrary()
 	// Prompt-seeded sessions carry a raw user description; let the
@@ -796,6 +797,7 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 			o.lastGoodEpoch = epoch
 			o.genCount++
 			o.lastGen = elapsed
+			o.produced = true
 		}
 		kept := epoch == o.epoch
 		o.mu.Unlock()
@@ -845,9 +847,6 @@ func (o *Orchestrator) fillTitle(t *engine.Track) {
 // wantGeneration reports whether the generate-ahead worker should produce
 // another track right now.
 func (o *Orchestrator) wantGeneration() bool {
-	if o.standbyNow() {
-		return false
-	}
 	if o.eng == nil || !o.eng.Ready() {
 		return false
 	}

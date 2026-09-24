@@ -36,16 +36,6 @@ func runPlay(pf playFlags) error {
 	if pf.player != "" {
 		a.cfg.Player = pf.player
 	}
-	// An explicit --remote means this machine is the station, not the
-	// listening room: start the local speakers at zero instead of
-	// blasting the first track into whatever room the server sits in.
-	// Turn them up any time with the `volume` command; remote listeners
-	// are unaffected (the stream taps the audio before the volume
-	// control). Remote enabled via the config file does not silence
-	// anything - plain `iar` stays a normal local player.
-	if pf.remote {
-		a.cfg.Volume = 0
-	}
 
 	// Only one player instance at a time; a second one would fight over
 	// the session and the stream.
@@ -139,6 +129,13 @@ func runPlay(pf playFlags) error {
 	// Saves land here; say so up front instead of making the listener
 	// dig the path out of a save acknowledgment or the docs.
 	fmt.Fprintf(os.Stderr, "iar: saved tracks go to %s\n", orch.SnippetsDir)
+	// An explicit --remote means this machine is the station, not the
+	// listening room: its own player starts switched off, taking
+	// nothing from the store, instead of playing the first song into
+	// whatever room the server sits in. `play` in its terminal switches
+	// it on any time. Remote enabled via the config file changes nothing
+	// - plain `iar` stays a normal local player.
+	orch.Idle = pf.remote
 	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
 	orch.Ephemeral = noiseOnly
 	orch.LegacyLanguagesOff = a.cfg.VocalLanguagesOff

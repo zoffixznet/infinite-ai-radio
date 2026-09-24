@@ -176,7 +176,6 @@ func (o *Orchestrator) RestartGeneration() string {
 	// after it if the first fresh song is slower than that, and the
 	// mixer crosses over the moment one is ready.
 	o.steerPending = true
-	held := o.standby
 	o.mu.Unlock()
 	songs, plans, files := queued, 0, 0
 	if o.Buffer != nil {
@@ -190,7 +189,7 @@ func (o *Orchestrator) RestartGeneration() string {
 	}
 	o.kickGen()
 	o.log.Info("buffer emptied to start generation over", "event", "buffer_restarted",
-		"epoch", oldEpoch, "songs", songs, "plans", plans, "files", files, "standby", held)
+		"epoch", oldEpoch, "songs", songs, "plans", plans, "files", files)
 	var ack string
 	switch {
 	case songs > 0 && plans > 0:
@@ -203,11 +202,6 @@ func (o *Orchestrator) RestartGeneration() string {
 		ack = "buffer already empty"
 	}
 	switch {
-	case held:
-		// A held radio generates nothing, and the generator is prodded
-		// again on waking; promising music that is not coming would be
-		// worse than saying so.
-		return ack + "; the radio is on standby, so generation starts over when you wake it"
 	case o.eng == nil:
 		return ack + "; nothing new is generated - the music engine is unavailable (run 'iar setup')"
 	default:
@@ -362,43 +356,49 @@ func (o *Orchestrator) ToggleLoop() string {
 	return "looping " + name + " until the loop is turned off"
 }
 
-// standbyNow reports whether the radio is held.
-func (o *Orchestrator) standbyNow() bool {
+// playerStopped reports whether this machine's player is switched off.
+func (o *Orchestrator) playerStopped() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.standby
+	return o.stopped
 }
 
-// ToggleStandby holds the whole radio, or lets it go again. Held, the
-// mixer takes nothing out of the buffer and the generator puts nothing
-// in: a machine left running stops spending its graphics card, its
-// electricity and its fans on music nobody is there to hear. The hold
-// is remembered on disk, because a radio that quietly resumed after a
-// restart would defeat the point of leaving the machine on.
-func (o *Orchestrator) ToggleStandby() string {
+// Play switches this machine's player on: it takes songs from the
+// store and plays them through the speakers, from the song it was on.
+// A pause is lifted with it.
+func (o *Orchestrator) Play() string {
 	o.mu.Lock()
-	on := !o.standby
-	o.standby = on
+	wasStopped, wasPaused := o.stopped, o.paused
+	o.stopped, o.paused = false, false
 	o.mu.Unlock()
-	o.rememberStandby(on)
-	o.log.Info("standby toggled", "event", "standby", "on", on)
-	if on {
-		return "the radio is on standby - nothing plays and nothing is generated until you wake it"
+	switch {
+	case wasStopped:
+		// The taker sleeps on the same wake as the generator.
+		o.kickGen()
+		o.log.Info("player switched on", "event", "player_on")
+		return "playing - this machine takes songs from the store again"
+	case wasPaused:
+		o.log.Info("resumed", "event", "resumed")
+		return "resumed"
+	default:
+		return "already playing"
 	}
-	// Waking has to prod the generator: it sleeps on a timer, and the
-	// listener is standing there waiting for music.
-	o.kickGen()
-	return "awake - playing again, and generating when the buffer runs down"
 }
 
-// rememberStandby records the hold so a restart honours it.
-func (o *Orchestrator) rememberStandby(on bool) {
-	if o.StateDir == nil {
-		return
+// Stop switches this machine's player off: nothing plays here and
+// nothing is taken from the store, which goes on filling for the other
+// listeners exactly as before. The song that was playing is where play
+// picks up again.
+func (o *Orchestrator) Stop() string {
+	o.mu.Lock()
+	was := o.stopped
+	o.stopped = true
+	o.mu.Unlock()
+	if was {
+		return "already stopped"
 	}
-	if err := o.StateDir.SetStandby(on); err != nil {
-		o.log.Warn("could not record the standby state", "event", "standby_record_failed", "error", err.Error())
-	}
+	o.log.Info("player switched off", "event", "player_off")
+	return "stopped - this machine plays nothing and takes nothing; the radio keeps making songs (play to start again)"
 }
 
 // Pause silences output without stopping generation.
@@ -482,7 +482,8 @@ func (o *Orchestrator) LoadPreset(name string) string {
 	o.adoptLanguages(fresh)
 	o.mu.Lock()
 	o.sess = fresh
-	o.heard = false // nothing of this one has been heard yet
+	o.produced = false // nothing of this one has been made yet
+	o.lastTweak = time.Time{}
 	o.epoch++
 	o.queue = nil
 	o.lastGood = nil
@@ -506,9 +507,10 @@ func (o *Orchestrator) LoadSession(name string) string {
 	o.saveSession()
 	o.mu.Lock()
 	o.sess = s
-	// A session that played before was heard before: changing it now
-	// keeps what it sounded like, rather than writing over it.
-	o.heard = !s.LastPlayed.IsZero()
+	// A session that played before has made songs before: changing it
+	// now keeps what it sounded like, rather than writing over it.
+	o.produced = !s.LastPlayed.IsZero()
+	o.lastTweak = time.Time{}
 	o.epoch++
 	o.queue = nil
 	o.lastGood = nil
@@ -620,7 +622,7 @@ func (o *Orchestrator) Status() Status {
 		LyricsGenerator: o.builder.GeneratorName(o.sess),
 		Volume:          int(o.volume.Load()),
 		Paused:          o.paused,
-		Standby:         o.standby,
+		Stopped:         o.stopped,
 		Underruns:       o.ring.Underruns(),
 		GenCount:        o.genCount,
 		LastGenTime:     o.lastGen,
@@ -692,6 +694,8 @@ func (o *Orchestrator) Status() Status {
 // stateLocked derives the display state; callers hold o.mu.
 func (o *Orchestrator) stateLocked() string {
 	switch {
+	case o.stopped:
+		return "stopped"
 	case o.paused:
 		return "paused"
 	case o.cur == nil:
@@ -716,9 +720,9 @@ func (o *Orchestrator) stateLocked() string {
 // desktop integration surfaces.
 func (o *Orchestrator) Snapshot() (paused bool, volume int, title string) {
 	o.mu.Lock()
-	// A held radio reads as paused to the desktop: no sound is coming
-	// out of it, whichever of the two switches stopped it.
-	paused = o.paused || o.standby
+	// A stopped player reads as paused to the desktop: no sound is
+	// coming out of it, whichever of the two switches stopped it.
+	paused = o.paused || o.stopped
 	title = o.sess.Describe()
 	if o.curTrack != nil {
 		if o.curTrack.Title != "" {

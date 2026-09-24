@@ -16,19 +16,26 @@ import (
 // loading the old name, and trying the same change again from there is
 // one more branch rather than a fight with the last one.
 //
-// The branch is skipped while nothing has been heard from the session
-// yet, because a state nobody has heard is not a state anyone wants
-// back: three steers in a row while the first track is still rendering
-// leave one session, not three.
+// The branch is skipped while the session has not made a song yet,
+// because a state that never produced anything is not a state anyone
+// wants back - and a burst of changes makes one branch, not one per
+// tap: a change within the branch window of the last one stays in
+// the branch the last one made.
+
+// branchWindow is how long after a change to the sound a further
+// change counts as part of the same one.
+const branchWindow = 30 * time.Second
 
 // forkLocked branches the playing session. Callers hold o.mu, have
 // already applied their change to o.sess, and pass the snapshot they
 // took just before applying it. It reports whether a branch happened.
 func (o *Orchestrator) forkLocked(before *session.Session) bool {
-	if !o.heard || before == nil {
+	now := time.Now()
+	recent := !o.lastTweak.IsZero() && now.Sub(o.lastTweak) < branchWindow
+	o.lastTweak = now
+	if !o.produced || recent || before == nil {
 		return false
 	}
-	now := time.Now()
 	name := session.ForkName(before.Name, now)
 	// Two changes inside one second would land on the same name. The
 	// next second along is still a generated name of the right shape;
@@ -41,8 +48,8 @@ func (o *Orchestrator) forkLocked(before *session.Session) bool {
 	o.sess.Named = false
 	o.sess.Created = now
 	o.sess.ForkedFrom = before.Name
-	// The branch has not been heard either, until it plays something.
-	o.heard = false
+	// The branch has made nothing yet either, until it renders a song.
+	o.produced = false
 	return true
 }
 

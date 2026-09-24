@@ -186,24 +186,27 @@ func TestControllerSessionsListingIsGrouped(t *testing.T) {
 	}
 }
 
-// The help advertised "standby" for as long as the hold existed, but
-// the word had no case of its own: typing it fell through to free text
-// and steered the music with the word "standby".
-func TestControllerStandbyHoldsTheRadioRatherThanSteering(t *testing.T) {
+// "stop" and "play" are commands about this machine's speakers, not
+// steering: the radio keeps making songs, and neither word may end up
+// as a tweak to the sound.
+func TestControllerStopAndPlayAreCommandsNotSteering(t *testing.T) {
 	c := newController(t)
-	resp, quit := c.Handle("standby")
-	if quit || !strings.Contains(resp, "standby") {
-		t.Fatalf("standby resp = %q", resp)
+	resp, quit := c.Handle("stop")
+	if quit || !strings.Contains(resp, "stopped") {
+		t.Fatalf("stop resp = %q", resp)
 	}
 	st := c.O.Status()
-	if !st.Standby {
-		t.Fatal("the radio is not held")
+	if !st.Stopped {
+		t.Fatal("the player did not stop")
 	}
-	if len(st.Tweaks) > 0 {
-		t.Fatalf("standby was taken as steering: %+v", st.Tweaks)
+	if len(st.Tweaks) != 0 {
+		t.Fatalf("stop was taken as steering: %+v", st.Tweaks)
 	}
-	if resp, _ := c.Handle("standby"); !strings.Contains(resp, "awake") {
-		t.Fatalf("a second standby did not wake the radio: %q", resp)
+	if resp, _ := c.Handle("play"); !strings.Contains(resp, "playing") {
+		t.Fatalf("play did not switch the player back on: %q", resp)
+	}
+	if c.O.Status().Stopped {
+		t.Fatal("the player is still stopped after play")
 	}
 }
 

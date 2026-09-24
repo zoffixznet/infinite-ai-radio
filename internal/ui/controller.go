@@ -87,10 +87,12 @@ func (c *Controller) Handle(line string) (string, bool) {
 		return c.O.ToggleLoop(), false
 	case "pause":
 		return c.O.TogglePause(), false
-	case "standby":
-		return c.O.ToggleStandby(), false
-	case "resume", "play":
+	case "resume":
 		return c.O.Resume(), false
+	case "play":
+		return c.O.Play(), false
+	case "stop":
+		return c.O.Stop(), false
 	case "restart", "regenerate":
 		return c.O.RestartGeneration(), false
 	case "volume", "vol":
@@ -348,7 +350,7 @@ commands (leading / optional):
   save [prev] [tag] track -> MP3         load <name>      resume a session
   mp3 <min> [file]  export MP3           preset <name>    switch preset
   skip | loop       next / repeat track  delete <n|autos> delete sessions
-  pause | standby   mute / hold radio    volume <0-100>   set volume
+  pause | resume    mute / unmute        volume <0-100>   set volume
+  play | stop       speakers on / off    restart          empty buffer, start over
   lyrics [name]     pick lyric writer    status | engine  show status
-  languages [list]  sung languages       help | quit      this list / exit
-  restart           empty buffer, start over`
+  languages [list]  sung languages       help | quit      this list / exit`

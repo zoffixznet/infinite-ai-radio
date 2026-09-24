@@ -291,19 +291,6 @@ body.app .inner { max-width: 520px; margin: 0 auto; width: 100%; }
   overflow-wrap: anywhere;
   padding: var(--s4) var(--s4) var(--s5);
 }
-/* The hold is easy to forget - a phone can hold an hour of songs and
-   keep playing them long after the radio stopped - so it says so where
-   it cannot be scrolled away from, between the app bar and the page. */
-.standbybar {
-  flex: none;
-  display: flex; align-items: center; gap: var(--s3);
-  padding: var(--s2) var(--s4);
-  background: var(--warn-fill); color: var(--warn);
-  font-size: 13px; line-height: 20px; font-weight: 600;
-}
-.standbybar span { flex: 1; min-width: 0; }
-.standbybar .chip { flex: none; white-space: nowrap; }
-
 .transportbar {
   flex: none;
   position: relative; z-index: 2;
@@ -345,9 +332,6 @@ body.app .inner { max-width: 520px; margin: 0 auto; width: 100%; }
   border: 0; border-radius: 12px; cursor: pointer;
 }
 .iconbtn svg { width: 22px; height: 22px; display: block; }
-/* A held radio is a fact about the whole station, so the button that
-   holds it wears the same colour as the banner that announces it. */
-.iconbtn.on { color: var(--warn); background: var(--warn-fill); }
 /* The row's delete cross is drawn at the same weight as every other
    icon rather than at whatever size a font decides. */
 .rowicon svg { width: 18px; height: 18px; display: block; }

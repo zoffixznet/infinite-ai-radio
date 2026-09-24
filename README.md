@@ -160,10 +160,10 @@ live there, and it beats the terminal even on the machine itself:
 Open the printed URL - `http://localhost:8246` on the same machine, or
 the Tailscale address from your phone ([Listening from your
 phone](#listening-from-your-phone) has the full flow). `--remote`
-starts the machine as a silent station; type `volume 80` in its
-terminal to also hear it locally, or just run `./iar` plus `"remote":
-{"enabled": true}` in the configuration to have speakers and web
-together.
+starts the machine as a station with its own player switched off; type
+`play` in its terminal to also hear it locally, or just run `./iar`
+plus `"remote": {"enabled": true}` in the configuration to have
+speakers and web together.
 
 The other flags:
 
@@ -313,7 +313,7 @@ typed at the same prompt. A leading slash is optional: `skip` and
 | `skip` | jump to the next track |
 | `loop` | repeat the playing track until toggled off |
 | `pause` / `resume` | pause or continue output |
-| `standby` | hold the whole radio: nothing plays, nothing is generated |
+| `play` / `stop` | switch this machine's player on or off; the radio keeps making songs |
 | `restart` | empty the buffer and start generating over, session kept |
 | `volume <0-100>` | set output volume |
 | `lyrics [name]` | show or switch the lyric writer |
@@ -322,31 +322,18 @@ typed at the same prompt. A leading slash is optional: `skip` and
 | `help` | list commands |
 | `quit` | exit |
 
-### Standby
+### Play and stop
 
-`standby` puts the radio to sleep without stopping it. Nothing plays,
-and - the point of it - nothing is generated: the buffer stops being
-consumed and stops being refilled, so a machine left running overnight
-sits idle with a full buffer instead of rendering songs nobody is
-awake to hear. Work already under way stops at the next clean seam
-rather than being abandoned: the song being written or rendered when
-you press it is finished and kept, the graphics card is handed back,
-and nothing further is started. Nothing is thrown away to stop there,
-so a deep batch interrupted halfway is picked up from where it stopped
-and only the remainder is done. `standby` again wakes it, playing from
-exactly where it left off and generating again once the buffer runs
-down. The hold is remembered across restarts, so a radio put on
-standby comes back up on standby.
-
-The phone remote holds it from the button beside the settings gear, on
-the app bar where every screen can reach it - it wears the banner's
-colour while the radio is held - and from the same switch under
-**Settings -> The radio itself**. A held radio says so in a banner
-across the top of the page that cannot be scrolled past. Ticking it also stops that device
-listening. A phone in buffered mode holds songs of its own, so pressing
-play into a held radio is allowed but warns, in the banner, that the
-music runs out when this device's own songs do; the banner's *Wake*
-button clears the hold for everyone.
+`stop` switches this machine's player off: nothing comes out of its
+speakers and it takes nothing from the store, which goes on filling
+for the phones exactly as before. `play` switches it back on, from the
+song it was on. That is all the switch does - the radio itself never
+sleeps on a command. It sleeps on its own: once the store holds
+`buffer.songs` songs nobody has taken, no batch is due and the engine
+hibernates until somebody takes a song, so a machine left running
+overnight with nobody listening makes nothing overnight. `--remote`
+starts with the player off, because a machine started as the station
+should not play the first song into whatever room it sits in.
 
 ### Starting generation over
 
@@ -446,11 +433,11 @@ terminal:
 
 ```sh
 ./iar remote setup   # create the first admin (email + password)
-./iar --remote       # start as the station: remote on, local speakers at 0
+./iar --remote       # start as the station: remote on, its own player off
 ```
 
 With `--remote` the machine is the station, not the listening room -
-type `volume 80` in its terminal to also hear it locally. The player
+type `play` in its terminal to also hear it locally. The player
 prints the URL to open; the stream is MP3 at ~192 kbps. Like everything
 else it sits behind the login, so a non-browser player needs the session
 cookie passed along to read `/stream.mp3`. The page can be installed as
@@ -775,13 +762,11 @@ everything else keeps its default. The complete set, with defaults:
   (about 28 MB per 150-second track). With phased generation (the default) the queue ahead of
   playback lives on disk instead (see the `buffer` section) and phone
   listeners prefetch straight from it, so this setting is not used.
-- `volume` (0-100): initial output volume. Starting the player with the
-  `--remote` flag overrides this to 0 - a machine started as the
-  station should not blast music into its own room. Turn the local
-  speakers up any time with the `volume` command; remote listeners
-  always get the full-level stream regardless (it is tapped before the
-  volume control). Enabling the remote through the config file alone
-  does not silence anything.
+- `volume` (0-100): initial output volume. Remote listeners always get
+  the full-level stream regardless (it is tapped before the volume
+  control). A machine started with `--remote` has its own player off
+  until `play` is typed; enabling the remote through the config file
+  alone changes nothing.
 - `bed_while_waiting`: when true, a quiet noise bed plays while the
   first track is prepared instead of the default silence-with-progress.
 - `pipe_latency_ms` (20-2000): how much buffering the system audio
@@ -1059,8 +1044,7 @@ Inside the data directory:
 - `exports/` - MP3 exports
 - `logs/iar.log` - structured JSON log of the player
 - `logs/engine-daemon.log` - the shared engine daemon's log
-- `state/` - engine daemon state, locks, phase-duration records, and
-  the `standby` marker when the radio was left held
+- `state/` - engine daemon state, locks and phase-duration records
 
 ## Models and licensing
 
