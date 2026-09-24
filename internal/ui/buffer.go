@@ -53,20 +53,32 @@ func genText(st player.Status) (text string, busy bool) {
 		return "generating next track", true
 	case writing(st):
 		return writingText(st), true
+	case waking(st):
+		return wakingText, true
 	}
 	return genIdle(st), false
 }
 
 // writing reports whether the radio is writing song words right now:
-// a wordsmith round is in progress, or the writer is answering the
-// radio while the engine is off the card.
+// a wordsmith round is in progress. Nothing else counts - the helper
+// also answers the health check at startup and every steer, and those
+// write no song.
 func writing(st player.Status) bool {
-	if st.WordsmithWant > 0 {
-		return true
-	}
-	t := st.Telemetry
-	return t != nil && t.WriterBusy && t.EnginePID == 0
+	return st.WordsmithWant > 0
 }
+
+// waking reports whether the engine is starting up for work of the
+// radio's own: the daemon is coming up for a batch and its models are
+// not loaded yet. That is the batch under way, not the engine asleep,
+// and the row pulses through it the way the status row does. An
+// export waking the engine is reported as the export instead.
+func waking(st player.Status) bool {
+	return st.EngineName != "" && !st.EngineReady && st.EngineAwake && st.Exporting == ""
+}
+
+// wakingText is the generation row while the engine starts up for a
+// batch.
+const wakingText = "waking the engine for the next batch"
 
 // writingText is the generation row while the words are written. An
 // instrumental batch is described rather than worded, and the line
@@ -93,6 +105,8 @@ func genIdle(st player.Status) string {
 		// Not idle at all; genText says so before ever asking here,
 		// and a direct caller gets the same answer.
 		return writingText(st)
+	case waking(st):
+		return wakingText
 	case st.EngineName != "" && !st.EngineReady:
 		// The engine sleeps on purpose once the store is deep enough;
 		// that is the pipeline working.

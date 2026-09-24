@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"iar/internal/engine"
@@ -27,6 +28,16 @@ import (
 type Builder struct {
 	ollama *Ollama
 	log    *slog.Logger
+
+	// rounds counts the wordsmith rounds under way - the helper writing
+	// the radio's songs: their words or descriptions, and their names -
+	// and wroteAt is when the last one ended (unix nanoseconds; zero
+	// before any has). Between them they say whether the writer is
+	// working for the radio - see WriterWorking. The health check and
+	// a steer's refinement go to the same daemon but are not counted:
+	// they write no song.
+	rounds  atomic.Int32
+	wroteAt atomic.Int64
 
 	mu sync.Mutex
 	// pending marks the lyric-context keys with a background write in
@@ -290,6 +301,7 @@ func (b *Builder) StockInstrumentalCaptions(ctx context.Context, s *session.Sess
 	if s == nil || s.Vocal || !b.helperUsable() {
 		return 0
 	}
+	defer b.songWork()()
 	r := Render(s)
 	key := b.instrumentalKey(r)
 	wrote := 0
@@ -399,6 +411,7 @@ func (b *Builder) StockLyrics(ctx context.Context, s *session.Session, want int,
 	if s == nil || !s.Vocal || !b.helperUsable() {
 		return 0
 	}
+	defer b.songWork()()
 	gen := b.generatorFor(s)
 	r := Render(s)
 	key := b.lyricsKey(gen, s, r)
@@ -917,15 +930,38 @@ func (b *Builder) SetEngineBusy(busy bool) {
 	}
 }
 
-// WriterWorking reports whether the lyric writer is at work for the
-// radio right now: a request of the radio's is in flight to it, or one
-// finished moments ago (see Ollama.Working). The resource readout folds
-// the writer's processes into the radio's own figures while it is.
+// writerLinger is how long after a wordsmith round ends the writer
+// still counts as working. Its model stays on the card for a while
+// after the last sheet, and a resource readout that moved that memory
+// from "radio" to "shared" the moment the round closed would flicker
+// over the same fact.
+const writerLinger = 30 * time.Second
+
+// WriterWorking reports whether the lyric writer is writing the
+// radio's songs right now: a wordsmith round is under way, or one
+// ended within the last half minute. The resource readout folds the
+// writer's processes into the radio's own figures while it is. Other
+// requests to the helper - the health check at startup, a steer's
+// refinement - write no song and never count: a radio with nothing to
+// make does not read as writing because the helper answered a ping.
 func (b *Builder) WriterWorking() bool {
 	if b == nil {
 		return false
 	}
-	return b.ollama.Working()
+	if b.rounds.Load() > 0 {
+		return true
+	}
+	last := b.wroteAt.Load()
+	return last > 0 && time.Since(time.Unix(0, last)) < writerLinger
+}
+
+// songWork brackets one wordsmith round for WriterWorking.
+func (b *Builder) songWork() (done func()) {
+	b.rounds.Add(1)
+	return func() {
+		b.wroteAt.Store(time.Now().UnixNano())
+		b.rounds.Add(-1)
+	}
 }
 
 // SpecUpdate is a helper-proposed structured update to the steering

@@ -370,3 +370,57 @@ func TestStockLyricsResumesWithoutRewritingTheShelf(t *testing.T) {
 		t.Fatalf("the resumed round made %d helper calls for 3 sheets", grew)
 	}
 }
+
+// The resource readout counts the writer's processes as the radio's
+// while the writer is writing the radio's songs: a wordsmith round
+// under way, or one that ended moments ago (its model lingers on the
+// card, and a figure that flipped the moment the round closed would
+// flicker over the same fact). The health check and a steer's
+// refinement go to the same daemon and count for nothing: they write
+// no song, and a radio with nothing to make used to read "writing song
+// words" for half a minute after every one of them.
+func TestWriterWorkingFollowsTheSongWriting(t *testing.T) {
+	f := &fakeOllama{
+		reply:     "[Verse]\nsteel in the water",
+		jsonReply: `{"title":"Steel In The Water","subtitle":"nu-metal, driving"}`,
+		slow:      150 * time.Millisecond,
+	}
+	srv := f.server(t)
+	defer srv.Close()
+
+	var nobody *Builder
+	if nobody.WriterWorking() {
+		t.Fatal("no builder at all is not a working writer")
+	}
+	// The probe has answered by the time probedBuilder returns.
+	b := probedBuilder(t, srv)
+	if b.WriterWorking() {
+		t.Fatal("the health check read as the words being written")
+	}
+	// A steer's refinement is a request of the radio's, and not a song.
+	b.RefineAsync(wordsmithSession(), "more cowbell", func(SpecUpdate) {})
+	waitCond(t, "the refinement to land", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return len(b.pending) == 0
+	})
+	if b.WriterWorking() {
+		t.Fatal("a steer's refinement read as the words being written")
+	}
+
+	// A wordsmith round is the writer working, from its first sheet.
+	done := make(chan int, 1)
+	go func() { done <- b.StockLyrics(context.Background(), wordsmithSession(), 1, nil) }()
+	waitCond(t, "the round to start", b.WriterWorking)
+	if wrote := <-done; wrote != 1 {
+		t.Fatalf("StockLyrics wrote %d sheets, want 1", wrote)
+	}
+	if !b.WriterWorking() {
+		t.Fatal("just after a round the writer has not gone quiet yet")
+	}
+	// Half a minute on, it has.
+	b.wroteAt.Store(time.Now().Add(-writerLinger - time.Second).UnixNano())
+	if b.WriterWorking() {
+		t.Fatal("a writer quiet for longer than the linger is not working")
+	}
+}

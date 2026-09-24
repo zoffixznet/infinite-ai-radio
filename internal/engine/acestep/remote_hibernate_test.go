@@ -1,12 +1,14 @@
 package acestep
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,5 +90,36 @@ func TestHibernateSparesADaemonAnotherClientIsUsing(t *testing.T) {
 	}
 	if !state.PIDAlive(survivorPID) {
 		t.Fatal("the other client's daemon was killed anyway")
+	}
+}
+
+// Stopping the daemon is logged as that and nothing more. Whether it
+// is the engine going to sleep between batches or only the writer's
+// turn on the card is the caller's to say, in the line it writes next;
+// a line here calling every stop a hibernation contradicted that line
+// on the writer's path, where the radio is still making songs.
+func TestStoppingTheDaemonIsNotCalledHibernation(t *testing.T) {
+	dir, err := state.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemonPID := spawnStandin(t)
+	if err := dir.WriteEngineState(state.EngineState{PID: daemonPID, Port: 1234, Started: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var logbuf bytes.Buffer
+	r := NewRemote(dir, "iar", filepath.Join(t.TempDir(), "d.log"), slog.New(slog.NewJSONHandler(&logbuf, nil)))
+	r.st = state.EngineState{PID: daemonPID, Port: 1234}
+	dir.Heartbeat()
+
+	if !r.Hibernate() {
+		t.Fatal("a daemon with no other client was left running")
+	}
+	log := logbuf.String()
+	if !strings.Contains(log, `"event":"engine_stop"`) || !strings.Contains(log, "stopping engine daemon") {
+		t.Errorf("the stop went unlogged:\n%s", log)
+	}
+	if strings.Contains(log, "hibernat") {
+		t.Errorf("the stop is logged as hibernation, which is the caller's to decide:\n%s", log)
 	}
 }

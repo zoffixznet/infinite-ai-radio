@@ -135,9 +135,9 @@ func modelRow(st player.Status) telemetryRow {
 		r.Text = "none on the card yet - engine at work"
 	case s.EnginePID > 0:
 		r.Text = "none on the card - engine idle"
-	case writing(st):
+	case s.WriterBusy || writing(st):
 		// The writer answers from the processor, or from another
-		// machine: working for the radio either way, just not here.
+		// machine: writing for the radio either way, just not here.
 		r.Text = "none on the card - the writer is working elsewhere"
 	default:
 		r.Text = "none - engine asleep"
@@ -162,14 +162,15 @@ func asleepWhy(st player.Status) string {
 }
 
 // sharedRow names what else is on the card: another program sharing
-// the machine, or the radio's own lyric writer while it is answering
-// somebody else (it runs as a service of its own, and only counts as
-// the radio's while it works for the radio). Without this row the only
-// thing the readout could say while another program held the card was
-// that the radio held little - true, and a poor answer to "what is
-// using my graphics card". Named by process and never folded into the
-// radio's own figure: a process list can say who is holding memory,
-// not whose work they are doing.
+// the machine, or the radio's own lyric writer while it is not writing
+// the radio's songs (it runs as a service of its own, answering
+// whoever asks - the radio's own health check and steers included -
+// and only counts as the radio's while it writes the radio's songs).
+// Without this row the only thing the readout could say while another
+// program held the card was that the radio held little - true, and a
+// poor answer to "what is using my graphics card". Named by process
+// and never folded into the radio's own figure: a process list can say
+// who is holding memory, not whose work they are doing.
 func sharedRow(s *telemetry.Sample) (telemetryRow, bool) {
 	r := telemetryRow{Label: "shared", Frac: -1}
 	parts := make([]string, 0, len(s.Procs))

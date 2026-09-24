@@ -2,7 +2,11 @@ package player
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"sync/atomic"
@@ -482,6 +486,7 @@ func TestTheWriterPhaseIsMakingSongs(t *testing.T) {
 		{sleepForWriter, "render_unloaded", "render model unloaded while the words are written"},
 		{sleepStoreFull, "engine_hibernated", "engine asleep: the store is full"},
 		{sleepUntilDue, "engine_hibernated", "engine asleep until the next batch is due"},
+		{sleepCooldown, "engine_hibernated", "engine asleep: resting after failures before the next try"},
 		{sleepNoWork, "engine_hibernated", "engine asleep: no batch is due"},
 		{sleepQuit, "engine_hibernated", "engine stopped with the radio"},
 	} {
@@ -492,8 +497,10 @@ func TestTheWriterPhaseIsMakingSongs(t *testing.T) {
 	}
 }
 
-// The reason picked when no more work is due follows the store and
-// the ladder's clock, the same facts the buffer row shows.
+// The reason picked when no cycle is wanted follows the store and the
+// ladder's clock, the same facts the buffer row shows - except that a
+// cooldown after failures outranks both, because it is what is
+// actually keeping the engine from a batch that is due.
 func TestSleepReasonFollowsTheStoreAndTheClock(t *testing.T) {
 	cfg := testConfig()
 	cfg.Buffer.Songs = 1
@@ -519,5 +526,147 @@ func TestSleepReasonFollowsTheStoreAndTheClock(t *testing.T) {
 	}
 	if got := o.sleepReasonNow(0); got != sleepStoreFull {
 		t.Errorf("full store: %d", got)
+	}
+	// A cycle that gave up on failures rests the engine; that is the
+	// reason, whatever the store and the clock say.
+	o.coolDown(time.Minute)
+	if got := o.sleepReasonNow(0); got != sleepCooldown {
+		t.Errorf("cooling down after failures: %d", got)
+	}
+	o.coolDown(-time.Second)
+	if got := o.sleepReasonNow(0); got != sleepStoreFull {
+		t.Errorf("cooldown over: %d", got)
+	}
+}
+
+// The helper answers the health check at startup and every steer's
+// refinement over the same connection it writes songs on. None of
+// that is the words being written: with nothing to make, the phase
+// stays what it was, rather than reading "writing song words" for half
+// a minute after every ping beside a store that is full.
+func TestAHelperCallIsNotTheWordsBeingWritten(t *testing.T) {
+	srv := fakeWordsmith(t, 0)
+	builder := prompting.NewBuilder(prompting.NewOllama(srv.URL, "", 0), testLogger())
+	sess := session.New()
+	sess.Vocal = true
+	o := New(testConfig(), &sleepingMock{}, builder,
+		session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
+	builder.ProbeAsync(context.Background())
+	if !builder.AwaitHelper(context.Background(), 5*time.Second) {
+		t.Fatal("the helper never became usable")
+	}
+	// The health check has just been answered; no round is running.
+	if builder.WriterWorking() {
+		t.Fatal("the health check counts as the writer working")
+	}
+	if got := o.currentPhase(); got != "starting engine" {
+		t.Errorf("after the health check, with nothing made, the phase reads %q", got)
+	}
+	o.mu.Lock()
+	o.genCount = 1
+	o.mu.Unlock()
+	if got := o.currentPhase(); got != "playing" {
+		t.Errorf("after the health check, with music made, the phase reads %q", got)
+	}
+	if st := o.Status(); st.Phase != "playing" || st.WordsmithWant != 0 {
+		t.Errorf("status reads phase %q with %d words wanted", st.Phase, st.WordsmithWant)
+	}
+}
+
+// dryWordsmith is an Ollama stand-in that answers the health check and
+// fails everything else: a helper that is usable and has no words.
+func dryWordsmith(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]string{{"name": "test-model"}},
+		})
+	})
+	mux.HandleFunc("/api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 1 && strings.Contains(req.Messages[1].Content, "Reply with exactly") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": map[string]string{"role": "assistant", "content": "OK"},
+			})
+			return
+		}
+		http.Error(w, "no words today", http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A cycle that runs out of written words stops the render daemon so
+// the writer can have the card. That is not the engine going to sleep
+// - the radio is still making songs - and the log says which it was:
+// the daemon was put down once, for the writer, and nothing on that
+// path claims the engine is asleep.
+func TestHandingTheCardToTheWriterIsNotLoggedAsSleep(t *testing.T) {
+	srv := dryWordsmith(t)
+	builder := prompting.NewBuilder(prompting.NewOllama(srv.URL, "", 0), testLogger())
+	builder.ProbeAsync(context.Background())
+	if !builder.AwaitHelper(context.Background(), 5*time.Second) {
+		t.Fatal("the helper never became usable")
+	}
+	sess := session.New()
+	sess.Vocal = true
+	sess.LyricsGenerator = "smoothbrain"
+	eng := &pausableMock{}
+	var logbuf lockedBuffer
+	o := New(testConfig(), eng, builder, session.NewStore(t.TempDir()), sess, &capturePlayer{},
+		slog.New(slog.NewJSONHandler(&logbuf, nil)))
+	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
+	// Past the opener: every song waits for the writer.
+	o.mu.Lock()
+	o.rung = 1
+	o.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	failures, oomStreak := 0, 0
+	o.runCycle(ctx, &failures, &oomStreak)
+
+	if got := eng.plans.Load(); got != 0 {
+		t.Fatalf("the cycle planned %d songs past a writer with no words", got)
+	}
+	if got := eng.hibernated.Load(); got != 1 {
+		t.Fatalf("the daemon was put down %d times, want once for the writer", got)
+	}
+	log := logbuf.String()
+	if !strings.Contains(log, `"event":"render_unloaded"`) ||
+		!strings.Contains(log, "render model unloaded while the words are written") {
+		t.Errorf("the writer's path did not log the render unload:\n%s", log)
+	}
+	if strings.Contains(log, `"event":"engine_hibernated"`) || strings.Contains(log, "asleep") {
+		t.Errorf("the writer's path logged the engine asleep:\n%s", log)
+	}
+	if o.Status().EngineAwake {
+		t.Error("the daemon is down for the writer, and the status says the engine is awake")
+	}
+}
+
+// The status says whether the radio is keeping the engine up for work
+// of its own, so a daemon still loading its models reads as waking
+// for a batch and not as asleep.
+func TestEngineAwakeFollowsTheCycle(t *testing.T) {
+	o := New(testConfig(), &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
+		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
+	if o.Status().EngineAwake {
+		t.Fatal("an engine nobody has woken reads awake")
+	}
+	o.setEngineActive(true)
+	if !o.Status().EngineAwake {
+		t.Fatal("an engine woken for a batch reads asleep")
+	}
+	o.hibernateEngine(sleepStoreFull)
+	if o.Status().EngineAwake {
+		t.Fatal("an engine put down reads awake")
 	}
 }

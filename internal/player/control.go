@@ -613,6 +613,7 @@ func (o *Orchestrator) Status() Status {
 		st.EngineName = o.eng.Name()
 		st.EngineReady = o.eng.Ready()
 		st.EngineStarting = !st.EngineReady
+		st.EngineAwake = o.engineBusy.Load()
 	}
 	st.BufferedTracks = o.bufTracks
 	st.WordsmithWant = o.wordsmithWantNow

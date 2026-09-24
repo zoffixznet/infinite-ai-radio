@@ -72,6 +72,11 @@ type Status struct {
 	EngineReady bool
 	// EngineStarting is true while the engine is booting up.
 	EngineStarting bool
+	// EngineAwake reports the radio is keeping the engine up for work
+	// of its own - a batch, or an export - so an engine that is not
+	// ready yet is waking for that work, not asleep. False between
+	// cycles, when the engine is put down on purpose.
+	EngineAwake bool
 	// Session is the active session name; SessionDesc summarizes its
 	// steering context.
 	Session     string
@@ -861,11 +866,13 @@ func (o *Orchestrator) currentPhase() string {
 			case "":
 				return "starting engine"
 			case "hibernated":
-				// The render daemon is down. While the writer is at
-				// work the radio is making songs - the words come
-				// first - and the phase says so rather than claiming a
-				// startup that has not begun.
-				if writing || o.builder.WriterWorking() {
+				// The render daemon is down. While a wordsmith round
+				// writes the batch's words the radio is making songs -
+				// the words come first - and the phase says so rather
+				// than claiming a startup that has not begun. Only the
+				// round counts: the helper also answers the health
+				// check and steers, and those write no song.
+				if writing {
 					return writingPhase(vocal)
 				}
 				// Otherwise phased mode sleeps the engine on purpose

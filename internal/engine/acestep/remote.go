@@ -70,6 +70,9 @@ func (r *Remote) SetActive(on bool) {
 // stops keeping it alive, returning all of its graphics and system
 // memory. It reports whether a running daemon was actually stopped.
 // The next SetActive(true) (or probe while active) starts a fresh one.
+// Why the daemon is stopped is the caller's to say - the engine going
+// to sleep between batches, or only the writer's turn on the card -
+// so the line logged here reports the stop and nothing more.
 //
 // The daemon is shared, so another live process still using it (an
 // export, a second player) means the daemon is left alone -
@@ -95,16 +98,16 @@ func (r *Remote) Hibernate() bool {
 	}
 	if r.dir.OtherClientBeat(otherClientFresh) {
 		r.log.Info("engine daemon left running for another client",
-			"event", "engine_hibernate_shared", "pid", pid)
+			"event", "engine_stop_shared", "pid", pid)
 		return false
 	}
-	r.log.Info("stopping engine daemon for hibernation", "event", "engine_hibernate", "pid", pid)
+	r.log.Info("stopping engine daemon", "event", "engine_stop", "pid", pid)
 	state.Terminate(pid)
 	for i := 0; i < 50 && state.PIDAlive(pid); i++ {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if state.PIDAlive(pid) {
-		r.log.Error("engine daemon ignored SIGTERM", "event", "engine_hibernate_stuck", "pid", pid)
+		r.log.Error("engine daemon ignored SIGTERM", "event", "engine_stop_stuck", "pid", pid)
 		return false
 	}
 	r.dir.RemoveEngineStateIf(pid)

@@ -166,6 +166,17 @@ type fakeCtl struct {
 	skipped   float64
 	// storedT1, when set, is a file on disk that t-1 is served from.
 	storedT1 string
+	// phase, when set, is the startup phase the status reports, with
+	// how long it has run and how long it usually takes (0: unknown).
+	phase                       string
+	phaseElapsed, phaseExpected time.Duration
+}
+
+// setPhase makes the status report a phase in progress.
+func (f *fakeCtl) setPhase(phase string, elapsed, expected time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.phase, f.phaseElapsed, f.phaseExpected = phase, elapsed, expected
 }
 
 // upload is one copy sent back to be saved.
@@ -273,7 +284,11 @@ func (f *fakeCtl) SaveSnippet(which, tag string) string {
 }
 
 func (f *fakeCtl) Status() player.Status {
+	f.mu.Lock()
+	phase, elapsed, expected := f.phase, f.phaseElapsed, f.phaseExpected
+	f.mu.Unlock()
 	return player.Status{
+		Phase: phase, PhaseElapsed: elapsed, PhaseExpected: expected,
 		State: "playing", Source: "test prompt", Session: "s1", Volume: 70,
 		Epoch: 7, BasePrompt: "dark techno", Vocal: true, LyricsGenerator: "scribe",
 		SessionDesc: "dark techno +2 tweaks vocals",
@@ -1426,6 +1441,44 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 	if st.LyricsGenerator != "scribe" || len(st.LyricsGenerators) < 2 ||
 		st.LyricsGenerators[0].Name == "" || st.LyricsGenerators[0].Blurb == "" {
 		t.Fatalf("lyric writer state wrong: %q %+v", st.LyricsGenerator, st.LyricsGenerators)
+	}
+}
+
+// The phone shows a phase in progress with how long it has run, and
+// how long it usually takes only when the radio knows: the words being
+// written have no usual length, and "12s of ~0s" is not information.
+func TestStateSaysHowLongAPhaseUsuallyTakesOnlyWhenItKnows(t *testing.T) {
+	h := newHarness(t, nil)
+	admin := h.admin()
+	read := func() (phase, info string) {
+		t.Helper()
+		resp, body := admin.get("/state")
+		if resp.StatusCode != 200 {
+			t.Fatalf("/state = %d", resp.StatusCode)
+		}
+		var st struct {
+			Phase     string `json:"phase"`
+			PhaseInfo string `json:"phase_info"`
+		}
+		if err := json.Unmarshal([]byte(body), &st); err != nil {
+			t.Fatalf("parsing /state: %v", err)
+		}
+		return st.Phase, st.PhaseInfo
+	}
+	if phase, info := read(); phase != "" || info != "" {
+		t.Fatalf("a radio that is playing reports phase %q (%q)", phase, info)
+	}
+	h.ctl.setPhase("writing song words", 12*time.Second, 0)
+	if phase, info := read(); phase != "writing song words" || info != "12s" {
+		t.Errorf("a phase with no usual length reads %q (%q), want (12s)", phase, info)
+	}
+	h.ctl.setPhase("loading models", 34*time.Second, time.Minute)
+	if phase, info := read(); phase != "loading models" || info != "34s of ~1m0s" {
+		t.Errorf("a phase with a usual length reads %q (%q), want (34s of ~1m0s)", phase, info)
+	}
+	h.ctl.setPhase("playing", 5*time.Second, 0)
+	if phase, info := read(); phase != "" || info != "" {
+		t.Errorf("playing is not a phase in progress, reads %q (%q)", phase, info)
 	}
 }
 

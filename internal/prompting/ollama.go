@@ -37,40 +37,6 @@ type Ollama struct {
 	// thinkOK records whether the resolved model advertises the
 	// thinking capability (set by Available).
 	thinkOK bool
-	// inFlight counts the radio's requests the daemon is answering
-	// right now, and lastDone is when the most recent one finished
-	// (unix nanoseconds; zero before any has). Between them they say
-	// whether the writer is working for the radio - see Working.
-	inFlight atomic.Int32
-	lastDone atomic.Int64
-}
-
-// workingLinger is how long after a request finishes the writer still
-// counts as working. A batch's sheets go out back to back, one every
-// several seconds, and a resource readout that flipped between the
-// calls would flicker instead of saying "writing".
-const workingLinger = 30 * time.Second
-
-// Working reports whether the writer is at work for the radio: a
-// request is in flight, or one finished within the last half minute.
-func (o *Ollama) Working() bool {
-	if o == nil {
-		return false
-	}
-	if o.inFlight.Load() > 0 {
-		return true
-	}
-	last := o.lastDone.Load()
-	return last > 0 && time.Since(time.Unix(0, last)) < workingLinger
-}
-
-// working brackets one request to the daemon.
-func (o *Ollama) working() (done func()) {
-	o.inFlight.Add(1)
-	return func() {
-		o.lastDone.Store(time.Now().UnixNano())
-		o.inFlight.Add(-1)
-	}
 }
 
 // NewOllama returns a client for the daemon at url. model may be empty, in
@@ -334,7 +300,6 @@ func (o *Ollama) ChatWith(ctx context.Context, system, user string, opts ChatOpt
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	defer o.working()()
 	resp, err := o.http.Do(req)
 	if err != nil {
 		return "", err

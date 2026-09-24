@@ -80,9 +80,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   writer holds it. The `models` row names what is on the card for the
   radio, the writer or the engine's models, and says "engine asleep"
   only when nothing is being made at all, with the reason: the store
-  is full, or the next batch is not due yet. The log reads "render
-  model unloaded while the words are written" when the engine hands
-  the card to the writer, and "engine asleep" only when it really is.
+  is full, or the next batch is not due yet. While the engine starts
+  up for a batch the `gen` row reads "waking the engine for the next
+  batch" rather than "engine asleep" beside a status line that says
+  the models are loading. The writer answering the radio's health
+  check at startup, or a steer, is not the words being written: with
+  nothing to make, every row says so. The log reads "render model
+  unloaded while the words are written" when the engine hands the
+  card to the writer, "stopping engine daemon" for the stop itself,
+  and "engine asleep" only when it really is - "resting after
+  failures" when that is why.
 
 ### Removed
 

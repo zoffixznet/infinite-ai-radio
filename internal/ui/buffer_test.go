@@ -99,6 +99,12 @@ func TestGenIdleText(t *testing.T) {
 	}{
 		{"plain idle", player.Status{EngineName: "acestep", EngineReady: true}, "idle"},
 		{"asleep", player.Status{EngineName: "acestep"}, "idle · engine asleep"},
+		// A daemon the radio is bringing up for a batch is waking, not
+		// asleep, however long its models take to load.
+		{"waking for a batch", player.Status{EngineName: "acestep", EngineAwake: true},
+			"waking the engine for the next batch"},
+		{"waking for an export", player.Status{EngineName: "acestep", EngineAwake: true, Exporting: "10 min"},
+			"idle · the engine is busy with an export"},
 		{"exporting", player.Status{EngineName: "acestep", EngineReady: true, Exporting: "10 min"},
 			"idle · the engine is busy with an export"},
 		// An export outranks the sleep note: it explains the engine
@@ -123,6 +129,7 @@ func TestGenIdleText(t *testing.T) {
 func TestGenTextReadsWritingAsMakingSongs(t *testing.T) {
 	writerBusy := &telemetry.Sample{Taken: time.Now(), WriterBusy: true}
 	writerWithEngineUp := &telemetry.Sample{Taken: time.Now(), WriterBusy: true, EnginePID: 99}
+	daemonUp := &telemetry.Sample{Taken: time.Now(), EnginePID: 99}
 	for _, tc := range []struct {
 		name string
 		st   player.Status
@@ -134,14 +141,23 @@ func TestGenTextReadsWritingAsMakingSongs(t *testing.T) {
 			"writing song words (4 of 10)", true},
 		{"an instrumental round", player.Status{EngineName: "acestep", WordsmithWant: 10, WordsmithWrote: 4},
 			"writing song descriptions (4 of 10)", true},
-		// The writer answering the radio outside a round, with the
-		// engine off the card: still the words being written.
-		{"a background write", player.Status{EngineName: "acestep", Vocal: true, Telemetry: writerBusy},
-			"writing song words", true},
+		// The writer's model lingering on the card after a round, with
+		// the engine off it and nothing more to make: the round is
+		// over, and the row does not go on saying the words are being
+		// written on the strength of a process that is still resident.
+		{"writer lingering, engine down", player.Status{EngineName: "acestep", Vocal: true, Telemetry: writerBusy},
+			"idle · engine asleep", false},
 		// With the daemon up, a lingering writer is not what the row
 		// is about.
 		{"writer lingering, engine up", player.Status{EngineName: "acestep", EngineReady: true, Vocal: true, Telemetry: writerWithEngineUp},
 			"idle", false},
+		// The daemon spawned for a batch and loading its models: the
+		// batch is under way, and the row pulses with the status row
+		// instead of calling the engine asleep beside "engine starting".
+		{"engine waking for a batch", player.Status{EngineName: "acestep", EngineAwake: true, Phase: "loading models", Telemetry: daemonUp},
+			"waking the engine for the next batch", true},
+		{"engine waking, no telemetry", player.Status{EngineName: "acestep", EngineAwake: true, Phase: "starting engine"},
+			"waking the engine for the next batch", true},
 		{"asleep", player.Status{EngineName: "acestep", Telemetry: &telemetry.Sample{Taken: time.Now()}},
 			"idle · engine asleep", false},
 	} {
@@ -151,6 +167,9 @@ func TestGenTextReadsWritingAsMakingSongs(t *testing.T) {
 		}
 		if strings.Contains(got, "card") || strings.Contains(got, "hibernat") {
 			t.Errorf("%s: the row talks components: %q", tc.name, got)
+		}
+		if busy && strings.Contains(got, "asleep") {
+			t.Errorf("%s: the row is busy and says asleep: %q", tc.name, got)
 		}
 	}
 }

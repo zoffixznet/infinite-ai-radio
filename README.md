@@ -199,8 +199,9 @@ that moment - writing a batch's words is the engine working as much as
 rendering is, so the writer counts while the words are being written -
 and the `models` row names what is on the card for the radio, or says
 the engine is asleep and why: the store is full, or the next batch is
-not due yet. The `gen` row says what is being made right now, and
-`shared` names whatever else is on the card.
+not due yet. The `gen` row says what is being made right now - the
+words being written, the engine waking for the next batch, the next
+track rendering - and `shared` names whatever else is on the card.
 
 ## Steering the music
 

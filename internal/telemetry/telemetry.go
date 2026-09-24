@@ -83,11 +83,13 @@ type Sample struct {
 	EnginePID  int
 	EngineVRAM uint64
 
-	// WriterBusy reports the lyric writer is at work for the radio:
-	// one of the radio's requests is in flight to it, or finished
-	// moments ago. The writer is a service of its own rather than a
-	// child of anything here, so it is found by name; while it works
-	// for the radio its processes count as the radio's. WriterName is
+	// WriterBusy reports the lyric writer is writing the radio's
+	// songs: a wordsmith round is under way, or one ended moments ago.
+	// The writer is a service of its own rather than a child of
+	// anything here, so it is found by name; while it writes for the
+	// radio its processes count as the radio's, and while it answers
+	// anything else - the radio's own health check and steers included
+	// - they do not, and the shared row names it. WriterName is
 	// the process holding its card memory (or its runner, or the daemon
 	// itself, when nothing of it is on the card; empty when none was
 	// found on this machine), WriterVRAM what those processes hold on
@@ -156,8 +158,8 @@ type Sampler struct {
 // output file, read for model load and offload events; enginePID
 // reports the daemon's process id, or 0 while it is stopped (nil is
 // allowed, and gives up on attributing graphics memory to this radio);
-// writerBusy reports whether the lyric writer is working for the radio
-// right now (nil never counts it).
+// writerBusy reports whether the lyric writer is writing the radio's
+// songs right now (nil never counts it).
 func New(daemonLog string, enginePID func() int, writerBusy func() bool) *Sampler {
 	if enginePID == nil {
 		enginePID = func() int { return 0 }

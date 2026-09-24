@@ -976,8 +976,11 @@ const (
 	sleepStoreFull
 	// sleepUntilDue: the ladder's clock is being waited out.
 	sleepUntilDue
-	// sleepNoWork: no cycle is wanted for another reason (a cooldown
-	// after failures, an engine that made everything it could).
+	// sleepCooldown: a batch is due, but the last cycle gave up on
+	// failures and the engine is rested before it is asked again.
+	sleepCooldown
+	// sleepNoWork: no cycle is wanted for another reason (an engine
+	// that made everything it could).
 	sleepNoWork
 	// sleepQuit: the radio is shutting down.
 	sleepQuit
@@ -992,6 +995,8 @@ func sleepLog(why sleepReason) (event, msg string) {
 		return "engine_hibernated", "engine asleep: the store is full"
 	case sleepUntilDue:
 		return "engine_hibernated", "engine asleep until the next batch is due"
+	case sleepCooldown:
+		return "engine_hibernated", "engine asleep: resting after failures before the next try"
 	case sleepQuit:
 		return "engine_hibernated", "engine stopped with the radio"
 	}
@@ -999,15 +1004,20 @@ func sleepLog(why sleepReason) (event, msg string) {
 }
 
 // sleepReasonNow decides, on the paths where the engine sleeps because
-// no more work is due, between a full store, the clock, and anything
-// else that wants no cycle.
+// no cycle is wanted, between a failure cooldown, a full store, the
+// clock, and anything else. The cooldown comes first: it is what stops
+// a cycle whose batch is otherwise due, and a line saying no batch is
+// due while one waits on the cooldown would be untrue.
 func (o *Orchestrator) sleepReasonNow(epoch int) sleepReason {
 	level, _ := o.Buffer.Level(epoch)
 	o.mu.Lock()
+	cooling := time.Now().Before(o.cycleCooldown)
 	full := level >= o.cfg.Buffer.Songs
 	waiting := o.rungWaitLeftLocked() > 0
 	o.mu.Unlock()
 	switch {
+	case cooling:
+		return sleepCooldown
 	case full:
 		return sleepStoreFull
 	case waiting:
