@@ -26,11 +26,6 @@ type Config struct {
 	TrackSeconds int `json:"track_seconds"`
 	// CrossfadeSeconds is the overlap between consecutive tracks.
 	CrossfadeSeconds float64 `json:"crossfade_seconds"`
-	// BufferTracks is how many finished tracks the generate-ahead worker
-	// keeps queued beyond the one currently playing. The queue also
-	// feeds remote listeners who prefetch upcoming tracks to ride out
-	// network dead zones, so it defaults to a deeper buffer.
-	BufferTracks int `json:"buffer_tracks"`
 	// Volume is the output volume in percent (0-100).
 	Volume int `json:"volume"`
 	// PipeLatencyMS is how much buffering the system audio player is
@@ -81,10 +76,6 @@ type Config struct {
 // context proves stable, so fiddling with prompts never wastes a deep
 // buffer of work.
 type Buffer struct {
-	// Phased turns the phase-split pipeline on. Off, the player
-	// generates each track in one fused engine job, holding the audio
-	// model resident the whole time (the pre-buffer behavior).
-	Phased bool `json:"phased"`
 	// Songs is how many songs the store keeps: made ahead for the
 	// players to take, and, once taken, kept for players that have not
 	// caught up. The generator fills to this many untaken songs, one
@@ -222,7 +213,6 @@ func Default() Config {
 		Player:            "auto",
 		TrackSeconds:      150,
 		CrossfadeSeconds:  3,
-		BufferTracks:      6,
 		Volume:            80,
 		PipeLatencyMS:     200,
 		NormalizeLoudness: true,
@@ -230,8 +220,7 @@ func Default() Config {
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
 		Buffer: Buffer{
-			Phased: true,
-			Songs:  72,
+			Songs: 72,
 		},
 		ACEStep: ACEStep{
 			Port:            0,
@@ -347,12 +336,6 @@ func (c *Config) sanitize() {
 	}
 	if c.CrossfadeSeconds > 10 {
 		c.CrossfadeSeconds = 10
-	}
-	if c.BufferTracks < 1 {
-		c.BufferTracks = 1
-	}
-	if c.BufferTracks > 8 {
-		c.BufferTracks = 8
 	}
 	if c.Volume < 0 {
 		c.Volume = 0

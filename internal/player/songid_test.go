@@ -30,7 +30,6 @@ func skipWithoutFFmpeg(t *testing.T) {
 func idOrchestrator(t *testing.T) (*Orchestrator, *session.Session) {
 	t.Helper()
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	sess := session.New()
 	o := New(cfg, enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())

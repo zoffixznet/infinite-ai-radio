@@ -23,16 +23,9 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		o.mu.Unlock()
 		return "an export is already running (" + o.exporting + ")"
 	}
-	phased := o.phasedEnabled()
 	if o.eng == nil {
 		o.mu.Unlock()
 		return "the music engine is not available"
-	}
-	if !phased && !o.eng.Ready() {
-		// The phased engine may be deliberately hibernated; the export
-		// wakes it below. The fused path keeps the old behavior.
-		o.mu.Unlock()
-		return "the music engine is not ready yet; try again shortly"
 	}
 	sess := *o.sess
 	sess.Tweaks = append([]session.Entry(nil), o.sess.Tweaks...)
@@ -47,10 +40,7 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		ctx = context.Background()
 	}
 	go func() {
-		// The same predicate the pipeline itself uses: a configured
-		// buffer is not a phased run unless the engine can plan and
-		// render (there may be no engine at all).
-		if o.phasedEnabled() {
+		{
 			// Wake the hibernated engine and hold it awake for the
 			// export; the cycle loop skips hibernation while an export
 			// runs, and the next cycle decides afterwards.
@@ -123,18 +113,11 @@ func (o *Orchestrator) exportGate(ctx context.Context) error {
 			return err
 		}
 		o.mu.Lock()
-		queued := len(o.queue)
 		epoch := o.epoch
 		o.mu.Unlock()
-		healthy := o.eng == nil
-		if !healthy && o.phasedEnabled() {
-			// Playback draws from the store; the export may have the
-			// engine whenever the generator has no rung of its own due.
-			healthy = !o.wantCycle(epoch)
-		} else if !healthy {
-			healthy = queued >= o.cfg.BufferTracks || !o.eng.Ready()
-		}
-		if healthy {
+		// Playback draws from the store; the export may have the engine
+		// whenever the generator has no rung of its own due.
+		if o.eng == nil || !o.wantCycle(epoch) {
 			return nil
 		}
 		select {

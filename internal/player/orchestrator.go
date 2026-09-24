@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,7 +62,8 @@ type Status struct {
 	// (zero for endless sources).
 	Elapsed  time.Duration
 	Duration time.Duration
-	// Queued is the number of generated tracks waiting to play.
+	// Queued is the number of decoded tracks this machine's own player
+	// holds ahead in memory (a fixed few); the store is reported below.
 	Queued int
 	// Generating reports whether a generation is in flight.
 	Generating bool
@@ -89,16 +91,8 @@ type Status struct {
 	LastGenTime time.Duration
 	// Exporting describes a running export, empty otherwise.
 	Exporting string
-	// BufferTarget is how many tracks the generate-ahead worker aims to
-	// keep queued. It describes the fused path only; phased generation
-	// buffers to disk in minutes of audio, reported below.
-	BufferTarget int
-	// Phased reports whether the disk-backed pipeline is running. When
-	// it is, Queued counts only the small in-memory prefetch and the
-	// fields below are the buffer worth showing.
-	Phased bool
 	// BufferedTracks and BufferedSeconds are the songs already rendered
-	// and waiting to play (on disk, plus the in-memory prefetch).
+	// and waiting to play (in the store, plus the in-memory prefetch).
 	BufferedTracks int
 	// StoreLevel is how many songs nobody has taken yet, and
 	// StoreTarget the depth the generator fills to; NextBatchIn is how
@@ -242,6 +236,9 @@ type Orchestrator struct {
 	// runs and the remote serves, but the speakers take nothing until
 	// the play command. Set before Start.
 	Idle bool
+	// tempStore is the run-only store Start made when none was set;
+	// Close removes it.
+	tempStore string
 	// Telemetry, when set before Start, samples system and graphics
 	// memory and the engine's model residency for the status display.
 	// Nil leaves those fields of Status empty.
@@ -459,47 +456,43 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	if o.Telemetry != nil {
 		o.Telemetry.Start(ctx)
 	}
-	o.wg.Add(4)
-	o.builder.SetPhased(o.phasedEnabled())
-	if _, capable := o.eng.(phasedEngine); capable && !o.phasedEnabled() {
-		// The fused path keeps the engine resident on the card for the
-		// whole run, so the helper stays off it permanently - the
-		// historical behavior, and the exact out-of-memory protection
-		// the placement rules encode.
-		o.builder.SetEngineBusy(true)
+	o.wg.Add(5)
+	o.builder.SetPhased(true)
+	if o.Buffer == nil {
+		// A radio with nowhere to keep its songs keeps them for the run
+		// only, in a store that goes with the process.
+		dir := filepath.Join(os.TempDir(), fmt.Sprintf("iar-store-%d-%d", os.Getpid(), rand.IntN(100000)))
+		o.Buffer = trackbuffer.New(dir, o.cfg.MP3Quality, o.log)
+		o.tempStore = dir
+		o.log.Warn("no store configured; songs are kept for this run only", "event", "store_temporary", "dir", dir)
 	}
-	if o.phasedEnabled() {
-		// A different commit built this buffer: newer builds fix bugs
-		// and change how songs are made, so yesterday's output does
-		// not get to speak for today's binary.
-		if o.BuildStamp != "" && o.Buffer.Build() != o.BuildStamp {
-			if dropped := o.Buffer.DropAll(); dropped > 0 {
-				o.log.Info("buffer from another build cleared",
-					"event", "buffer_build_dropped", "files", dropped,
-					"was", o.Buffer.Build(), "now", o.BuildStamp)
-			}
-			o.Buffer.SetBuild(o.BuildStamp)
+	// A different commit built this store: newer builds fix bugs and
+	// change how songs are made, so yesterday's output does not get to
+	// speak for today's binary.
+	if o.BuildStamp != "" && o.Buffer.Build() != o.BuildStamp {
+		if dropped := o.Buffer.DropAll(); dropped > 0 {
+			o.log.Info("buffer from another build cleared",
+				"event", "buffer_build_dropped", "files", dropped,
+				"was", o.Buffer.Build(), "now", o.BuildStamp)
 		}
-		// A restart is not a steer. The buffer a previous run left for
-		// this same steering context is hours of finished work; adopt
-		// its epoch (the in-memory counter starts at zero every run)
-		// so playback continues from it instead of planning the world
-		// again. Only a prompt, a steer or a language change resets
-		// generation.
-		o.adoptDiskBuffer()
-		// A backlog from before sheet reuse was capped can hold dozens
-		// of plans and songs singing identical words; sweep it once so
-		// the cap holds for what is already on disk too.
-		o.Buffer.DedupeSheets(2)
-		// Phased generation: a producer cycle (plan batch, render
-		// batch, hibernate) and a feeder that decodes rendered songs
-		// from disk into the playback prefetch.
-		o.wg.Add(1)
-		go func() { defer o.wg.Done(); o.cycleLoop(ctx) }()
-		go func() { defer o.wg.Done(); o.feedLoop(ctx) }()
-	} else {
-		go func() { defer o.wg.Done(); o.genLoop(ctx) }()
+		o.Buffer.SetBuild(o.BuildStamp)
 	}
+	// A restart is not a steer. The store a previous run left for this
+	// same steering context is hours of finished work; adopt its epoch
+	// (the in-memory counter starts at zero every run) so playback
+	// continues from it instead of planning the world again. Only a
+	// prompt, a steer or a language change resets generation.
+	o.adoptDiskBuffer()
+	// A backlog from before sheet reuse was capped can hold dozens of
+	// plans and songs singing identical words; sweep it once so the
+	// cap holds for what is already on disk too.
+	o.Buffer.DedupeSheets(2)
+	// The generator: a producer cycle (plan batch, render batch,
+	// hibernate) filling the store; and this machine's own player: a
+	// taker that decodes songs from the store into the prefetch, the
+	// mixer and the pump.
+	go func() { defer o.wg.Done(); o.cycleLoop(ctx) }()
+	go func() { defer o.wg.Done(); o.feedLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.mixLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.pumpLoop(ctx) }()
 	go func() { defer o.wg.Done(); o.phaseLoop(ctx) }()
@@ -591,6 +584,9 @@ func (o *Orchestrator) Close() error {
 	o.ring.Close()
 	o.wg.Wait()
 	o.saveSession()
+	if o.tempStore != "" {
+		os.RemoveAll(o.tempStore)
+	}
 	return o.player.Close()
 }
 
@@ -646,138 +642,6 @@ func (o *Orchestrator) snapshotSession() (int, *session.Session) {
 	return o.epoch, o.sess.Snapshot()
 }
 
-// genLoop keeps the queue filled while in music mode.
-func (o *Orchestrator) genLoop(ctx context.Context) {
-	failures := 0
-	oomStreak := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-o.wake:
-		case <-time.After(time.Second):
-		}
-		if !o.wantGeneration() {
-			continue
-		}
-		epoch, sess := o.snapshotSession()
-		seconds := o.cfg.TrackSeconds
-		o.mu.Lock()
-		firstTrack := o.genCount == 0 && o.lastGood == nil
-		o.mu.Unlock()
-		if firstTrack && seconds > 60 {
-			// A shorter first track gets music playing sooner; later
-			// tracks let the engine choose a length that suits them.
-			seconds = 60
-		}
-		spec := o.builder.BuildSpec(ctx, sess, seconds)
-		// Only the hurry-up opener insists on its length.
-		spec.ExactSeconds = firstTrack
-		o.mu.Lock()
-		o.genBusy = true
-		o.mu.Unlock()
-		o.log.Info("generation started", "event", "generation_started",
-			"prompt", specPromptForLog(spec), "lyric_mode", lyricMode(spec),
-			"vocal", spec.Vocal(), "seconds", spec.Seconds, "epoch", epoch)
-		start := time.Now()
-		o.genMu.Lock()
-		track, err := o.eng.Generate(ctx, spec)
-		o.genMu.Unlock()
-		elapsed := time.Since(start)
-		o.mu.Lock()
-		o.genBusy = false
-		o.mu.Unlock()
-		if ctx.Err() != nil {
-			return
-		}
-		if err != nil {
-			reason := err.Error()
-			deviceFault := isDeviceFault(reason)
-			// A full graphics card is somebody else's memory, not a
-			// broken engine. Restarting would reload every model and
-			// take exactly the memory the other program is waiting for,
-			// so an out-of-memory failure neither counts toward the
-			// restart streak nor retries at the usual pace.
-			oom := isOutOfMemory(reason)
-			if oom {
-				oomStreak++
-			} else {
-				oomStreak = 0
-				failures++
-			}
-			o.mu.Lock()
-			o.failStreak = failures
-			o.lastFailure = reason
-			o.mu.Unlock()
-			o.log.Error("generation failed", "event", "generation_failed",
-				"error", reason, "failures", failures, "device_fault", deviceFault,
-				"out_of_memory", oom)
-			if oom {
-				o.emit("the graphics card is full right now; waiting for room before generating again")
-			}
-			// Health checks alone cannot catch a poisoned engine that
-			// still answers /health: restart on a failure streak, and
-			// immediately on the known-fatal device fault.
-			if !oom && (deviceFault || failures >= restartStreak) {
-				if rst, ok := o.eng.(interface{ RestartEngine(string) bool }); ok && rst.RestartEngine(reason) {
-					why := "repeated generation failures"
-					if deviceFault {
-						why = "a device-placement fault (it never recovers on its own)"
-					}
-					o.emit("engine restarting after " + why + "; music keeps playing meanwhile")
-					o.log.Warn("engine restart requested", "event", "engine_restart_requested",
-						"streak", failures, "device_fault", deviceFault)
-					failures = 0
-				} else if failures%5 == 0 || deviceFault {
-					o.emit("generation keeps failing and the engine cannot be restarted from here (see log and 'iar doctor')")
-				}
-			} else if !oom && failures == 1 {
-				o.emit("generation failed; retrying (details in the log)")
-			}
-			wait := backoff(failures)
-			if oom {
-				wait = oomBackoff(oomStreak)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(wait):
-			}
-			continue
-		}
-		failures = 0
-		oomStreak = 0
-		o.mu.Lock()
-		o.failStreak = 0
-		o.lastFailure = ""
-		o.mu.Unlock()
-		if o.cfg.NormalizeLoudness {
-			gain := audio.NormalizeLoudness(track.Samples, audio.DefaultTargetRMS)
-			if gain != 1 {
-				o.log.Debug("track loudness normalized", "event", "normalized", "gain", gain)
-			}
-		}
-		track.ID = newTrackID()
-		// The name came in on the spec, written with the words; only a
-		// song the engine worded itself needs the fallback.
-		o.nameTrack(track)
-		o.mu.Lock()
-		if epoch == o.epoch {
-			o.queue = append(o.queue, track)
-			o.lastGood = track
-			o.lastGoodEpoch = epoch
-			o.genCount++
-			o.lastGen = elapsed
-			o.produced = true
-		}
-		kept := epoch == o.epoch
-		o.mu.Unlock()
-		o.log.Info("generation finished", "event", "generation_finished",
-			"elapsed_seconds", elapsed.Seconds(), "track_seconds", track.Duration().Seconds(),
-			"kept", kept, "prompt", track.Prompt)
-	}
-}
-
 // newTrackID returns a unique id for a track entering the stream.
 func newTrackID() string {
 	return fmt.Sprintf("t-%d-%04d", time.Now().UnixMilli(), rand.IntN(10000))
@@ -791,17 +655,6 @@ func (o *Orchestrator) fillTitle(t *engine.Track) {
 	if t.Title == "" {
 		t.Title, t.Subtitle = prompting.TrackTitle(t.Prompt)
 	}
-}
-
-// wantGeneration reports whether the generate-ahead worker should produce
-// another track right now.
-func (o *Orchestrator) wantGeneration() bool {
-	if o.eng == nil || !o.eng.Ready() {
-		return false
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return len(o.queue) < o.cfg.BufferTracks
 }
 
 // failureBackoffBase scales the retry delay after generation failures

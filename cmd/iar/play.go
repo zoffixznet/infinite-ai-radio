@@ -32,6 +32,11 @@ func runPlay(pf playFlags) error {
 	defer a.close()
 	if pf.engine != "" {
 		a.cfg.Engine = pf.engine
+		if a.cfg.Engine == "noise" {
+			// The noise engine of older versions, spelled on the command
+			// line; the config file's value is mapped the same way.
+			a.cfg.Engine = "tone"
+		}
 	}
 	if pf.player != "" {
 		a.cfg.Player = pf.player
@@ -60,10 +65,10 @@ func runPlay(pf playFlags) error {
 	// against today's catalogue and turn it into the list the session
 	// sings in.
 	sess.AdoptLanguages(a.cfg.VocalLanguages, a.cfg.VocalLanguagesOff)
-	// Phased mode starts the engine dormant: with a healthy disk buffer
-	// the radio plays without touching the graphics card, and the first
-	// cycle wakes the engine only when work is actually due.
-	eng, _, engineNote := a.buildEngine(ctx, a.cfg.Buffer.Phased && a.cfg.Engine == "acestep")
+	// The engine starts dormant: with a healthy store the radio plays
+	// without touching the graphics card, and the first cycle wakes the
+	// engine only when work is actually due.
+	eng, _, engineNote := a.buildEngine(ctx, a.cfg.Engine == "acestep")
 	builder := a.buildBuilder(ctx, pf.noLLM)
 
 	pl, err := audio.NewPlayer(audio.PlayerOptions{
@@ -83,9 +88,7 @@ func runPlay(pf playFlags) error {
 	// display shows it, and the phone shows the same string in its
 	// settings.
 	orch.BuildStamp = version
-	if a.cfg.Buffer.Phased {
-		orch.Buffer = trackbuffer.New(filepath.Join(a.paths.DataDir, "buffer"), a.cfg.MP3Quality, a.log)
-	}
+	orch.Buffer = trackbuffer.New(filepath.Join(a.paths.DataDir, "buffer"), a.cfg.MP3Quality, a.log)
 	if pf.telemetry {
 		// Phased generation's whole point is an empty card between
 		// cycles; this is the window onto whether it is actually so.

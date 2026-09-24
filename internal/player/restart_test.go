@@ -3,7 +3,6 @@ package player
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -20,11 +19,10 @@ import (
 // and puts the ladder back on its first rung, with the session and its
 // steering untouched.
 func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
+	skipWithoutFFmpeg(t)
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
+	// A store deep enough that the top rung's batch is a big one.
+	cfg.Buffer.Songs = 72
 	sess := session.New()
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())

@@ -173,18 +173,18 @@ func (o *Orchestrator) RestartGeneration() string {
 		files = o.Buffer.DropAll()
 	}
 	o.kickGen()
-	o.log.Info("buffer emptied to start generation over", "event", "buffer_restarted",
+	o.log.Info("store emptied to start generation over", "event", "buffer_restarted",
 		"epoch", oldEpoch, "songs", songs, "plans", plans, "files", files)
 	var ack string
 	switch {
 	case songs > 0 && plans > 0:
-		ack = fmt.Sprintf("buffer emptied: %d song(s) and %d plan(s) dropped", songs, plans)
+		ack = fmt.Sprintf("store emptied: %d song(s) and %d plan(s) dropped", songs, plans)
 	case songs > 0:
-		ack = fmt.Sprintf("buffer emptied: %d song(s) dropped", songs)
+		ack = fmt.Sprintf("store emptied: %d song(s) dropped", songs)
 	case plans > 0:
-		ack = fmt.Sprintf("buffer emptied: %d plan(s) dropped", plans)
+		ack = fmt.Sprintf("store emptied: %d plan(s) dropped", plans)
 	default:
-		ack = "buffer already empty"
+		ack = "the store was already empty"
 	}
 	switch {
 	case o.eng == nil:
@@ -590,7 +590,6 @@ func (o *Orchestrator) Status() Status {
 	defer o.mu.Unlock()
 	st := Status{
 		Build:           o.BuildStamp,
-		BufferTarget:    o.cfg.BufferTracks,
 		FailStreak:      o.failStreak,
 		LastFailure:     o.lastFailure,
 		Queued:          len(o.queue),
@@ -615,25 +614,22 @@ func (o *Orchestrator) Status() Status {
 		st.EngineReady = o.eng.Ready()
 		st.EngineStarting = !st.EngineReady
 	}
-	if o.phasedEnabled() {
-		st.Phased = true
-		st.BufferedTracks = o.bufTracks
-		st.WordsmithWant = o.wordsmithWantNow
-		st.WordsmithWrote = o.wordsmithWroteNow
-		// The batch's own size while one runs; the next rung's between
-		// cycles, so the gauge has a target to draw against.
-		st.RampBatch = o.batchCapNow
-		if !o.genBusy || st.RampBatch == 0 {
-			st.RampBatch = o.batchForLocked(o.bufLevel)
-		}
-		st.BatchRendered = o.batchRenderedNow
-		st.BufferedSeconds = o.bufSeconds
-		st.PlannedTracks = o.bufPlans
-		st.PlannedSeconds = o.bufPlanSeconds
-		st.StoreLevel = o.bufLevel
-		st.StoreTarget = o.cfg.Buffer.Songs
-		st.NextBatchIn = o.rungWaitLeftLocked()
+	st.BufferedTracks = o.bufTracks
+	st.WordsmithWant = o.wordsmithWantNow
+	st.WordsmithWrote = o.wordsmithWroteNow
+	// The batch's own size while one runs; the next rung's between
+	// cycles, so the gauge has a target to draw against.
+	st.RampBatch = o.batchCapNow
+	if !o.genBusy || st.RampBatch == 0 {
+		st.RampBatch = o.batchForLocked(o.bufLevel)
 	}
+	st.BatchRendered = o.batchRenderedNow
+	st.BufferedSeconds = o.bufSeconds
+	st.PlannedTracks = o.bufPlans
+	st.PlannedSeconds = o.bufPlanSeconds
+	st.StoreLevel = o.bufLevel
+	st.StoreTarget = o.cfg.Buffer.Songs
+	st.NextBatchIn = o.rungWaitLeftLocked()
 	if o.Telemetry != nil {
 		// The sampler measures on its own timer; this is a copy of the
 		// last snapshot, cheap enough for every repaint.

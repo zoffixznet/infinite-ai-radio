@@ -69,7 +69,6 @@ func TestPhasedCyclePlansRendersFeedsAndHibernates(t *testing.T) {
 	eng := &phasedMock{}
 	pl := &capturePlayer{}
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	// A store that fills at one song is full after the opener, so
 	// exactly one cycle runs and then hibernates.
 	cfg.Buffer.Songs = 1
@@ -112,7 +111,6 @@ func TestPhasedCyclePlansRendersFeedsAndHibernates(t *testing.T) {
 // radio stands.
 func TestExportWithADiskBufferButNoEngineDoesNotCrash(t *testing.T) {
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	sess := session.New()
 	builder := prompting.NewBuilder(nil, testLogger())
 	o := New(cfg, nil, builder, session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
@@ -122,9 +120,6 @@ func TestExportWithADiskBufferButNoEngineDoesNotCrash(t *testing.T) {
 	o.Start(ctx)
 	t.Cleanup(func() { o.Close() })
 
-	if o.phasedEnabled() {
-		t.Fatal("an orchestrator with no engine must not report a phased pipeline")
-	}
 	if ack := o.Export(1, "", t.TempDir()); !strings.Contains(ack, "not available") {
 		t.Fatalf("export ack = %q, want it refused", ack)
 	}
@@ -157,7 +152,6 @@ func TestRestartAdoptsThePreviousRunsBuffer(t *testing.T) {
 
 	// The new run boots with epoch 0.
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	o := New(cfg, enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(dir, 0, testLogger())
 	o.adoptDiskBuffer()
@@ -185,7 +179,6 @@ func TestAdoptionRefusesAnotherContextsBuffer(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	o := New(cfg, enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(dir, 0, testLogger())
 	o.adoptDiskBuffer()
@@ -205,7 +198,6 @@ func TestAdoptionRefusesAnotherContextsBuffer(t *testing.T) {
 // the store.
 func TestTheLadderClimbsOnTime(t *testing.T) {
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	cfg.Buffer.Songs = 25
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
@@ -279,7 +271,6 @@ func TestAFullStoreRunsNoCycle(t *testing.T) {
 // The full ladder, rung by rung, as the store empties.
 func TestBatchLadder(t *testing.T) {
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	cfg.Buffer.Songs = 72
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
@@ -337,7 +328,6 @@ func TestAnotherBuildsBufferIsCleared(t *testing.T) {
 // told the size this cycle actually set out to render.
 func TestStatusReportsTheBatchItActuallyRan(t *testing.T) {
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())

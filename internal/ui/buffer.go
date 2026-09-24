@@ -14,9 +14,6 @@ import (
 
 // bufferReady is the short sentence for the now-playing panel.
 func bufferReady(st player.Status) string {
-	if !st.Phased {
-		return fmt.Sprintf("%d track(s) ready", st.Queued)
-	}
 	if st.BufferedTracks == 0 {
 		if st.PlannedTracks > 0 {
 			return fmt.Sprintf("nothing rendered yet, %d planned", st.PlannedTracks)
@@ -50,12 +47,10 @@ func genIdle(st player.Status) string {
 	switch {
 	case st.Exporting != "":
 		return "idle · the engine is busy with an export"
-	case st.Phased && !st.EngineReady:
-		// Phased generation puts the engine to sleep on purpose once
-		// the buffer is deep enough; that is the pipeline working.
-		return "idle · engine asleep"
 	case st.EngineName != "" && !st.EngineReady:
-		return "idle · engine not ready"
+		// The engine sleeps on purpose once the store is deep enough;
+		// that is the pipeline working.
+		return "idle · engine asleep"
 	}
 	return "idle"
 }
@@ -65,13 +60,6 @@ func genIdle(st player.Status) string {
 // store is and when the tap next runs. ok is false when there is
 // nothing meaningful to draw.
 func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool) {
-	if !st.Phased {
-		if st.BufferTarget <= 0 {
-			return 0, 0, "", false
-		}
-		return float64(st.Queued) / float64(st.BufferTarget), 0,
-			fmt.Sprintf("%d/%d buffered", st.Queued, st.BufferTarget), true
-	}
 	toPlay := st.BufferedTracks
 	if st.Generating && st.RampBatch > 0 {
 		// The batch is live and its progress is the news.

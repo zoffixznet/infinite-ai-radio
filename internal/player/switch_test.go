@@ -35,9 +35,6 @@ func TestStopHoldsTheSpeakersWhileTheRadioRunsOn(t *testing.T) {
 	if st := o.Status(); !st.Stopped || st.State != "stopped" {
 		t.Fatalf("status does not report the stop: %+v", st.State)
 	}
-	if !o.wantGeneration() && o.Status().Queued < o.cfg.BufferTracks {
-		t.Fatal("a stopped player stopped the generator too")
-	}
 
 	// The song that was playing is still the song that is playing: the
 	// mixer has not moved on, so nothing was spent.
@@ -89,6 +86,7 @@ func TestAStoppedPlayerTakesNothingFromTheStore(t *testing.T) {
 // moment: the generator runs and the remote serves, and nothing comes
 // out of its speakers until it is asked to.
 func TestARemoteStationStartsWithItsPlayerOff(t *testing.T) {
+	skipWithoutFFmpeg(t)
 	eng := enginetest.NewMock()
 	store := session.NewStore(t.TempDir())
 	o := New(testConfig(), eng, prompting.NewBuilder(nil, testLogger()), store, session.New(), &capturePlayer{}, testLogger())
@@ -102,10 +100,10 @@ func TestARemoteStationStartsWithItsPlayerOff(t *testing.T) {
 		t.Fatal("the station's player started switched on")
 	}
 	waitFor(t, 15*time.Second, "songs generated for the store", func() bool {
-		return o.Status().Queued > 0
+		return o.Status().StoreLevel > 0
 	})
-	if title := o.Status().TrackTitle; title != "" {
-		t.Fatalf("a stopped station is playing %q", title)
+	if st := o.Status(); st.TrackTitle != "" || st.Queued != 0 {
+		t.Fatalf("a stopped station took from the store: playing %q, %d queued", st.TrackTitle, st.Queued)
 	}
 	if ack := o.Play(); !strings.Contains(ack, "playing") {
 		t.Fatalf("play ack = %q", ack)
@@ -178,7 +176,6 @@ func (m *pausableMock) HibernateEngine() bool { m.hibernated.Add(1); return true
 func heldOrchestrator(t *testing.T, eng *pausableMock, builder *prompting.Builder, sess *session.Session) *Orchestrator {
 	t.Helper()
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	if builder == nil {
 		builder = prompting.NewBuilder(nil, testLogger())
 	}

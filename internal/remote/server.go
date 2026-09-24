@@ -548,12 +548,9 @@ type tweakJSON struct {
 }
 
 // readySummary says how much music is secured, in one short phrase.
-// Phased generation buffers to disk, so the honest number is songs and
+// Songs wait in the on-disk store, so the honest number is songs and
 // minutes there, not the size of the in-memory prefetch.
 func readySummary(st player.Status) string {
-	if !st.Phased {
-		return fmt.Sprintf("%d ready", st.Queued)
-	}
 	if st.BufferedTracks == 0 {
 		return "0 ready"
 	}

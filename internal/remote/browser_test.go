@@ -348,7 +348,14 @@ type sandbox struct {
 func buildBinary(t *testing.T, dir string) string {
 	t.Helper()
 	bin := filepath.Join(dir, "iar")
-	cmd := exec.Command("go", "build", "-o", bin, "../../cmd/iar")
+	args := []string{"build", "-o", bin}
+	// The screenshot shoot stamps a release's version, so the pictures
+	// show what a listener's settings sheet shows rather than the
+	// commit and working-tree state of whatever build shot them.
+	if v := os.Getenv("IAR_SHOT_VERSION"); v != "" {
+		args = append(args, "-ldflags", "-X main.version="+v)
+	}
+	cmd := exec.Command("go", append(args, "../../cmd/iar")...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
@@ -369,7 +376,7 @@ func startMusicSandbox(t *testing.T) (*sandbox, *fakeEngine) {
 }
 
 // startMusicSandboxCfg is startMusicSandbox with extra top-level config
-// keys (raw JSON fragment like `"buffer_tracks":1`).
+// keys (raw JSON fragment like `"buffer":{"songs":12}`).
 func startMusicSandboxCfg(t *testing.T, cfgExtra string) (*sandbox, *fakeEngine) {
 	sb := prepareSandbox(t, "acestep", cfgExtra)
 	// A minimal on-disk install layout so the app agrees the engine
@@ -951,7 +958,9 @@ func TestRealBrowser(t *testing.T) {
 	waitFor(t, 15*time.Second, "the buffer flush ack", func() bool {
 		var ack string
 		w.exec(`return (document.getElementById('bufflushstatus')||{}).textContent||'';`, &ack)
-		return strings.Contains(ack, "buffer") && !strings.Contains(ack, "failed")
+		// The radio's own answer names its store ("store emptied: ...");
+		// the page's "emptying the buffer…" is only the request going out.
+		return strings.Contains(ack, "store") && !strings.Contains(ack, "failed")
 	})
 	w.click("#sheetclose")
 
@@ -1804,7 +1813,7 @@ func TestRealBrowserResilience(t *testing.T) {
 func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
 	sinkName, _ := nullSink(t)
-	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":1,"library_max_mb":0`)
+	sb, fe := startMusicSandbox(t)
 	// Long enough that the single-slot queue is reliably occupied
 	// (generation takes ~2-3s per track), and long enough that a device
 	// stays on one song across the checks below - two of them are about
@@ -1991,7 +2000,7 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 func TestRealBrowserSkippedSongNeverComesBack(t *testing.T) {
 	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
 	sinkName, _ := nullSink(t)
-	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":1,"library_max_mb":0`)
+	sb, fe := startMusicSandbox(t)
 	// Long songs, so nothing ends of its own accord while the skips
 	// below are being counted.
 	fe.setTrackSeconds(60)
@@ -2118,7 +2127,7 @@ func TestRealBrowserSkippedSongNeverComesBack(t *testing.T) {
 func TestRealBrowserSilentSongIsNotReportedAsPlaying(t *testing.T) {
 	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
 	sinkName, _ := nullSink(t)
-	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":2,"library_max_mb":0`)
+	sb, fe := startMusicSandbox(t)
 	fe.setTrackSeconds(60)
 	driver := startGeckodriver(t, sinkName)
 	w := newWebDriver(t, driver)
@@ -2363,9 +2372,7 @@ func TestRealBrowserSavedLoopFollowsTheSongPlaying(t *testing.T) {
 func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
 	sinkName, _ := nullSink(t)
-	// No library filler: every banked song is one the radio generated
-	// and has since played past, which is what a real bank is made of.
-	sb, fe := startMusicSandboxCfg(t, `"buffer_tracks":3,"library_max_mb":0`)
+	sb, fe := startMusicSandbox(t)
 	// Long enough that the device stays on one song across each check.
 	fe.setTrackSeconds(60)
 	driver := startGeckodriver(t, sinkName)

@@ -61,9 +61,8 @@ func storeRow(e trackbuffer.Entry) QueueTrack {
 func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	o.mu.Lock()
 	epoch := o.epoch
-	buffered := o.Buffer != nil && o.cfg.Buffer.Phased
 	o.mu.Unlock()
-	if !buffered {
+	if o.Buffer == nil {
 		return epoch, nil
 	}
 	entries := o.Buffer.List(epoch)
@@ -136,7 +135,7 @@ func (o *Orchestrator) Take(id string) {
 // exactly as written. ok is false for a song that is only in memory,
 // or unknown.
 func (o *Orchestrator) TrackFile(id string) (string, bool) {
-	if o.Buffer == nil || !o.cfg.Buffer.Phased {
+	if o.Buffer == nil {
 		return "", false
 	}
 	base, ok := o.bufferedBase(id)

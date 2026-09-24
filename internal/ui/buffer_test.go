@@ -15,8 +15,6 @@ import (
 func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 	st := player.Status{
 		Queued:          2, // the in-memory prefetch, and nothing more
-		BufferTarget:    6, // the fused path's setting
-		Phased:          true,
 		BufferedTracks:  11,
 		BufferedSeconds: 37 * 60,
 		PlannedTracks:   1,
@@ -59,7 +57,7 @@ func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 }
 
 func TestBufferPhasedWithNothingYet(t *testing.T) {
-	st := player.Status{Phased: true, StoreTarget: 72}
+	st := player.Status{StoreTarget: 72}
 	if got := bufferReady(st); got != "nothing buffered yet" {
 		t.Errorf("ready line reads %q", got)
 	}
@@ -68,22 +66,6 @@ func TestBufferPhasedWithNothingYet(t *testing.T) {
 	st.PlannedTracks = 4
 	if got := bufferReady(st); !strings.Contains(got, "4 planned") {
 		t.Errorf("ready line reads %q", got)
-	}
-}
-
-// The fused path keeps its old wording exactly.
-func TestBufferFusedPathUnchanged(t *testing.T) {
-	st := player.Status{Queued: 3, BufferTarget: 6}
-	if got := bufferReady(st); got != "3 track(s) ready" {
-		t.Errorf("ready line reads %q", got)
-	}
-	frac, _, text, ok := bufferGauge(st)
-	if !ok || text != "3/6 buffered" || frac != 0.5 {
-		t.Errorf("gauge = %.2f, %q, %v", frac, text, ok)
-	}
-	// No target means nothing to draw.
-	if _, _, _, ok := bufferGauge(player.Status{}); ok {
-		t.Error("a zero target should produce no gauge")
 	}
 }
 
@@ -115,13 +97,12 @@ func TestGenIdleText(t *testing.T) {
 		want string
 	}{
 		{"plain idle", player.Status{EngineName: "acestep", EngineReady: true}, "idle"},
-		{"hibernated", player.Status{Phased: true, EngineName: "acestep"}, "idle · engine asleep"},
-		{"not ready", player.Status{EngineName: "acestep"}, "idle · engine not ready"},
+		{"hibernated", player.Status{EngineName: "acestep"}, "idle · engine asleep"},
 		{"exporting", player.Status{EngineName: "acestep", EngineReady: true, Exporting: "10 min"},
 			"idle · the engine is busy with an export"},
 		// An export outranks the sleep note: it explains the engine
 		// better than "asleep" does, and it is the temporary state.
-		{"exporting while phased", player.Status{Phased: true, Exporting: "10 min"},
+		{"exporting while asleep", player.Status{Exporting: "10 min"},
 			"idle · the engine is busy with an export"},
 		{"no engine", player.Status{}, "idle"},
 	} {
@@ -138,7 +119,6 @@ func TestGenIdleText(t *testing.T) {
 // next batch instead.
 func TestBufferLineBetweenBatches(t *testing.T) {
 	st := player.Status{
-		Phased:          true,
 		RampBatch:       20,
 		BatchRendered:   11,
 		BufferedTracks:  17,

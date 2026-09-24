@@ -22,7 +22,6 @@ import (
 // mid-play.
 func TestASongCarriesItsNameFromItsWordsToTheListener(t *testing.T) {
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	o := New(cfg, enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 0, testLogger())

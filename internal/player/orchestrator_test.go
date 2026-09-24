@@ -67,7 +67,8 @@ func testConfig() config.Config {
 	cfg := config.Default()
 	cfg.TrackSeconds = 2
 	cfg.CrossfadeSeconds = 0.5
-	cfg.BufferTracks = 2
+	// A small store keeps a test's generator from filling seventy songs.
+	cfg.Buffer.Songs = 6
 	return cfg
 }
 
@@ -81,6 +82,8 @@ func newTestOrchestrator(t *testing.T, eng *enginetest.Mock, sess *session.Sessi
 
 func newTestOrchestratorWithStore(t *testing.T, eng *enginetest.Mock, sess *session.Session, store *session.Store) (*Orchestrator, *capturePlayer) {
 	t.Helper()
+	// Every song is encoded into the store and decoded out of it.
+	skipWithoutFFmpeg(t)
 	pl := &capturePlayer{}
 	builder := prompting.NewBuilder(nil, testLogger())
 	o := New(testConfig(), eng, builder, store, sess, pl, testLogger())
@@ -120,7 +123,7 @@ func TestStreamStartsSilentThenPlaysGeneratedMusic(t *testing.T) {
 	})
 	waitFor(t, 10*time.Second, "audible output", pl.nonSilentTail)
 	st := o.Status()
-	if st.Queued > testConfig().BufferTracks {
+	if st.Queued > phasedPrefetch {
 		t.Fatalf("queue overfilled: %d", st.Queued)
 	}
 }

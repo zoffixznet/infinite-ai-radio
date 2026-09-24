@@ -33,7 +33,7 @@ func chromeShape(st player.Status) (lines, width int) {
 func TestChromeDoesNotMoveWhileGenerating(t *testing.T) {
 	base := player.Status{
 		State: "playing", Source: "nu-metal", Session: "drive", Phase: "playing",
-		Phased: true, EngineName: "acestep", EngineReady: true,
+		EngineName: "acestep", EngineReady: true,
 		BufferedTracks: 11, BufferedSeconds: 2000,
 		StoreLevel: 11, StoreTarget: 72, NextBatchIn: 45 * time.Minute, Volume: 80,
 		Elapsed: 30 * time.Second, Duration: 200 * time.Second,
@@ -68,7 +68,7 @@ func TestChromeAlwaysDrawsTheGenerationRow(t *testing.T) {
 	for _, st := range []player.Status{
 		{State: "playing", Phase: "playing"},
 		{State: "playing", Phase: "playing", Generating: true},
-		{State: "playing", Phase: "playing", Phased: true, EngineName: "acestep"},
+		{State: "playing", Phase: "playing", EngineName: "acestep"},
 		{State: "playing", Phase: "playing", Exporting: "10 min"},
 	} {
 		m := tuiModel{status: st, styles: newStyles(), width: 78}

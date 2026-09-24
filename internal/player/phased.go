@@ -42,20 +42,40 @@ const (
 // batches of eighty (capped at the room left in it).
 var ladder = [...]int{1, 10, 20, 40, 80}
 
-// phasedEngine is what phased generation needs from the engine.
+// phasedEngine is what the generator needs from the engine: a plan
+// step and a render step, so the two models never share the card.
 type phasedEngine interface {
 	Ready() bool
 	Plan(ctx context.Context, spec engine.Spec) (*engine.Plan, error)
 	Render(ctx context.Context, plan *engine.Plan) (*engine.Track, error)
 }
 
-// phasedEnabled reports whether this player runs the phased pipeline.
-func (o *Orchestrator) phasedEnabled() bool {
-	if o.Buffer == nil || !o.cfg.Buffer.Phased {
-		return false
+// fusedEngine makes a one-shot engine look phased: its plan is the
+// spec as given and its render is the one job that does everything.
+// Every song still lands in the store the same way.
+type fusedEngine struct{ engine.Engine }
+
+func (f fusedEngine) Plan(ctx context.Context, spec engine.Spec) (*engine.Plan, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	_, ok := o.eng.(phasedEngine)
-	return ok
+	caption := spec.Prompt
+	if caption == "" {
+		caption = spec.SampleQuery
+	}
+	return &engine.Plan{Spec: spec, Caption: caption, Lyrics: spec.Lyrics, Seconds: float64(spec.Seconds)}, nil
+}
+
+func (f fusedEngine) Render(ctx context.Context, plan *engine.Plan) (*engine.Track, error) {
+	return f.Generate(ctx, plan.Spec)
+}
+
+// phasedEng is the engine as the generator drives it.
+func (o *Orchestrator) phasedEng() phasedEngine {
+	if pe, ok := o.eng.(phasedEngine); ok {
+		return pe
+	}
+	return fusedEngine{o.eng}
 }
 
 // adoptDiskBuffer continues from the buffer a previous run left
@@ -296,6 +316,9 @@ func (o *Orchestrator) ReportSkipped(seconds float64) {
 // that, a rung is due only while the tub is below its depth and the
 // last rung's wait has run out.
 func (o *Orchestrator) wantCycle(epoch int) bool {
+	if o.eng == nil {
+		return false // nothing can be made
+	}
 	o.mu.Lock()
 	cooldown := o.cycleCooldown
 	o.mu.Unlock()
@@ -358,7 +381,7 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 // not per song. Every exit path decides hibernation: the engine stays
 // warm only when more work is already due.
 func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
-	pe := o.eng.(phasedEngine)
+	pe := o.phasedEng()
 	o.wordsmithPhase(ctx)
 	// lyricStarved is set when planning runs out of written words; the
 	// defer hands the card back to the wordsmith instead of staying

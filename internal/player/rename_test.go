@@ -60,7 +60,6 @@ func TestRenamingThePlayingSongSticks(t *testing.T) {
 func TestRenamingASongStillOnDisk(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	o := New(cfg, enginetest.NewMock(), b, session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 0, testLogger())
 
@@ -96,7 +95,6 @@ func TestRenamingASongStillOnDisk(t *testing.T) {
 func TestRenamingFollowsASongOutOfTheBuffer(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	cfg := testConfig()
-	cfg.Buffer.Phased = true
 	o := New(cfg, enginetest.NewMock(), b, session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 0, testLogger())
 

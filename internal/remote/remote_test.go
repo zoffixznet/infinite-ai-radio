@@ -235,7 +235,7 @@ func (f *fakeCtl) RestartGeneration() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.flushes++
-	return "buffer emptied: 43 song(s) and 12 plan(s) dropped; generating again from the top"
+	return "store emptied: 43 song(s) and 12 plan(s) dropped; generating again from the top"
 }
 
 func (f *fakeCtl) DeleteAutoSessions(olderThanDays int) string {
@@ -1820,22 +1820,18 @@ func TestChunkRenameRewritesTitleAndName(t *testing.T) {
 }
 
 // The phone showed "2 ready" while half an hour of music sat on disk:
-// it was rendering the in-memory prefetch, which phased generation
-// pins at two regardless of how far ahead the radio actually is.
+// it was rendering the in-memory prefetch, which the player pins at two
+// regardless of how far ahead the radio actually is.
 func TestReadySummaryReportsTheDiskBuffer(t *testing.T) {
-	fused := player.Status{Queued: 3}
-	if got := readySummary(fused); got != "3 ready" {
-		t.Errorf("fused summary = %q, want %q", got, "3 ready")
-	}
-	phased := player.Status{Phased: true, Queued: 2, BufferedTracks: 11, BufferedSeconds: 37 * 60}
+	phased := player.Status{Queued: 2, BufferedTracks: 11, BufferedSeconds: 37 * 60}
 	if got := readySummary(phased); got != "11 ready · 37m" {
 		t.Errorf("phased summary = %q, want %q", got, "11 ready · 37m")
 	}
-	deep := player.Status{Phased: true, Queued: 2, BufferedTracks: 40, BufferedSeconds: 2*60*60 + 7*60}
+	deep := player.Status{Queued: 2, BufferedTracks: 40, BufferedSeconds: 2*60*60 + 7*60}
 	if got := readySummary(deep); got != "40 ready · 2h07m" {
 		t.Errorf("deep summary = %q, want %q", got, "40 ready · 2h07m")
 	}
-	empty := player.Status{Phased: true, Queued: 0}
+	empty := player.Status{Queued: 0}
 	if got := readySummary(empty); got != "0 ready" {
 		t.Errorf("empty summary = %q, want %q", got, "0 ready")
 	}
