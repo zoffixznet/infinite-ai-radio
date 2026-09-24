@@ -95,6 +95,11 @@ type Buffer struct {
 	// drops below this, the engine wakes for another cycle. The batch
 	// ladder decides how much each cycle plans and renders.
 	RenderLowMinutes int `json:"render_low_minutes"`
+	// Songs is how many songs the store keeps: made ahead for the
+	// players to take, and, once taken, kept for players that have not
+	// caught up. The deepest phone setting holds 72, so that is the
+	// default; the store never holds more than twice this.
+	Songs int `json:"songs"`
 }
 
 // Sessions tunes session housekeeping.
@@ -237,6 +242,7 @@ func Default() Config {
 		Buffer: Buffer{
 			Phased:           true,
 			RenderLowMinutes: 45,
+			Songs:            72,
 		},
 		ACEStep: ACEStep{
 			Port:            0,
@@ -335,6 +341,9 @@ func purgeObsoleteKeys(data []byte) ([]byte, bool) {
 func (c *Config) sanitize() {
 	if c.Buffer.RenderLowMinutes < 5 {
 		c.Buffer.RenderLowMinutes = 5
+	}
+	if c.Buffer.Songs < 3 {
+		c.Buffer.Songs = 3
 	}
 	if c.TrackSeconds < 30 {
 		c.TrackSeconds = 30

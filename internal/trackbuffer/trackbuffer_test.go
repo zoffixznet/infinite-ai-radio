@@ -68,9 +68,13 @@ func TestTrackRoundTrip(t *testing.T) {
 	if count != 1 || secs < 1.9 || secs > 2.1 {
 		t.Fatalf("stats = %d, %v", count, secs)
 	}
-	got, base, ok := s.NextTrack(context.Background(), 1)
-	if !ok || base == "" {
-		t.Fatal("NextTrack found nothing")
+	entry, ok := s.Next(1, "")
+	if !ok || entry.Base == "" {
+		t.Fatal("Next found nothing")
+	}
+	got, ok := s.Peek(context.Background(), 1, entry.Base)
+	if !ok {
+		t.Fatal("Peek found nothing")
 	}
 	if got.Prompt != "test tone" || got.Seed != "42" || got.Spec.VocalLanguage != "ru" {
 		t.Fatalf("meta lost: %+v", got)
@@ -79,8 +83,106 @@ func TestTrackRoundTrip(t *testing.T) {
 	if d := math.Abs(float64(len(got.Samples)-len(samples))) / float64(audio.SampleRate*audio.Channels); d > 0.2 {
 		t.Fatalf("length drifted %vs", d)
 	}
-	if _, _, ok := s.NextTrack(context.Background(), 1); ok {
-		t.Fatal("track not consumed")
+	if !s.Take(1, entry.Base) {
+		t.Fatal("the song could not be taken")
+	}
+	if _, ok := s.Next(1, entry.Base); ok {
+		t.Fatal("something follows the only song")
+	}
+	if n, _ := s.Level(1); n != 0 {
+		t.Fatalf("level is %d after the only song was taken", n)
+	}
+	if n, _ := s.TrackStats(1); n != 1 {
+		t.Fatalf("the taken song left the store: %d on disk", n)
+	}
+}
+
+// The tub: taking a song marks it and leaves it on disk for the players
+// that have not caught up; the level counts what nobody has taken; the
+// marks survive a reopen; the oldest taken songs are trimmed past the
+// depth kept; and a player's cursor walks the store in order, taken
+// songs included.
+func TestATakenSongStaysForTheOtherPlayers(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	s := New(dir, 9, nil)
+	for seq := 1; seq <= 5; seq++ {
+		track := &engine.Track{ID: "t-" + string(rune('0'+seq)), Prompt: "song",
+			Samples: make([]int16, audio.SampleRate*audio.Channels/4)}
+		if _, err := s.PutTrack(context.Background(), 0, seq, track); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, _ := s.Level(0); n != 5 {
+		t.Fatalf("level = %d, want 5", n)
+	}
+	// One player takes the first three.
+	cursor := ""
+	for i := 0; i < 3; i++ {
+		e, ok := s.Next(0, cursor)
+		if !ok {
+			t.Fatalf("Next after %q found nothing", cursor)
+		}
+		s.Take(0, e.Base)
+		cursor = e.Base
+	}
+	if n, _ := s.Level(0); n != 2 {
+		t.Fatalf("level = %d after three takes, want 2", n)
+	}
+	if n, _ := s.TrackStats(0); n != 5 {
+		t.Fatalf("%d songs on disk after three takes, want all 5", n)
+	}
+	taken := 0
+	for _, e := range s.List(0) {
+		if e.Taken {
+			taken++
+		}
+	}
+	if taken != 3 {
+		t.Fatalf("%d songs listed as taken, want 3", taken)
+	}
+
+	// A second player, starting from nothing, is offered the taken
+	// songs first.
+	if e, ok := s.Next(0, ""); !ok || !e.Taken || e.Base != "e00000000-00000001" {
+		t.Fatalf("a fresh player's first song = %+v (ok=%v), want the oldest taken one", e, ok)
+	}
+
+	// The marks and the cursor outlive the process.
+	s.SetCursor("player", cursor)
+	again := New(dir, 9, nil)
+	if n, _ := again.Level(0); n != 2 {
+		t.Fatalf("level after reopen = %d, want 2", n)
+	}
+	if got := again.Cursor("player"); got != cursor {
+		t.Fatalf("cursor after reopen = %q, want %q", got, cursor)
+	}
+	if e, ok := again.Next(0, again.Cursor("player")); !ok || e.Base != "e00000000-00000004" {
+		t.Fatalf("the player resumes at %+v (ok=%v), want the fourth song", e, ok)
+	}
+	// A cursor from another epoch is no cursor.
+	if e, ok := again.Next(0, "e00000007-00000009"); !ok || e.Base != "e00000000-00000001" {
+		t.Fatalf("a stale cursor resumes at %+v (ok=%v), want the oldest song", e, ok)
+	}
+
+	// Keeping two taken songs trims the oldest one; untaken songs are
+	// never trimmed.
+	if dropped := again.Trim(0, 2); dropped != 1 {
+		t.Fatalf("Trim dropped %d, want 1", dropped)
+	}
+	if _, ok := again.TrackPath(0, "e00000000-00000001"); ok {
+		t.Fatal("the oldest taken song survived the trim")
+	}
+	if n, _ := again.TrackStats(0); n != 4 {
+		t.Fatalf("%d songs on disk after the trim, want 4", n)
+	}
+	if n, _ := again.Level(0); n != 2 {
+		t.Fatalf("the trim touched untaken songs: level = %d", n)
+	}
+	if dropped := again.Trim(0, 2); dropped != 0 {
+		t.Fatalf("a second trim dropped %d", dropped)
 	}
 }
 
@@ -296,8 +398,8 @@ func TestASongsIDTravelsWithIt(t *testing.T) {
 	if !ok || peeked.ID != track.ID {
 		t.Fatalf("peeked id = %q ok=%v", peeked.ID, ok)
 	}
-	fed, _, ok := s.NextTrack(context.Background(), 1)
-	if !ok || fed.ID != track.ID {
-		t.Fatalf("fed id = %q ok=%v", fed.ID, ok)
+	next, ok := s.Next(1, "")
+	if !ok || next.ID != track.ID {
+		t.Fatalf("next id = %q ok=%v", next.ID, ok)
 	}
 }

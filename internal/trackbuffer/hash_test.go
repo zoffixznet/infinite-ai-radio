@@ -49,11 +49,15 @@ func TestAStoredSongKnowsItsOwnHash(t *testing.T) {
 	if _, ok := s.TrackPath(2, "../../etc/passwd"); ok {
 		t.Fatal("a path that is not a song name was served")
 	}
-	// A fed song is gone.
-	if _, _, ok := s.NextTrack(context.Background(), 2); !ok {
-		t.Fatal("the song could not be fed")
+	// A taken song is still there to serve; a dropped one is not.
+	if !s.Take(2, "e00000002-00000005") {
+		t.Fatal("the song could not be taken")
 	}
+	if _, ok := s.TrackPath(2, "e00000002-00000005"); !ok {
+		t.Fatal("a taken song has no file to serve")
+	}
+	s.DropTrack(2, "e00000002-00000005")
 	if _, ok := s.TrackPath(2, "e00000002-00000005"); ok {
-		t.Fatal("a fed song still has a file to serve")
+		t.Fatal("a dropped song still has a file to serve")
 	}
 }

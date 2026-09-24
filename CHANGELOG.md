@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Playing a song no longer deletes it from the store. The player takes
+  it, which marks it consumed and leaves it on disk for a player that
+  has not caught up, and the store keeps the newest `buffer.songs` (72
+  by default) taken songs, trimming the oldest beyond that. The songs
+  nobody has taken yet are what the generator fills against. The
+  player's place in the store is remembered, so a restart continues
+  after the last song it took rather than replaying the kept ones. The
+  phone is offered the kept songs as spares. The store keeps its
+  listing in memory now, instead of reading every song's sidecar on
+  every poll.
 - A song goes out to the phone as the very file the radio rendered,
   byte for byte, instead of being encoded again on the way out; and
   saving a song still on disk copies that file with fresh tags rather

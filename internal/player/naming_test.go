@@ -59,7 +59,11 @@ func TestASongCarriesItsNameFromItsWordsToTheListener(t *testing.T) {
 	}
 
 	// And feeding it into the stream does not touch the name.
-	fed, _, ok := o.Buffer.NextTrack(context.Background(), 0)
+	next, ok := o.Buffer.Next(0, "")
+	if !ok {
+		t.Fatal("nothing to feed")
+	}
+	fed, ok := o.Buffer.Peek(context.Background(), 0, next.Base)
 	if !ok {
 		t.Fatal("nothing fed")
 	}

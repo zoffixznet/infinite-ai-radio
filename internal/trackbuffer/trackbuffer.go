@@ -1,10 +1,15 @@
-// Package trackbuffer is the on-disk buffer of phased generation: the
-// plans the planner has written but the renderer has not turned into
-// audio yet, and the rendered songs waiting to be played. Everything
-// lives as files under one directory - plans as JSON, songs as MP3
-// with a JSON sidecar - so a full buffer costs disk, not memory, and
-// survives restarts. Only the track being handed to playback is ever
-// decoded into RAM.
+// Package trackbuffer is the store of everything the generator makes -
+// the tub. Plans the planner has written but the renderer has not
+// turned into audio yet, and the rendered songs themselves, live as
+// files under one directory: plans as JSON, songs as MP3 with a JSON
+// sidecar, so a full store costs disk, not memory, and survives
+// restarts.
+//
+// A song is not removed when a player takes it: taking marks it
+// consumed and leaves it on disk for whatever other player has not
+// caught up yet, until the store trims the oldest taken songs to keep
+// its size bounded. The level - how many songs nobody has taken - is
+// what the generator fills against.
 package trackbuffer
 
 import (
@@ -23,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"iar/internal/audio"
@@ -30,14 +36,20 @@ import (
 	"iar/internal/export"
 )
 
-// Store is the on-disk buffer. Methods are safe for one producer and
-// one consumer goroutine (the scheduler and the playback feeder); the
-// file system is the state, so there is nothing to lock beyond what
-// rename gives us.
+// Store is the on-disk store. Safe for concurrent use: the file system
+// is the state, and an in-memory index of the songs on disk answers
+// every listing and count without a directory scan.
 type Store struct {
 	dir     string
 	quality int
 	log     *slog.Logger
+
+	mu sync.Mutex
+	// songs is every rendered song on disk by base name, read once and
+	// kept current by every write. Bulk deletions that walk the
+	// directory drop the index instead, and the next reader rebuilds it.
+	songs  map[string]*trackMeta
+	loaded bool
 }
 
 // New returns a store rooted at dir (created on first use). quality is
@@ -49,11 +61,11 @@ func New(dir string, quality int, log *slog.Logger) *Store {
 	return &Store{dir: dir, quality: quality, log: log}
 }
 
-// Dir returns the buffer's root directory.
+// Dir returns the store's root directory.
 func (s *Store) Dir() string { return s.dir }
 
-// Context returns the steering-context key the buffer's content belongs
-// to (empty when the buffer is fresh or from an older version).
+// Context returns the steering-context key the store's content belongs
+// to (empty when the store is fresh or from an older version).
 func (s *Store) Context() string {
 	raw, err := os.ReadFile(filepath.Join(s.dir, "context"))
 	if err != nil {
@@ -63,7 +75,7 @@ func (s *Store) Context() string {
 }
 
 // RenderVersion identifies the render path that produced the songs in
-// a buffer. Bump it whenever a fix changes what the renderer produces:
+// a store. Bump it whenever a fix changes what the renderer produces:
 // songs already on disk were made by the old path and are dropped on
 // the next start, while their plans - which the renderer reads, not
 // writes - are kept and simply rendered again.
@@ -73,8 +85,8 @@ func (s *Store) Context() string {
 //	   with a 5 Hz comb across the whole song.
 const RenderVersion = 2
 
-// RenderVersionOf returns the render path that wrote this buffer's
-// songs; 0 for a buffer from before the marker existed.
+// RenderVersionOf returns the render path that wrote this store's
+// songs; 0 for a store from before the marker existed.
 func (s *Store) RenderVersionOf() int {
 	raw, err := os.ReadFile(filepath.Join(s.dir, "render-version"))
 	if err != nil {
@@ -87,14 +99,40 @@ func (s *Store) RenderVersionOf() int {
 	return n
 }
 
-// SetRenderVersion records the render path that wrote this buffer.
+// SetRenderVersion records the render path that wrote this store.
 func (s *Store) SetRenderVersion(v int) {
+	s.writeMarker("render-version", strconv.Itoa(v))
+}
+
+// SetContext records the steering-context key the store now serves.
+func (s *Store) SetContext(key string) {
+	s.writeMarker("context", key)
+}
+
+// Cursor returns where a named player got to: the base name of the
+// last song it took, "" when it has never taken one. A player that
+// restarts continues after it rather than from the oldest song kept.
+func (s *Store) Cursor(name string) string {
+	raw, err := os.ReadFile(filepath.Join(s.dir, "cursor-"+name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// SetCursor records where a named player got to.
+func (s *Store) SetCursor(name, base string) {
+	s.writeMarker("cursor-"+name, base)
+}
+
+// writeMarker writes one small state file atomically.
+func (s *Store) writeMarker(name, value string) {
 	if os.MkdirAll(s.dir, 0o755) != nil {
 		return
 	}
-	tmp := filepath.Join(s.dir, "render-version.tmp")
-	if os.WriteFile(tmp, []byte(strconv.Itoa(v)+"\n"), 0o644) == nil {
-		os.Rename(tmp, filepath.Join(s.dir, "render-version"))
+	tmp := filepath.Join(s.dir, "."+name+".tmp")
+	if os.WriteFile(tmp, []byte(value+"\n"), 0o644) == nil {
+		os.Rename(tmp, filepath.Join(s.dir, name))
 	}
 }
 
@@ -102,6 +140,9 @@ func (s *Store) SetRenderVersion(v int) {
 // plans alone: the audio is unusable but the work that produced it is
 // still good.
 func (s *Store) DropTracks() (dropped int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.invalidate()
 	entries, err := os.ReadDir(s.tracksDir())
 	if err != nil {
 		return 0
@@ -121,6 +162,9 @@ func (s *Store) DropTracks() (dropped int) {
 // sidecar-less MP3 parses as nothing, so it would sit on disk forever.
 // One player runs at a time, so a sweep at startup cannot race a write.
 func (s *Store) Sweep() (dropped int, freed int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.invalidate()
 	for _, dir := range []string{s.plansDir(), s.tracksDir()} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -174,20 +218,12 @@ func (s *Store) Sweep() (dropped int, freed int64) {
 	return dropped, freed
 }
 
-// SetContext records the steering-context key the buffer now serves.
-func (s *Store) SetContext(key string) {
-	if os.MkdirAll(s.dir, 0o755) != nil {
-		return
-	}
-	tmp := filepath.Join(s.dir, "context.tmp")
-	if os.WriteFile(tmp, []byte(key+"\n"), 0o644) == nil {
-		os.Rename(tmp, filepath.Join(s.dir, "context"))
-	}
-}
-
 // DropAll removes every plan and rendered song regardless of epoch
-// (the buffer belonged to a different steering context).
+// (the store belonged to a different steering context).
 func (s *Store) DropAll() (dropped int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.invalidate()
 	for _, dir := range []string{s.plansDir(), s.tracksDir()} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -210,6 +246,9 @@ func (s *Store) DropAll() (dropped int) {
 // and sheetless entries are left alone. Returns how many files were
 // removed (a plan counts one, a rendered pair counts one).
 func (s *Store) DedupeSheets(maxPerSheet int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.invalidate()
 	removed := 0
 	seen := map[string]int{}
 	sheet := func(lyrics string) string {
@@ -282,7 +321,7 @@ func (s *Store) tracksDir() string { return filepath.Join(s.dir, "tracks") }
 // name builds the sortable base name for an epoch/sequence pair.
 func name(epoch, seq int) string { return fmt.Sprintf("e%08d-%08d", epoch, seq) }
 
-// nameRe is the exact shape of a buffer base name; anything else -
+// nameRe is the exact shape of a store base name; anything else -
 // trailing garbage, path separators, dot segments - is rejected, which
 // matters because Peek receives client-supplied names.
 var nameRe = regexp.MustCompile(`^e([0-9]{8})-([0-9]{8})$`)
@@ -307,9 +346,8 @@ type storedPlan struct {
 // trackMeta is the JSON sidecar of a rendered song.
 type trackMeta struct {
 	// ID is the song's own identity, minted when its audio is rendered
-	// and kept for its whole life: on disk here, in the play queue once
-	// it is fed, and in the library once it has played. Empty for songs
-	// rendered before songs carried one.
+	// and kept for its whole life. Empty for songs rendered before
+	// songs carried one.
 	ID      string        `json:"id,omitempty"`
 	Prompt  string        `json:"prompt"`
 	Lyrics  string        `json:"lyrics,omitempty"`
@@ -327,6 +365,9 @@ type trackMeta struct {
 	// out byte for byte and is never rewritten, so a copy of it hashes
 	// to this wherever it turns up.
 	Hash string `json:"hash,omitempty"`
+	// Taken is when a player first took the song; zero while nobody
+	// has. A taken song stays on disk for the other players.
+	Taken time.Time `json:"taken,omitempty"`
 }
 
 // PutPlan stores one plan under epoch/seq.
@@ -380,7 +421,8 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) (
 	if err := os.MkdirAll(s.tracksDir(), 0o755); err != nil {
 		return "", err
 	}
-	base := filepath.Join(s.tracksDir(), name(epoch, seq))
+	base := name(epoch, seq)
+	path := filepath.Join(s.tracksDir(), base)
 	meta := trackMeta{
 		ID:       t.ID,
 		Prompt:   t.Prompt,
@@ -393,7 +435,7 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) (
 		Title:    t.Title,
 		Subtitle: t.Subtitle,
 	}
-	if err := export.EncodeMP3(ctx, t.Samples, base+".mp3", export.MP3Options{
+	if err := export.EncodeMP3(ctx, t.Samples, path+".mp3", export.MP3Options{
 		Quality: s.quality,
 		Title:   t.Title,
 		Artist:  "Infinite AI Radio",
@@ -401,28 +443,39 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) (
 	}); err != nil {
 		return "", err
 	}
-	hash, err := fileHash(base + ".mp3")
+	hash, err := fileHash(path + ".mp3")
 	if err != nil {
-		os.Remove(base + ".mp3")
+		os.Remove(path + ".mp3")
 		return "", err
 	}
 	meta.Hash = hash
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		os.Remove(base + ".mp3")
+	if err := s.writeMeta(base, &meta); err != nil {
+		os.Remove(path + ".mp3")
 		return "", err
 	}
-	tmp := base + ".json.tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		os.Remove(base + ".mp3")
-		return "", err
-	}
-	if err := os.Rename(tmp, base+".json"); err != nil {
-		os.Remove(tmp)
-		os.Remove(base + ".mp3")
-		return "", err
-	}
+	s.mu.Lock()
+	s.load()
+	s.songs[base] = &meta
+	s.mu.Unlock()
 	return hash, nil
+}
+
+// writeMeta writes a song's sidecar atomically.
+func (s *Store) writeMeta(base string, m *trackMeta) error {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.tracksDir(), base+".json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // fileHash is the SHA-256 of a file's bytes, hex-encoded.
@@ -439,77 +492,164 @@ func fileHash(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// load reads every song's sidecar into the index, once. Callers hold
+// s.mu.
+func (s *Store) load() {
+	if s.loaded {
+		return
+	}
+	s.songs = map[string]*trackMeta{}
+	s.loaded = true
+	entries, err := os.ReadDir(s.tracksDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		base := strings.TrimSuffix(e.Name(), ".json")
+		if _, _, ok := parseName(base); !ok {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(s.tracksDir(), e.Name()))
+		if err != nil {
+			continue
+		}
+		var m trackMeta
+		if json.Unmarshal(raw, &m) != nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(s.tracksDir(), base+".mp3")); err != nil {
+			continue // half a song; Sweep collects it
+		}
+		s.songs[base] = &m
+	}
+}
+
+// invalidate drops the index after a change that walked the directory.
+// Callers hold s.mu.
+func (s *Store) invalidate() {
+	s.loaded = false
+	s.songs = nil
+}
+
 // TrackPath returns the MP3 of a rendered song still on disk, for
 // serving byte for byte. The base must parse as this epoch's naming;
 // anything else is refused. The caller opens the file straight away:
-// feeding the song deletes it, and an open descriptor is the only thing
-// that keeps the bytes readable past that.
+// a trim can delete it, and an open descriptor is the only thing that
+// keeps the bytes readable past that.
 func (s *Store) TrackPath(epoch int, base string) (string, bool) {
 	ep, _, ok := parseName(base)
 	if !ok || ep != epoch {
 		return "", false
 	}
-	mp3 := filepath.Join(s.tracksDir(), base+".mp3")
-	if _, err := os.Stat(filepath.Join(s.tracksDir(), base+".json")); err != nil {
+	s.mu.Lock()
+	s.load()
+	_, known := s.songs[base]
+	s.mu.Unlock()
+	if !known {
 		return "", false
 	}
+	mp3 := filepath.Join(s.tracksDir(), base+".mp3")
 	if _, err := os.Stat(mp3); err != nil {
 		return "", false
 	}
 	return mp3, true
 }
 
-// NextTrack decodes and removes the oldest rendered song of the epoch,
-// returning the file base it came from. The base is what a listener's
-// copy of this song is still called: the audio is gone from disk the
-// moment it is fed, so anything that wants to reach the song afterwards
-// - a rename, say - has to follow it into memory. A song that cannot be
-// decoded is dropped and the next one tried.
-func (s *Store) NextTrack(ctx context.Context, epoch int) (*engine.Track, string, bool) {
-	for {
-		base, ok := s.oldest(s.tracksDir(), epoch, ".json")
-		if !ok {
-			return nil, "", false
+// Take marks a song as taken by a player, leaving it on disk. The mark
+// is written into the sidecar so a restart still knows the level.
+// Taking a song twice is nothing. Reports whether the song is here.
+func (s *Store) Take(epoch int, base string) bool {
+	ep, _, ok := parseName(base)
+	if !ok || ep != epoch {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	m, known := s.songs[base]
+	if !known {
+		return false
+	}
+	if !m.Taken.IsZero() {
+		return true
+	}
+	m.Taken = time.Now()
+	if err := s.writeMeta(base, m); err != nil {
+		s.log.Warn("taken mark not written", "event", "buffer_take_failed", "file", base, "error", err.Error())
+	}
+	return true
+}
+
+// Trim deletes the oldest taken songs of the epoch beyond keep, so the
+// songs kept for players that have not caught up never outgrow the
+// store. Untaken songs are never trimmed. Returns how many were removed.
+func (s *Store) Trim(epoch, keep int) (dropped int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	var taken []string
+	for base, m := range s.songs {
+		if ep, _, _ := parseName(base); ep == epoch && !m.Taken.IsZero() {
+			taken = append(taken, base)
 		}
-		mp3 := filepath.Join(s.tracksDir(), base+".mp3")
-		metaPath := filepath.Join(s.tracksDir(), base+".json")
-		var meta trackMeta
-		raw, err := os.ReadFile(metaPath)
-		if err == nil {
-			err = json.Unmarshal(raw, &meta)
-		}
-		var samples []int16
-		if err == nil {
-			samples, err = export.DecodePCM(ctx, mp3)
-		}
-		if ctx.Err() != nil {
-			// A cancelled context fails every decode; deleting on that
-			// would wipe the whole buffer during shutdown.
-			return nil, "", false
-		}
-		os.Remove(metaPath)
-		os.Remove(mp3)
-		if err != nil || len(samples) == 0 {
-			s.log.Warn("unplayable buffered track dropped", "event", "buffer_track_bad", "file", base,
-				"error", fmt.Sprint(err))
+	}
+	sort.Strings(taken)
+	for len(taken) > keep {
+		base := taken[0]
+		taken = taken[1:]
+		os.Remove(filepath.Join(s.tracksDir(), base+".json"))
+		os.Remove(filepath.Join(s.tracksDir(), base+".mp3"))
+		delete(s.songs, base)
+		dropped++
+	}
+	return dropped
+}
+
+// DropTrack removes one song (its audio turned out unplayable).
+func (s *Store) DropTrack(epoch int, base string) {
+	if ep, _, ok := parseName(base); !ok || ep != epoch {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	os.Remove(filepath.Join(s.tracksDir(), base+".json"))
+	os.Remove(filepath.Join(s.tracksDir(), base+".mp3"))
+	delete(s.songs, base)
+}
+
+// Next returns the first song of the epoch after the named one, in the
+// order they were made ("" for the oldest song kept). A player walks
+// the store with it, taken songs included: a player that has not
+// caught up plays what the others already have before it takes
+// anything new. A cursor from another epoch counts as none.
+func (s *Store) Next(epoch int, after string) (Entry, bool) {
+	if ep, _, ok := parseName(after); !ok || ep != epoch {
+		after = ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	best := ""
+	for base := range s.songs {
+		if ep, _, _ := parseName(base); ep != epoch || base <= after {
 			continue
 		}
-		return &engine.Track{
-			ID:       meta.ID,
-			Samples:  samples,
-			Spec:     meta.Spec,
-			Prompt:   meta.Prompt,
-			Lyrics:   meta.Lyrics,
-			Seed:     meta.Seed,
-			GenTime:  meta.GenTime,
-			Title:    meta.Title,
-			Subtitle: meta.Subtitle,
-		}, base, true
+		if best == "" || base < best {
+			best = base
+		}
 	}
+	if best == "" {
+		return Entry{}, false
+	}
+	return s.entryLocked(best), true
 }
 
 // Build reads the build stamp of the binary that last owned the
-// buffer; SetBuild records this binary's. A buffer made by another
+// store; SetBuild records this binary's. A store made by another
 // commit is treated as suspect wholesale - a newer build may have
 // fixed the very bugs its songs were rendered with.
 func (s *Store) Build() string {
@@ -522,18 +662,12 @@ func (s *Store) Build() string {
 
 // SetBuild records the running binary's build stamp.
 func (s *Store) SetBuild(v string) {
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return
-	}
-	tmp := filepath.Join(s.dir, ".build.tmp")
-	if os.WriteFile(tmp, []byte(v+"\n"), 0o644) == nil {
-		os.Rename(tmp, filepath.Join(s.dir, "build"))
-	}
+	s.writeMarker("build", v)
 }
 
 // DiskEpoch reports the highest epoch present among stored plans and
 // songs, so a fresh process - whose in-memory epoch starts at zero -
-// can adopt the buffer a previous run left behind instead of treating
+// can adopt the store a previous run left behind instead of treating
 // it as another context's.
 func (s *Store) DiskEpoch() (int, bool) {
 	best, found := 0, false
@@ -556,42 +690,24 @@ func (s *Store) DiskEpoch() (int, bool) {
 }
 
 // SetTitle writes a new name into a rendered song's metadata (a
-// listener renaming it),
-// so listings and later runs show it, reporting whether it wrote. A
-// song fed or dropped since it was listed is not an error: the write is
-// skipped when the audio is already gone, and a re-check afterwards
-// removes the metadata again if the audio vanished mid-write (a steer
-// wiping the epoch), so no orphan survives the race.
+// listener renaming it), so listings and later runs show it, reporting
+// whether it wrote. A song trimmed since it was listed is not an error.
 func (s *Store) SetTitle(epoch int, base, title, subtitle string) bool {
-	return s.setTitle(base, title, subtitle)
-}
-
-func (s *Store) setTitle(base, title, subtitle string) bool {
-	metaPath := filepath.Join(s.tracksDir(), base+".json")
-	mp3Path := filepath.Join(s.tracksDir(), base+".mp3")
-	raw, err := os.ReadFile(metaPath)
-	if err != nil {
+	if ep, _, ok := parseName(base); !ok || ep != epoch {
 		return false
 	}
-	var m trackMeta
-	if json.Unmarshal(raw, &m) != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	m, known := s.songs[base]
+	if !known {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(s.tracksDir(), base+".mp3")); err != nil {
 		return false
 	}
 	m.Title, m.Subtitle = title, subtitle
-	out, err := json.Marshal(m)
-	if err != nil {
-		return false
-	}
-	if _, err := os.Stat(mp3Path); err != nil {
-		return false
-	}
-	tmp := metaPath + ".tmp"
-	if os.WriteFile(tmp, out, 0o644) != nil || os.Rename(tmp, metaPath) != nil {
-		os.Remove(tmp)
-		return false
-	}
-	if _, err := os.Stat(mp3Path); err != nil {
-		os.Remove(metaPath)
+	if err := s.writeMeta(base, m); err != nil {
 		return false
 	}
 	return true
@@ -615,21 +731,33 @@ func (s *Store) PlanStats(epoch int) (count int, seconds float64) {
 	return count, seconds
 }
 
-// TrackStats reports how many rendered songs of the epoch await play
-// and their total audio seconds.
+// TrackStats reports how many rendered songs of the epoch are on disk,
+// taken or not, and their total audio seconds.
 func (s *Store) TrackStats(epoch int) (count int, seconds float64) {
-	s.each(s.tracksDir(), epoch, ".json", func(path string) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	for base, m := range s.songs {
+		if ep, _, _ := parseName(base); ep == epoch {
+			count++
+			seconds += m.Seconds
 		}
-		var m trackMeta
-		if json.Unmarshal(raw, &m) != nil {
-			return
+	}
+	return count, seconds
+}
+
+// Level reports the songs of the epoch nobody has taken yet, and their
+// audio seconds: what the generator fills against.
+func (s *Store) Level(epoch int) (count int, seconds float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	for base, m := range s.songs {
+		if ep, _, _ := parseName(base); ep == epoch && m.Taken.IsZero() {
+			count++
+			seconds += m.Seconds
 		}
-		count++
-		seconds += m.Seconds
-	})
+	}
 	return count, seconds
 }
 
@@ -651,6 +779,9 @@ func (s *Store) MaxSeq(epoch int) int {
 // belong to the given epoch: a steer makes the old context's work
 // worthless, and keeping it would play stale music.
 func (s *Store) DropOtherEpochs(epoch int) (dropped int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.invalidate()
 	for _, dir := range []string{s.plansDir(), s.tracksDir()} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -712,8 +843,8 @@ func (s *Store) each(dir string, epoch int, ext string, fn func(path string)) {
 	}
 }
 
-// Entry summarizes one rendered song awaiting play, without touching
-// its audio.
+// Entry summarizes one rendered song on disk, without touching its
+// audio.
 type Entry struct {
 	Base string
 	// ID is the song's own identity (see trackMeta.ID); empty for songs
@@ -727,50 +858,60 @@ type Entry struct {
 	Subtitle string
 	// Hash is the SHA-256 of the MP3 on disk (see trackMeta.Hash).
 	Hash string
+	// Taken reports that some player has taken the song already.
+	Taken bool
 }
 
-// List returns the epoch's rendered songs in play order, metadata only.
+// entryLocked builds the listing row for one indexed song. Callers
+// hold s.mu.
+func (s *Store) entryLocked(base string) Entry {
+	m := s.songs[base]
+	return Entry{
+		Base:     base,
+		ID:       m.ID,
+		Prompt:   m.Prompt,
+		Lyrics:   m.Lyrics,
+		Seconds:  m.Seconds,
+		Spec:     m.Spec,
+		Title:    m.Title,
+		Subtitle: m.Subtitle,
+		Hash:     m.Hash,
+		Taken:    !m.Taken.IsZero(),
+	}
+}
+
+// List returns the epoch's rendered songs in the order they were made,
+// taken ones included, metadata only.
 func (s *Store) List(epoch int) []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
 	var out []Entry
-	s.each(s.tracksDir(), epoch, ".json", func(path string) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return
+	for base := range s.songs {
+		if ep, _, _ := parseName(base); ep == epoch {
+			out = append(out, s.entryLocked(base))
 		}
-		var m trackMeta
-		if json.Unmarshal(raw, &m) != nil {
-			return
-		}
-		out = append(out, Entry{
-			Base:     strings.TrimSuffix(filepath.Base(path), ".json"),
-			ID:       m.ID,
-			Prompt:   m.Prompt,
-			Lyrics:   m.Lyrics,
-			Seconds:  m.Seconds,
-			Spec:     m.Spec,
-			Title:    m.Title,
-			Subtitle: m.Subtitle,
-			Hash:     m.Hash,
-		})
-	})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Base < out[j].Base })
 	return out
 }
 
-// Peek decodes one rendered song by its base name without consuming it
-// (remote listeners prefetch ahead of the local player). The base must
-// parse as this epoch's naming; anything else is refused.
+// Peek decodes one rendered song by its base name without taking it.
+// The base must parse as this epoch's naming; anything else is refused.
 func (s *Store) Peek(ctx context.Context, epoch int, base string) (*engine.Track, bool) {
 	ep, _, ok := parseName(base)
 	if !ok || ep != epoch {
 		return nil, false
 	}
-	raw, err := os.ReadFile(filepath.Join(s.tracksDir(), base+".json"))
-	if err != nil {
-		return nil, false
-	}
+	s.mu.Lock()
+	s.load()
+	m, known := s.songs[base]
 	var meta trackMeta
-	if json.Unmarshal(raw, &meta) != nil {
+	if known {
+		meta = *m
+	}
+	s.mu.Unlock()
+	if !known {
 		return nil, false
 	}
 	samples, err := export.DecodePCM(ctx, filepath.Join(s.tracksDir(), base+".mp3"))

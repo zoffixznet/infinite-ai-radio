@@ -176,7 +176,7 @@ func (o *Orchestrator) nextPhasedSeq(epoch int) int {
 // displays can report the real depth without scanning the buffer
 // directory themselves several times a second.
 func (o *Orchestrator) publishBufferStats(epoch int) {
-	tracks, secs := o.Buffer.TrackStats(epoch)
+	tracks, secs := o.Buffer.Level(epoch)
 	plans, planSecs := o.Buffer.PlanStats(epoch)
 	o.mu.Lock()
 	o.bufTracks = tracks
@@ -190,10 +190,12 @@ func (o *Orchestrator) publishBufferStats(epoch int) {
 	o.mu.Unlock()
 }
 
-// bufferedSeconds is the audio already secured for the epoch: rendered
-// songs on disk plus the decoded prefetch in memory.
+// bufferedSeconds is the audio already secured for the epoch: the
+// store's level (songs nobody has taken) plus the decoded prefetch in
+// memory. Songs kept for other players are behind the listener, not
+// ahead, so they do not count.
 func (o *Orchestrator) bufferedSeconds(epoch int) float64 {
-	_, secs := o.Buffer.TrackStats(epoch)
+	_, secs := o.Buffer.Level(epoch)
 	o.mu.Lock()
 	for _, t := range o.queue {
 		secs += t.Duration().Seconds()
@@ -689,8 +691,17 @@ func (o *Orchestrator) exportingNow() bool {
 	return o.exporting != ""
 }
 
-// feedLoop keeps the in-memory prefetch filled from the disk buffer.
+// playerCursor names this process's player in the store: where it got
+// to is kept there, so a restart continues after the last song it took
+// rather than from the oldest song still kept for other players.
+const playerCursor = "player"
+
+// feedLoop keeps the in-memory prefetch filled from the store. Taking
+// a song marks it consumed and leaves it on disk for players that have
+// not caught up; the store trims the oldest taken songs past the
+// configured depth.
 func (o *Orchestrator) feedLoop(ctx context.Context) {
+	cursor := o.Buffer.Cursor(playerCursor)
 	for {
 		select {
 		case <-ctx.Done():
@@ -706,10 +717,28 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 			continue
 		}
 		epoch, sess := o.snapshotSession()
-		track, base, ok := o.Buffer.NextTrack(ctx, epoch)
+		entry, ok := o.Buffer.Next(epoch, cursor)
 		if !ok {
 			o.kickGen() // nothing on disk: the cycle loop should wake
 			continue
+		}
+		track, ok := o.Buffer.Peek(ctx, epoch, entry.Base)
+		if ctx.Err() != nil {
+			return
+		}
+		if !ok {
+			// Unplayable, or trimmed between the listing and the read:
+			// dropped here so it cannot block the head of the store.
+			o.log.Warn("unplayable buffered track dropped", "event", "buffer_track_bad", "file", entry.Base)
+			o.Buffer.DropTrack(epoch, entry.Base)
+			continue
+		}
+		base := entry.Base
+		o.Buffer.Take(epoch, base)
+		cursor = base
+		o.Buffer.SetCursor(playerCursor, base)
+		if dropped := o.Buffer.Trim(epoch, o.cfg.Buffer.Songs); dropped > 0 {
+			o.log.Info("oldest taken songs trimmed from the store", "event", "buffer_trimmed", "songs", dropped)
 		}
 		if track.ID == "" {
 			// Rendered before songs carried their own id: the name the

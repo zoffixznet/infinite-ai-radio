@@ -8,6 +8,7 @@ import (
 	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
+	"iar/internal/trackbuffer"
 )
 
 // QueueTrack describes one track a remote client may prefetch.
@@ -66,10 +67,10 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	buffered := o.Buffer != nil && o.cfg.Buffer.Phased
 	o.mu.Unlock()
 	if buffered {
-		// Phased mode: the deep queue lives on disk. Remote listeners
-		// prefetch these exactly like the in-memory queue; the feeder
-		// consumes them in the same order.
-		for _, e := range o.Buffer.List(epoch) {
+		// The deep queue lives on disk. Remote listeners prefetch the
+		// songs nobody has taken exactly like the in-memory queue; the
+		// feeder consumes them in the same order.
+		row := func(e trackbuffer.Entry, kind string) QueueTrack {
 			// The name was written with the song's words and stored
 			// beside its audio; only a song the engine worded itself
 			// needs the deterministic stand-in.
@@ -86,10 +87,36 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 				// Rendered before songs carried their own id.
 				id = bufTrackPrefix + e.Base
 			}
-			out = append(out, QueueTrack{
+			return QueueTrack{
 				ID: id, Prompt: e.Prompt, Title: title, Subtitle: subtitle,
-				Seconds: e.Seconds, Kind: "queue", Lyrics: lyr,
-			})
+				Seconds: e.Seconds, Kind: kind, Lyrics: lyr,
+			}
+		}
+		var kept []trackbuffer.Entry
+		for _, e := range o.Buffer.List(epoch) {
+			if e.Taken {
+				kept = append(kept, e)
+				continue
+			}
+			out = append(out, row(e, "queue"))
+		}
+		// Taken songs stay in the store for players that have not
+		// caught up. To a phone they are what the library's filler was:
+		// songs the radio has moved past, worth holding as spares. The
+		// newest few, the ones in the in-memory queue excepted - those
+		// are listed above.
+		queued := make(map[string]bool, len(out))
+		for _, r := range out {
+			queued[r.ID] = true
+		}
+		spares := 0
+		for i := len(kept) - 1; i >= 0 && spares < maxLibraryFiller; i-- {
+			r := row(kept[i], "library")
+			if queued[r.ID] {
+				continue
+			}
+			out = append(out, r)
+			spares++
 		}
 	}
 	o.mu.Lock()

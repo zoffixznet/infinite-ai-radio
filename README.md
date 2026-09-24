@@ -741,7 +741,8 @@ everything else keeps its default. The complete set, with defaults:
   },
   "buffer": {
     "phased": true,
-    "render_low_minutes": 45
+    "render_low_minutes": 45,
+    "songs": 72
   },
   "ollama": {
     "enabled": true,
@@ -972,12 +973,24 @@ older code never linger into an upgrade. `restart` empties it and puts
 the ladder back on its first rung without touching the session, and
 `iar buffer clear` does the same to a stopped radio.
 
+Playing a song does not delete it from the store. The player takes
+it, which marks it as consumed and leaves it on disk for a player that
+has not caught up - a phone that was away, say, plays the songs the
+speakers already played before it takes anything new. The store keeps
+the newest `songs` taken songs and trims the oldest beyond that; the
+songs nobody has taken yet are what the generator fills against, and
+they are never trimmed. A steer or `restart` drops the lot.
+
 - `phased`: turns the split pipeline on (the default). false restores
   the fused path: each track generated in one engine job with the audio
   model resident the whole time.
 - `render_low_minutes` (5 or more): the refill trigger; when the
   rendered buffer runs down to this much audio left, the next batch
   starts. Out-of-range values are clamped at load.
+- `songs` (3 or more, 72 by default): how many taken songs the store
+  keeps for players that have not caught up. The deepest phone setting
+  holds 72, so the default lets a phone that comes back find everything
+  it missed; the store never holds more than twice this.
 
 ### ollama
 
@@ -1030,10 +1043,14 @@ Inside the data directory:
   (the list of presets hidden with `iar sessions delete`)
 - `library/` - banked tracks for instant starts: MP3s with a JSON
   metadata sidecar, the same shape as the buffer's (size-capped)
-- `buffer/` - phased generation's disk buffer: `plans/` (small JSON song
-  plans), `tracks/` (rendered MP3s, each with a JSON metadata sidecar),
-  and the stored steering context. The largest directory after `engine/`
-  and `library/`; how much it holds follows the batch ladder
+- `buffer/` - the song store: `plans/` (small JSON song plans),
+  `tracks/` (rendered MP3s, each with a JSON metadata sidecar that also
+  records when the song was taken), the stored steering context, and
+  the player's cursor. The largest directory after `engine/` and
+  `library/`; how much it holds follows the batch ladder and the
+  `songs` setting
+- `songbook.jsonl` - one line per song the radio has made: the file's
+  hash, its name, words and prompt, and where it was saved
 - `snippets/<tag>/` - tracks captured with the save command, one
   directory per tag (`untagged/` when none was given)
 - `remote/` - the phone remote's accounts and login sessions

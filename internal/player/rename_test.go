@@ -87,7 +87,7 @@ func TestRenamingASongStillOnDisk(t *testing.T) {
 		t.Fatalf("queue listing: %+v", tracks)
 	}
 	// The name rides out of the buffer with the song.
-	fed, _, ok := o.Buffer.NextTrack(context.Background(), 0)
+	fed, ok := o.Buffer.Peek(context.Background(), 0, o.Buffer.List(0)[0].Base)
 	if !ok || fed.Title != "Harbour Lights" {
 		t.Fatalf("fed track = %+v ok=%v", fed, ok)
 	}
