@@ -298,7 +298,7 @@ func (m *tuiModel) renderChrome() string {
 
 	// Header: name, state badge, volume, underruns.
 	stateStyle := s.playing
-	if st.State != "playing" && st.State != "noise" {
+	if st.State != "playing" {
 		stateStyle = s.waiting
 	}
 	header := s.title.Render("Infinite AI Radio") + "  " + stateStyle.Render(strings.ToUpper(st.State))

@@ -1,6 +1,6 @@
 // Package player runs the continuous stream: a generate-ahead worker that
 // keeps tracks buffered, a mixer that joins them with equal-power
-// crossfades (degrading gracefully to looping or a noise bed), and a pump
+// crossfades (degrading gracefully to looping or silence), and a pump
 // that feeds the audio backend. It also carries the user-facing controls:
 // steering, sessions, presets, skip, pause, volume and export priority.
 package player
@@ -66,20 +66,6 @@ func (s *trackSource) label() string { return s.name }
 
 // elapsedFrames reports how far playback is into the track.
 func (s *trackSource) elapsedFrames() int { return int(s.pos.Load()) }
-
-// noiseSource synthesizes endless noise.
-type noiseSource struct {
-	gen  *audio.NoiseGenerator
-	name string
-}
-
-func newNoiseSource(color audio.NoiseColor, amp float64, name string) *noiseSource {
-	return &noiseSource{gen: audio.NewNoiseGenerator(color, amp), name: name}
-}
-
-func (s *noiseSource) read(frames int) []int16 { return s.gen.Generate(frames) }
-func (s *noiseSource) remaining() int          { return -1 }
-func (s *noiseSource) label() string           { return s.name }
 
 // silenceSource produces endless silence: the default startup sound while
 // the first track is prepared (progress is shown instead of audio).

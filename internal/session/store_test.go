@@ -88,16 +88,12 @@ func TestPresetsShipRequiredSet(t *testing.T) {
 	if !ok || !grind.Vocal || grind.LyricsTheme == "" {
 		t.Fatalf("grind vocal preset missing or not vocal: %+v", grind)
 	}
-	pink, ok := byName["pink-noise"]
-	if !ok || pink.Mode != ModeNoise || pink.NoiseColor != "pink" {
-		t.Fatalf("pink-noise preset wrong: %+v", pink)
-	}
 	for _, name := range []string{"lofi-study", "deep-focus", "sleep", "jazz-club", "night-drive"} {
 		p, ok := byName[name]
 		if !ok {
 			t.Fatalf("preset %s missing", name)
 		}
-		if p.Mode != ModeMusic || p.Prompt == "" || p.Vocal {
+		if p.Prompt == "" || p.Vocal {
 			t.Fatalf("preset %s should be instrumental music with a prompt: %+v", name, p)
 		}
 	}

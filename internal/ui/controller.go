@@ -302,7 +302,7 @@ func statusText(st player.Status) string {
 	if sung := sungIn(st.Languages); sung != "" {
 		fmt.Fprintf(&b, "sung in:  %s\n", sung)
 	}
-	engine := "none (noise only)"
+	engine := "none (nothing can play)"
 	if st.EngineName != "" {
 		switch {
 		case st.EngineReady:
@@ -343,7 +343,7 @@ func fmtDur(d time.Duration) string {
 
 // helpText is kept compact (two command columns) so the whole block fits
 // a standard 80x24 terminal's message area in one screen.
-const helpText = `steer with plain text ("calmer", "add vocals about winning", "pink noise")
+const helpText = `steer with plain text ("calmer", "add vocals about winning", "switch to piano")
 commands (leading / optional):
   clear             wipe steering        name <name>      save this session
   new <prompt>      fresh session        sessions         list saved + presets

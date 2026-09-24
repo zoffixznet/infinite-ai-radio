@@ -60,24 +60,6 @@ func runPlay(pf playFlags) error {
 	// against today's catalogue and turn it into the list the session
 	// sings in.
 	sess.AdoptLanguages(a.cfg.VocalLanguages, a.cfg.VocalLanguagesOff)
-	// With no music engine this run can only make noise - a property of
-	// the run, not of the session. Branch it rather than rewriting what
-	// the listener saved, and keep the branch out of the record a
-	// restart resumes from, so a machine that grows an engine again
-	// comes back to music.
-	noiseOnly := a.cfg.Engine == "noise" && sess.Mode != session.ModeNoise
-	if noiseOnly {
-		if !sess.LastPlayed.IsZero() {
-			from := sess.Name
-			sess = sess.Snapshot()
-			sess.Name = session.ForkName(from, time.Now())
-			sess.Named = false
-			sess.ForkedFrom = from
-		}
-		sess.Mode = session.ModeNoise
-		sess.NoiseColor = sess.NoiseBed
-	}
-
 	// Phased mode starts the engine dormant: with a healthy disk buffer
 	// the radio plays without touching the graphics card, and the first
 	// cycle wakes the engine only when work is actually due.
@@ -137,7 +119,6 @@ func runPlay(pf playFlags) error {
 	// - plain `iar` stays a normal local player.
 	orch.Idle = pf.remote
 	orch.Retention = time.Duration(a.cfg.Sessions.AutoRetentionDays) * 24 * time.Hour
-	orch.Ephemeral = noiseOnly
 	orch.LegacyLanguagesOff = a.cfg.VocalLanguagesOff
 	orch.StateDir = &a.stateD
 	orch.SetLanguageStore(func(names []string) error {

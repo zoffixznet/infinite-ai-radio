@@ -24,11 +24,11 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 		return "an export is already running (" + o.exporting + ")"
 	}
 	phased := o.phasedEnabled()
-	if o.sess.Mode == session.ModeMusic && o.eng == nil {
+	if o.eng == nil {
 		o.mu.Unlock()
 		return "the music engine is not available"
 	}
-	if o.sess.Mode == session.ModeMusic && !phased && !o.eng.Ready() {
+	if !phased && !o.eng.Ready() {
 		// The phased engine may be deliberately hibernated; the export
 		// wakes it below. The fused path keeps the old behavior.
 		o.mu.Unlock()
@@ -49,7 +49,7 @@ func (o *Orchestrator) Export(minutes int, outPath, exportsDir string) string {
 	go func() {
 		// The same predicate the pipeline itself uses: a configured
 		// buffer is not a phased run unless the engine can plan and
-		// render (with --engine noise there is no engine at all).
+		// render (there may be no engine at all).
 		if o.phasedEnabled() {
 			// Wake the hibernated engine and hold it awake for the
 			// export; the cycle loop skips hibernation while an export
@@ -123,11 +123,10 @@ func (o *Orchestrator) exportGate(ctx context.Context) error {
 			return err
 		}
 		o.mu.Lock()
-		mode := o.sess.Mode
 		queued := len(o.queue)
 		epoch := o.epoch
 		o.mu.Unlock()
-		healthy := mode == session.ModeNoise || o.eng == nil
+		healthy := o.eng == nil
 		if !healthy && o.phasedEnabled() {
 			// Playback draws from the store; the export may have the
 			// engine whenever the generator has no rung of its own due.

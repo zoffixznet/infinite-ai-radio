@@ -74,8 +74,8 @@ func TestAPresetStartsWithItsOwnLanguage(t *testing.T) {
 		t.Fatalf("nu-metal sings %v; the preset names English", on)
 	}
 
-	// pink-noise names none - and is not sung at all.
-	o.LoadPreset("pink-noise")
+	// sleep names none - and is not sung at all.
+	o.LoadPreset("sleep")
 	for _, l := range o.Languages() {
 		if l.On {
 			t.Fatalf("a preset with no language of its own switched %s on", l.Name)

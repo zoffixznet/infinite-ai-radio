@@ -57,6 +57,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   command and its hold across restarts. A full store is the off
   switch now - the engine sleeps on its own once nobody is taking
   songs - and `stop` covers this machine's speakers.
+- Noise mode: the `pink-noise` preset, "generate brown noise" steering,
+  the noise bed under a starting radio and the `bed_while_waiting`
+  setting, and the `noise` engine. A machine without a graphics card
+  runs `--engine tone` instead, which makes short tone songs through
+  the same store, ladder, phone and exports as the real engine; a
+  configuration still naming the `noise` engine is read as `tone`. A
+  saved session that was a noise session plays the default sound.
 
 ### Fixed
 

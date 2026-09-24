@@ -6,25 +6,20 @@ import (
 
 	"iar/internal/audio"
 	"iar/internal/engine"
-	"iar/internal/session"
-)
-
-// Noise amplitudes: the fallback bed sits lower than deliberate noise mode.
-const (
-	bedAmp   = 0.12
-	noiseAmp = 0.30
 )
 
 // mixLoop writes the audible stream into the ring buffer: queued tracks
 // joined with equal-power crossfades, degrading to looping the last good
-// track or the session's noise bed when generation cannot keep up.
+// track, or silence, when generation cannot keep up.
 func (o *Orchestrator) mixLoop(ctx context.Context) {
 	const chunkFrames = audio.SampleRate / 10 // 100 ms
 	fadeFrames := int(o.cfg.CrossfadeSeconds * audio.SampleRate)
 
-	// Instant startup audio: the session's noise bed (or noise mode's
-	// deliberate noise).
-	o.setCurrent(o.startupSource())
+	// Silence with visible progress until the first song is ready.
+	if o.eng == nil {
+		o.emit("MUSIC ENGINE UNAVAILABLE: run 'iar setup' to install it (details: 'iar doctor'). Nothing can play until it is.")
+	}
+	o.setCurrent(silenceSource{})
 
 	// Stopped, the mixer feeds the output silence instead of songs. It
 	// deliberately does NOT advance the source: the song that was
@@ -40,12 +35,6 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 		}
 		o.mu.Lock()
 		cur := o.cur
-		// A noise session's bed is its whole output, and it plays from
-		// the first moment: a session that produces on its own has
-		// produced, which is what makes a change to it worth branching.
-		if !o.produced && o.sess.Mode == session.ModeNoise {
-			o.produced = true
-		}
 		o.mu.Unlock()
 		wantSwitch := o.takeSwitch()
 
@@ -75,7 +64,7 @@ func (o *Orchestrator) mixLoop(ctx context.Context) {
 			// (e.g. degenerate track shorter than the fade).
 			next := o.chooseNext(cur)
 			if next == nil {
-				next = o.bedSource()
+				next = silenceSource{}
 			}
 			o.setCurrent(next)
 			continue
@@ -104,47 +93,11 @@ func (o *Orchestrator) takeSwitch() bool {
 	return want
 }
 
-// startupSource picks the very first audio source for the session. The
-// default for music sessions is silence with visible progress; the noise
-// bed plays only for noise sessions, on explicit opt-in, or when the
-// engine is unavailable (with a prominent explanation).
-func (o *Orchestrator) startupSource() source {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.sess.Mode == session.ModeNoise {
-		color := audio.ParseNoiseColor(o.sess.NoiseColor)
-		return newNoiseSource(color, noiseAmp, string(color)+" noise")
-	}
-	if o.eng == nil {
-		o.emit("MUSIC ENGINE UNAVAILABLE: run 'iar setup' to install it (details: 'iar doctor'). Playing the session's noise bed instead.")
-		color := audio.ParseNoiseColor(o.sess.NoiseBed)
-		return newNoiseSource(color, bedAmp, string(color)+" noise bed")
-	}
-	if o.cfg.BedWhileWaiting {
-		o.emit("noise bed while the first track is prepared (bed_while_waiting is on)")
-		color := audio.ParseNoiseColor(o.sess.NoiseBed)
-		return newNoiseSource(color, bedAmp, string(color)+" noise bed")
-	}
-	return silenceSource{}
-}
-
-// bedSource returns the session's fallback noise bed.
-func (o *Orchestrator) bedSource() source {
-	o.mu.Lock()
-	color := audio.ParseNoiseColor(o.sess.NoiseBed)
-	o.mu.Unlock()
-	return newNoiseSource(color, bedAmp, string(color)+" noise bed")
-}
-
-// isStopgap reports whether a source is a placeholder (silence or a noise
-// bed) rather than real content.
+// isStopgap reports whether a source is a placeholder (silence) rather
+// than real content.
 func isStopgap(s source) bool {
-	switch s.(type) {
-	case silenceSource, *noiseSource:
-		return true
-	default:
-		return false
-	}
+	_, silent := s.(silenceSource)
+	return silent
 }
 
 // fallbackShouldYield reports whether cur is a stopgap that should hand
@@ -152,13 +105,6 @@ func isStopgap(s source) bool {
 func (o *Orchestrator) fallbackShouldYield(cur source) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.sess.Mode == session.ModeNoise {
-		// Deliberate noise never yields automatically.
-		if ns, ok := cur.(*noiseSource); ok && ns.gen.Color() == audio.ParseNoiseColor(o.sess.NoiseColor) {
-			return false
-		}
-		return true // wrong source for noise mode; switch
-	}
 	if isStopgap(cur) {
 		return len(o.queue) > 0
 	}
@@ -182,21 +128,12 @@ func (o *Orchestrator) fallbackShouldYield(cur source) bool {
 }
 
 // chooseNext picks the successor source, applying the degradation ladder:
-// queued track, then looping the last good track, then the noise bed. It
+// queued track, then looping the last good track, then silence. It
 // returns nil when cur should simply continue (endless source, nothing
 // better available).
 func (o *Orchestrator) chooseNext(cur source) source {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	if o.sess.Mode == session.ModeNoise {
-		color := audio.ParseNoiseColor(o.sess.NoiseColor)
-		name := string(color) + " noise"
-		if ns, ok := cur.(*noiseSource); ok && ns.gen.Color() == color && ns.name == name {
-			return nil
-		}
-		return newNoiseSource(color, noiseAmp, name)
-	}
 
 	// A requested loop replays the track the listener flagged: the
 	// same recording comes back (with the usual crossfade) until the
@@ -248,8 +185,7 @@ func (o *Orchestrator) chooseNext(cur source) source {
 
 	// A finite source ended with nothing to play and no last track. With
 	// a working engine this is a brief wait: stay silent with progress.
-	// Only an unavailable/failed engine gets the audible noise bed, and
-	// it is announced prominently.
+	// An unavailable engine is silence too, announced prominently.
 	o.mu.Unlock()
 	failed := o.engineFailed()
 	o.mu.Lock()
@@ -257,10 +193,9 @@ func (o *Orchestrator) chooseNext(cur source) source {
 		o.log.Info("queue empty with no last track, waiting in silence", "event", "silence_wait")
 		return silenceSource{}
 	}
-	o.log.Warn("engine unavailable with nothing to play, noise bed fallback", "event", "bed_fallback")
-	o.emit("ENGINE UNAVAILABLE: no music can be generated (see 'iar doctor' and the log). Playing the noise bed instead.")
-	color := audio.ParseNoiseColor(o.sess.NoiseBed)
-	return newNoiseSource(color, bedAmp, string(color)+" noise bed")
+	o.log.Warn("engine unavailable with nothing to play", "event", "engine_unavailable_silence")
+	o.emit("ENGINE UNAVAILABLE: no music can be generated (see 'iar doctor' and the log).")
+	return silenceSource{}
 }
 
 // crossfade streams an equal-power transition from cur into next, then

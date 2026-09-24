@@ -145,19 +145,6 @@ func TestSteeringDropsQueueAndReachesNextSpec(t *testing.T) {
 	})
 }
 
-func TestNoiseModeSwitch(t *testing.T) {
-	eng := enginetest.NewMock()
-	o, _ := newTestOrchestrator(t, eng, session.New())
-	ack := o.Steer("generate brown noise")
-	if !strings.Contains(ack, "brown noise") {
-		t.Fatalf("ack = %q", ack)
-	}
-	waitFor(t, 5*time.Second, "noise state", func() bool { return o.Status().State == "noise" })
-	waitFor(t, 5*time.Second, "brown noise source", func() bool {
-		return strings.Contains(o.Status().Source, "brown noise")
-	})
-}
-
 func TestEngineNotReadyStaysSilentWithProgress(t *testing.T) {
 	eng := enginetest.NewMock()
 	eng.SetReady(false)
@@ -178,7 +165,7 @@ func TestEngineNotReadyStaysSilentWithProgress(t *testing.T) {
 	waitFor(t, 10*time.Second, "recovery to music", func() bool { return o.Status().State == "playing" })
 }
 
-func TestNoEngineFallsBackToBedWithProminentError(t *testing.T) {
+func TestNoEngineStaysSilentWithProminentError(t *testing.T) {
 	pl := &capturePlayer{}
 	store := session.NewStore(t.TempDir())
 	builder := prompting.NewBuilder(nil, testLogger())
@@ -203,8 +190,9 @@ func TestNoEngineFallsBackToBedWithProminentError(t *testing.T) {
 	if !strings.Contains(strings.ToUpper(errEvent), "UNAVAILABLE") {
 		t.Fatalf("error event not prominent: %q", errEvent)
 	}
-	waitFor(t, 3*time.Second, "noise bed playing", func() bool {
-		return strings.Contains(o.Status().Source, "noise bed")
+	waitFor(t, 3*time.Second, "silence, and the state saying why", func() bool {
+		st := o.Status()
+		return strings.Contains(st.Source, "silence") && st.State == "waiting for engine"
 	})
 }
 
@@ -539,16 +527,6 @@ func TestTapCarriesEveryAudiblePath(t *testing.T) {
 		// Silence phase: the tap must flow (silent bytes are correct here).
 	})
 
-	t.Run("noise mode", func(t *testing.T) {
-		sess := session.New()
-		sess.Mode = session.ModeNoise
-		sess.NoiseColor = "pink"
-		_, tap := newTappedOrchestrator(t, nil, sess)
-		waitFor(t, 5*time.Second, "noise on tap", func() bool {
-			return tap.size() > 40000 && nonSilent(tap.tail(8000))
-		})
-	})
-
 	t.Run("fresh generation", func(t *testing.T) {
 		o, tap := newTappedOrchestrator(t, enginetest.NewMock(), session.New())
 		waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
@@ -806,7 +784,7 @@ func TestSteerInterruptFlagConsumedExactlyOnce(t *testing.T) {
 
 	// Loading something else disarms a pending steer switch.
 	o.Steer("calmer")
-	o.LoadPreset("pink-noise")
+	o.LoadPreset("sleep")
 	o.mu.Lock()
 	armed = o.steerPending
 	o.mu.Unlock()
@@ -923,12 +901,6 @@ func TestSkipAckHonesty(t *testing.T) {
 	o.mu.Unlock()
 	if got := o.Skip(); got != "skipping to the next track" {
 		t.Fatalf("queued skip ack = %q", got)
-	}
-	o.mu.Lock()
-	o.sess.Mode = session.ModeNoise
-	o.mu.Unlock()
-	if got := o.Skip(); !strings.Contains(got, "noise") {
-		t.Fatalf("noise-mode skip ack = %q", got)
 	}
 }
 
@@ -1225,11 +1197,6 @@ func TestQueueTracksAndTrackData(t *testing.T) {
 		t.Fatalf("underruns while serving queue data: %d", u)
 	}
 
-	// Noise mode lists nothing to prefetch.
-	o.Steer("pink noise")
-	if _, tracks := o.QueueTracks(); len(tracks) != 0 {
-		t.Fatalf("noise mode lists %d tracks", len(tracks))
-	}
 }
 
 func TestSaveSnippetByIDAndIdempotency(t *testing.T) {

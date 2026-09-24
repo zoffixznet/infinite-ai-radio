@@ -1,6 +1,6 @@
 // Package export renders a session's steering context to an MP3 file:
-// tracks are generated (or noise synthesized), crossfade-joined into one
-// PCM stream and piped once through ffmpeg's libmp3lame encoder.
+// tracks are generated, crossfade-joined into one PCM stream and piped
+// once through ffmpeg's libmp3lame encoder.
 package export
 
 import (
@@ -75,9 +75,9 @@ func (opts MP3Options) tagArgs() []string {
 	return args
 }
 
-// Renderer renders exports. Engine may be nil for noise-mode sessions.
+// Renderer renders exports.
 type Renderer struct {
-	// Engine generates music tracks (unused for noise sessions).
+	// Engine generates music tracks; nil means none is available.
 	Engine engine.Engine
 	// Builder produces generation specs from the session context.
 	Builder *prompting.Builder
@@ -117,20 +117,9 @@ func (r *Renderer) Render(ctx context.Context, sess *session.Session, req Reques
 		progress = func(string) {}
 	}
 
-	var samples []int16
-	var err error
-	if sess.Mode == session.ModeNoise {
-		// Noise has no songs, only duration.
-		if req.Songs > 0 {
-			return fmt.Errorf("noise has no songs; ask for --minutes instead")
-		}
-		progress(fmt.Sprintf("synthesizing %d minutes of %s noise", req.Minutes, sess.NoiseColor))
-		samples = r.renderNoise(sess, req.Minutes*60*audio.SampleRate)
-	} else {
-		samples, err = r.renderMusic(ctx, sess, req, progress, log)
-		if err != nil {
-			return err
-		}
+	samples, err := r.renderMusic(ctx, sess, req, progress, log)
+	if err != nil {
+		return err
 	}
 	audio.ApplyEdgeFades(samples, audio.SampleRate/2)
 
@@ -151,19 +140,13 @@ func (r *Renderer) Render(ctx context.Context, sess *session.Session, req Reques
 	return nil
 }
 
-// renderNoise synthesizes the requested noise directly.
-func (r *Renderer) renderNoise(sess *session.Session, totalFrames int) []int16 {
-	gen := audio.NewNoiseGenerator(audio.ParseNoiseColor(sess.NoiseColor), 0.3)
-	return gen.Generate(totalFrames)
-}
-
 // renderMusic generates whole songs on the radio's own quality path -
 // a stocked lyric sheet first so vocal songs are sung from the
 // writer's words, then plan and render so each song's length follows
 // its lyrics - and crossfade-joins them. Nothing is cut mid-song.
 func (r *Renderer) renderMusic(ctx context.Context, sess *session.Session, req Request, progress func(string), log *slog.Logger) ([]int16, error) {
 	if r.Engine == nil {
-		return nil, fmt.Errorf("music engine unavailable; only noise sessions can be exported right now")
+		return nil, fmt.Errorf("music engine unavailable; nothing can be exported until it is installed (run 'iar setup')")
 	}
 	fadeFrames := int(r.CrossfadeSeconds * audio.SampleRate)
 	wantFrames := req.Minutes * 60 * audio.SampleRate

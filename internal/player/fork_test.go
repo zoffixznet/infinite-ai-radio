@@ -181,7 +181,7 @@ func TestSwitchedOffLanguagesSurviveASessionSwitch(t *testing.T) {
 	o.SetLanguage(off, false)
 
 	for _, switchTo := range []func(){
-		func() { o.LoadPreset("pink-noise") },
+		func() { o.LoadPreset("sleep") },
 		func() { o.NewSession("dark techno with vocals") },
 	} {
 		switchTo()

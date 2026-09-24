@@ -17,7 +17,7 @@ import (
 // Config is the user-tunable configuration. Every field has a working
 // default; the config file only needs to contain overrides.
 type Config struct {
-	// Engine selects the generation engine: "acestep" or "noise".
+	// Engine selects the generation engine: "acestep" or "tone".
 	Engine string `json:"engine"`
 	// Player selects the audio output backend: "auto", "pipe", "null" or
 	// "file". "auto" picks the best available real backend.
@@ -33,9 +33,6 @@ type Config struct {
 	BufferTracks int `json:"buffer_tracks"`
 	// Volume is the output volume in percent (0-100).
 	Volume int `json:"volume"`
-	// BedWhileWaiting plays a quiet noise bed while the first track is
-	// prepared instead of the default silence-with-progress.
-	BedWhileWaiting bool `json:"bed_while_waiting"`
 	// PipeLatencyMS is how much buffering the system audio player is
 	// asked for; generous values ride out load spikes.
 	PipeLatencyMS int `json:"pipe_latency_ms"`
@@ -335,6 +332,11 @@ func purgeObsoleteKeys(data []byte) ([]byte, bool) {
 
 // sanitize clamps out-of-range values back to safe ones.
 func (c *Config) sanitize() {
+	if c.Engine == "noise" {
+		// The noise engine of older versions; the tone engine is what
+		// plays without a graphics card now.
+		c.Engine = "tone"
+	}
 	if c.Buffer.Songs < 3 {
 		c.Buffer.Songs = 3
 	}

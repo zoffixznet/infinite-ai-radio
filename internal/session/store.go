@@ -81,8 +81,10 @@ func (st *Store) Load(name string) (*Session, error) {
 	if s.Name == "" {
 		s.Name = SanitizeName(name)
 	}
-	if s.Mode == "" {
-		s.Mode = ModeMusic
+	if strings.TrimSpace(s.BasePrompt) == "" {
+		// A session saved with nothing to describe its sound (the noise
+		// sessions of older versions) plays the default one.
+		s.BasePrompt = DefaultPrompt
 	}
 	return &s, nil
 }

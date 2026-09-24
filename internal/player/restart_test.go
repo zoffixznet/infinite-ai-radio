@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"iar/internal/engine"
-	"iar/internal/engine/enginetest"
 	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
@@ -108,26 +107,4 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	if batch := o.batchFor(epoch); batch != 1 {
 		t.Errorf("batch after the restart = %d, want 1", batch)
 	}
-}
-
-// In noise mode nothing is generated ahead, so there is nothing to
-// start over and nothing is touched.
-func TestRestartGenerationIsHonestWhenNothingWillCome(t *testing.T) {
-	newRadio := func(t *testing.T, sess *session.Session) *Orchestrator {
-		t.Helper()
-		return New(testConfig(), enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()),
-			session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
-	}
-	t.Run("noise", func(t *testing.T) {
-		sess := session.New()
-		sess.Mode = session.ModeNoise
-		o := newRadio(t, sess)
-		before := o.Status().Epoch
-		if ack := o.RestartGeneration(); !strings.Contains(ack, "noise mode") {
-			t.Fatalf("noise ack = %q", ack)
-		}
-		if after := o.Status().Epoch; after != before {
-			t.Fatalf("noise mode moved the epoch %d -> %d for nothing", before, after)
-		}
-	})
 }

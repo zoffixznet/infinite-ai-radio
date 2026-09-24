@@ -104,8 +104,8 @@ func TestControllerSessionFlow(t *testing.T) {
 	if !strings.Contains(resp, "focus-time") {
 		t.Fatalf("load resp = %q", resp)
 	}
-	resp, _ = c.Handle("preset pink-noise")
-	if !strings.Contains(resp, "pink") {
+	resp, _ = c.Handle("preset sleep")
+	if !strings.Contains(resp, "drones") {
 		t.Fatalf("preset resp = %q", resp)
 	}
 	resp, _ = c.Handle("status")
@@ -117,7 +117,7 @@ func TestControllerSessionFlow(t *testing.T) {
 func TestControllerDeleteConfirmation(t *testing.T) {
 	c := newController(t)
 	c.Handle("name keeper")
-	c.Handle("preset pink-noise") // switch away so keeper can be deleted
+	c.Handle("preset sleep") // switch away so keeper can be deleted
 	resp, _ := c.Handle("delete")
 	if !strings.Contains(resp, "usage") {
 		t.Fatalf("delete usage = %q", resp)

@@ -74,7 +74,7 @@ func bankPresetTracks(ctx context.Context, a *app) error {
 	const perPreset = 2
 	var todo []*session.Preset
 	for _, p := range session.NewStore(a.paths.SessionsDir()).Presets() {
-		if p.Mode == session.ModeMusic && lib.Count(p.Name) < perPreset {
+		if lib.Count(p.Name) < perPreset {
 			todo = append(todo, p)
 		}
 	}

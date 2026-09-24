@@ -102,27 +102,8 @@ func TestRenderRequestValidation(t *testing.T) {
 	if err := r.Render(context.Background(), session.New(), Request{Songs: MaxSongs + 1, OutPath: out}); err == nil || !strings.Contains(err.Error(), "capped") {
 		t.Fatalf("songs cap err = %v", err)
 	}
-	noise := session.New()
-	noise.Mode = session.ModeNoise
-	noise.NoiseColor = "pink"
-	if err := r.Render(context.Background(), noise, Request{Songs: 1, OutPath: out}); err == nil || !strings.Contains(err.Error(), "no songs") {
-		t.Fatalf("noise songs err = %v", err)
-	}
-}
-
-func TestRenderNoiseToMP3(t *testing.T) {
-	requireTools(t)
-	out := filepath.Join(t.TempDir(), "noise.mp3")
-	r := &Renderer{}
-	sess := session.New()
-	sess.Mode = session.ModeNoise
-	sess.NoiseColor = "pink"
-	if err := r.Render(context.Background(), sess, Request{Minutes: 1, OutPath: out}); err != nil {
-		t.Fatal(err)
-	}
-	codec, dur := probe(t, out)
-	if codec != "mp3" || dur < 59 || dur > 61 {
-		t.Fatalf("codec %s, duration %.1f", codec, dur)
+	if err := r.Render(context.Background(), session.New(), Request{Minutes: 1, OutPath: out}); err == nil || !strings.Contains(err.Error(), "engine unavailable") {
+		t.Fatalf("no-engine err = %v", err)
 	}
 }
 

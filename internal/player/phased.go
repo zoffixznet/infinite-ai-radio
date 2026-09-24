@@ -298,12 +298,8 @@ func (o *Orchestrator) ReportSkipped(seconds float64) {
 // last rung's wait has run out.
 func (o *Orchestrator) wantCycle(epoch int) bool {
 	o.mu.Lock()
-	mode := o.sess.Mode
 	cooldown := o.cycleCooldown
 	o.mu.Unlock()
-	if mode != session.ModeMusic {
-		return false
-	}
 	if time.Now().Before(cooldown) {
 		// A recent cycle gave up on persistent failures; do not spin
 		// the engine awake again until the cooldown passes.
@@ -695,12 +691,11 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		case <-time.After(500 * time.Millisecond):
 		}
 		o.mu.Lock()
-		mode := o.sess.Mode
 		// A stopped player takes nothing: the store fills for the
 		// others, and the song it was on is still its next.
 		need := len(o.queue) < phasedPrefetch && !o.stopped
 		o.mu.Unlock()
-		if mode != session.ModeMusic || !need {
+		if !need {
 			continue
 		}
 		epoch, sess := o.snapshotSession()

@@ -152,7 +152,7 @@ func (o *Orchestrator) retitleLive(which, title string) string {
 		take(o.prevTrack)
 	case "":
 		// Only what is actually coming out of the speakers: with the
-		// noise bed playing there is no song on screen to rename.
+		// nothing but silence there is no song on screen to rename.
 		if ts, ok := o.cur.(*trackSource); ok {
 			take(ts.track)
 		}

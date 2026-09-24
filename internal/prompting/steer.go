@@ -5,7 +5,6 @@
 package prompting
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -20,8 +19,6 @@ type Ack struct {
 	// queue of not-yet-played tracks should be refreshed).
 	ContextChanged bool
 }
-
-var noiseRe = regexp.MustCompile(`\b(pink|white|brown)?[ -]?noise\b`)
 
 // aboutRe captures a lyric theme from phrases like "vocals about winning".
 var aboutRe = regexp.MustCompile(`\babout\s+(.+)$`)
@@ -43,44 +40,19 @@ func Steer(s *session.Session, raw string) Ack {
 		return Ack{Text: "nothing to do"}
 	}
 
-	// Noise routing: "generate pink noise", "white noise please", ...
-	if m := noiseRe.FindStringSubmatch(text); m != nil {
-		color := m[1]
-		if color == "" {
-			color = "pink"
-		}
-		if s.Mode == session.ModeNoise && s.NoiseColor == color {
-			return Ack{Text: color + " noise is already playing"}
-		}
-		s.Mode = session.ModeNoise
-		s.NoiseColor = color
-		ack := fmt.Sprintf("switching to %s noise", color)
-		s.RecordOnly(raw, ack)
-		return Ack{Text: ack, ContextChanged: true}
-	}
-
-	// Any other input while in noise mode returns to music.
-	prefix := ""
-	modeChanged := false
-	if s.Mode == session.ModeNoise {
-		s.Mode = session.ModeMusic
-		prefix = "back to music; "
-		modeChanged = true
-	}
-
 	// Vocal routing.
 	if vocalOffRe.MatchString(text) {
-		if !s.Vocal && !modeChanged {
+		if !s.Vocal {
 			return Ack{Text: "already instrumental"}
 		}
 		s.Vocal = false
 		s.LyricsTheme = ""
-		ack := prefix + "vocals off, instrumental from the next track"
+		ack := "vocals off, instrumental from the next track"
 		s.RecordOnly(raw, ack)
 		return Ack{Text: ack, ContextChanged: true}
 	}
 	if vocalOnRe.MatchString(text) && !vocalOffRe.MatchString(text) {
-		changed := !s.Vocal || modeChanged
+		changed := !s.Vocal
 		s.Vocal = true
 		if m := aboutRe.FindStringSubmatch(text); m != nil {
 			theme := strings.TrimSpace(m[1])
@@ -99,7 +71,7 @@ func Steer(s *session.Session, raw string) Ack {
 		if !changed {
 			return Ack{Text: "vocals are already on"}
 		}
-		ack := prefix + "vocals on"
+		ack := "vocals on"
 		if s.LyricsTheme != "" {
 			ack += " (theme: " + s.LyricsTheme + ")"
 		}
@@ -111,14 +83,14 @@ func Steer(s *session.Session, raw string) Ack {
 	EnsureSpec(s)
 	before := s.Spec.Clone()
 	descr := applyText(s, text)
-	if before.Equal(s.Spec) && !modeChanged {
+	if before.Equal(s.Spec) {
 		return Ack{Text: "already in effect; nothing changed"}
 	}
 	if descr == "" {
 		descr = text
 	}
 	s.AddTweak(raw, descr)
-	return Ack{Text: prefix + "steering: " + descr, ContextChanged: true}
+	return Ack{Text: "steering: " + descr, ContextChanged: true}
 }
 
 // SessionFromPrompt creates a fresh session seeded from a free-text
@@ -132,15 +104,6 @@ func SessionFromPrompt(prompt string) *session.Session {
 		return s
 	}
 	text := strings.ToLower(prompt)
-	if m := noiseRe.FindStringSubmatch(text); m != nil {
-		color := m[1]
-		if color == "" {
-			color = "pink"
-		}
-		s.Mode = session.ModeNoise
-		s.NoiseColor = color
-		return s
-	}
 	if vocalOnRe.MatchString(text) && !vocalOffRe.MatchString(text) {
 		s.Vocal = true
 		if m := aboutRe.FindStringSubmatch(text); m != nil {

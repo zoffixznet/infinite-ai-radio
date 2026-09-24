@@ -136,7 +136,7 @@ func TestGroupOrderAndRender(t *testing.T) {
 		"chiptune,deep-house,funk-soul,sunshine-pop," +
 		"boom-bap,epic-score,night-drive,reggae-dub,roadhouse-country," +
 		"chamber-strings,deep-focus,jazz-club,lofi-study," +
-		"pink-noise,sleep"
+		"sleep"
 	if got := strings.Join(presets, ","); got != want {
 		t.Fatalf("preset order = %q\nwant %q", got, want)
 	}
@@ -173,7 +173,7 @@ func TestGroupOrderAndRender(t *testing.T) {
 			t.Fatalf("group header %q missing:\n%s", g, text)
 		}
 	}
-	if strings.Index(text, "  high-energy:") > strings.Index(text, "  sleep-noise:") {
+	if strings.Index(text, "  high-energy:") > strings.Index(text, "  sleep:") {
 		t.Fatalf("preset groups out of order:\n%s", text)
 	}
 	for _, ln := range lines {

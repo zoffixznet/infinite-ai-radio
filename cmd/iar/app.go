@@ -14,6 +14,7 @@ import (
 	"iar/internal/config"
 	"iar/internal/engine"
 	"iar/internal/engine/acestep"
+	"iar/internal/engine/tone"
 	"iar/internal/library"
 	"iar/internal/logging"
 	"iar/internal/mail"
@@ -84,8 +85,8 @@ func (a *app) daemonLogFile() string {
 // healthy disk buffer plays for free without waking the engine.
 func (a *app) buildEngine(ctx context.Context, dormant bool) (engine.Engine, *acestep.Remote, string) {
 	switch a.cfg.Engine {
-	case "noise":
-		return nil, nil, ""
+	case "tone":
+		return tone.New(0), nil, ""
 	case "acestep":
 		if !acestep.Installed(a.paths.EngineDir()) {
 			return nil, nil, "music engine not installed; run 'iar setup' (or 'make setup') first"
@@ -105,7 +106,7 @@ func (a *app) buildEngine(ctx context.Context, dormant bool) (engine.Engine, *ac
 		})
 		return eng, remote, ""
 	default:
-		return nil, nil, fmt.Sprintf("unknown engine %q in config; running noise only", a.cfg.Engine)
+		return tone.New(0), nil, fmt.Sprintf("unknown engine %q in config; playing tones instead", a.cfg.Engine)
 	}
 }
 

@@ -339,7 +339,7 @@ type sandbox struct {
 	dir, bin string
 	port     int
 	base     string
-	engine   string   // "noise" or "acestep" (fake daemon)
+	engine   string   // "tone" or "acestep" (fake daemon)
 	args     []string // extra flags for the player process
 	player   *exec.Cmd
 	stdin    io.WriteCloser
@@ -357,7 +357,7 @@ func buildBinary(t *testing.T, dir string) string {
 }
 
 func startSandbox(t *testing.T) *sandbox {
-	sb := prepareSandbox(t, "noise", "")
+	sb := prepareSandbox(t, "tone", "")
 	finishSandbox(t, sb)
 	return sb
 }
@@ -926,11 +926,7 @@ func TestRealBrowser(t *testing.T) {
 	// Emptying the radio's own buffer is the one button that replaces
 	// the preset detour - load something else, load this back - that
 	// used to be the only way to start the batch ladder over. It throws
-	// away everything made ahead, so it asks first. This station is
-	// noise, which needs no generation at all, and the answer says so
-	// rather than pretending something was done. (The music-mode
-	// answer is asserted where there is a buffer to empty, in
-	// TestRealBrowserBufferedNextExclusive.)
+	// away everything made ahead, so it asks first.
 	w.click("#more")
 	w.click("#bufflush")
 	if text := w.alertText(); !strings.Contains(text, "Empty the radio's buffer?") {
@@ -940,22 +936,22 @@ func TestRealBrowser(t *testing.T) {
 	waitFor(t, 15*time.Second, "the buffer flush ack", func() bool {
 		var ack string
 		w.exec(`return (document.getElementById('bufflushstatus')||{}).textContent||'';`, &ack)
-		return strings.Contains(ack, "noise mode") && !strings.Contains(ack, "failed")
+		return strings.Contains(ack, "buffer") && !strings.Contains(ack, "failed")
 	})
 	w.click("#sheetclose")
 
 	// Station bands are collapsible; open them all so the target row is
 	// clickable.
 	w.exec(`document.querySelectorAll('#sessions details').forEach(function (d) { d.open = true; }); return true;`, nil)
-	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("pink-noise", "Start preset"))+"/click", nil)
+	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("sleep", "Start preset"))+"/click", nil)
 	waitFor(t, 10*time.Second, "preset start ack", func() bool {
 		w.exec(`return document.getElementById('sessstatus').textContent;`, &ackText)
-		return strings.Contains(ackText, "preset pink-noise")
+		return strings.Contains(ackText, "preset sleep")
 	})
 	waitFor(t, 10*time.Second, "road-trip no longer playing", func() bool {
 		var title string
 		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &title)
-		return strings.HasPrefix(title, "pink-noise-")
+		return strings.HasPrefix(title, "sleep-")
 	})
 	// Delete goes through a confirmation dialog.
 	wdCall(t, "POST", w.base+"/element/"+w.findXPath(sessionButton("road-trip", "Delete"))+"/click", nil)
@@ -997,15 +993,25 @@ func TestRealBrowser(t *testing.T) {
 	// and what makes these accumulate.
 	var playingBefore string
 	w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &playingBefore)
+	// A station that has made no song yet has nothing worth keeping,
+	// so a change to it does not branch; the preset just loaded has to
+	// render its first song before the change is worth a branch.
+	waitFor(t, 60*time.Second, "the new station's first song", func() bool {
+		var st struct {
+			Queued int `json:"queued"`
+		}
+		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/state').then(function(r){return r.json()}).then(cb);`, &st)
+		return st.Queued >= 1
+	})
 	w.exec(`document.getElementById('steercard').open = true; return true;`, nil)
-	w.typeInto("#text", "brown noise")
+	w.typeInto("#text", "calmer")
 	w.click("#steer")
 	waitFor(t, 20*time.Second, "the change to branch the session", func() bool {
 		var playingNow string
 		w.exec(`var e=document.querySelector('#sessions .sess.playing .ctitle'); return e ? e.textContent : '';`, &playingNow)
 		return autoRows() >= 2 && playingNow != "" && playingNow != playingBefore
 	})
-	if !strings.Contains(playingBefore, "pink-noise-") {
+	if !strings.Contains(playingBefore, "sleep-") {
 		t.Fatalf("the session playing before the change was %q", playingBefore)
 	}
 	kept := strings.TrimSpace(strings.Split(playingBefore, "\u00b7")[0])
@@ -2410,7 +2416,7 @@ func seedChunk(t *testing.T, sb *sandbox, tag, file, title string, seconds int) 
 func TestRealBrowserSavedLoopFollowsTheSongPlaying(t *testing.T) {
 	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
 	sinkName, _ := nullSink(t)
-	sb := prepareSandbox(t, "noise", "")
+	sb := prepareSandbox(t, "tone", "")
 	// Long enough that it is still playing while the loop is turned on
 	// and the other song picked: this test is about which song the loop
 	// holds, which is not a question if the song ends underneath it.

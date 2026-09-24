@@ -7,32 +7,6 @@ import (
 	"iar/internal/session"
 )
 
-func TestSteerNoiseRouting(t *testing.T) {
-	s := session.New()
-	ack := Steer(s, "generate pink noise")
-	if s.Mode != session.ModeNoise || s.NoiseColor != "pink" {
-		t.Fatalf("session not routed to noise: %+v", s)
-	}
-	if !ack.ContextChanged || !strings.Contains(ack.Text, "pink noise") {
-		t.Fatalf("ack = %+v", ack)
-	}
-
-	ack = Steer(s, "brown noise please")
-	if s.NoiseColor != "brown" {
-		t.Fatalf("color not switched: %s", s.NoiseColor)
-	}
-	_ = ack
-
-	// Any musical tweak returns to music mode.
-	ack = Steer(s, "calmer")
-	if s.Mode != session.ModeMusic {
-		t.Fatal("did not return to music mode")
-	}
-	if !strings.Contains(ack.Text, "back to music") {
-		t.Fatalf("ack should mention returning to music: %q", ack.Text)
-	}
-}
-
 func TestSteerVocalRouting(t *testing.T) {
 	s := session.New()
 	ack := Steer(s, "add vocals about winning the day")
@@ -290,7 +264,7 @@ func TestOldSessionsMigrateToSpec(t *testing.T) {
 
 func TestSessionFromPrompt(t *testing.T) {
 	s := SessionFromPrompt("dark techno")
-	if s.BasePrompt != "dark techno" || s.Vocal || s.Mode != session.ModeMusic {
+	if s.BasePrompt != "dark techno" || s.Vocal {
 		t.Fatalf("plain prompt session wrong: %+v", s)
 	}
 	if !strings.HasPrefix(s.Name, "prompt-dark-techno") {
@@ -300,11 +274,6 @@ func TestSessionFromPrompt(t *testing.T) {
 	v := SessionFromPrompt("energetic rock with vocals about winning")
 	if !v.Vocal || v.LyricsTheme != "winning" {
 		t.Fatalf("vocal prompt session wrong: vocal=%v theme=%q", v.Vocal, v.LyricsTheme)
-	}
-
-	n := SessionFromPrompt("brown noise")
-	if n.Mode != session.ModeNoise || n.NoiseColor != "brown" {
-		t.Fatalf("noise prompt session wrong: %+v", n)
 	}
 
 	empty := SessionFromPrompt("   ")

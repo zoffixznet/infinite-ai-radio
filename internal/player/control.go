@@ -21,7 +21,6 @@ func (o *Orchestrator) Steer(text string) string {
 	o.mu.Lock()
 	before := o.sess.Snapshot()
 	ack := prompting.Steer(o.sess, text)
-	musicMode := o.sess.Mode == session.ModeMusic
 	forked := false
 	if ack.ContextChanged {
 		forked = o.forkLocked(before)
@@ -31,15 +30,10 @@ func (o *Orchestrator) Steer(text string) string {
 		if dropped > 0 {
 			o.log.Info("steering dropped queued tracks", "event", "queue_dropped", "count", dropped)
 		}
-		switch o.sess.Mode {
-		case session.ModeNoise:
-			o.switchReq = true
-		default:
-			// Interrupt the current track: the mixer switches to the
-			// first post-steer track as soon as one is queued instead
-			// of letting the pre-steer track play to its end.
-			o.steerPending = true
-		}
+		// Interrupt the current track: the mixer switches to the first
+		// post-steer track as soon as one is queued instead of letting
+		// the pre-steer track play to its end.
+		o.steerPending = true
 	}
 	epochAt := o.epoch
 	sessPtr := o.sess
@@ -48,7 +42,7 @@ func (o *Orchestrator) Steer(text string) string {
 	kept := o.afterFork(before, forked)
 	o.saveSession()
 	o.kickGen()
-	if ack.ContextChanged && musicMode {
+	if ack.ContextChanged {
 		// The helper model may refine the deterministic interpretation
 		// in the background; the result lands only if no further
 		// steering happened meanwhile and affects later tracks.
@@ -65,12 +59,9 @@ func (o *Orchestrator) Steer(text string) string {
 			}
 		})
 	}
-	response := ack.Text
-	if musicMode {
-		response += o.steerContextNote(text)
-		if ack.ContextChanged {
-			response += o.switchEstimateNote("sound")
-		}
+	response := ack.Text + o.steerContextNote(text)
+	if ack.ContextChanged {
+		response += o.switchEstimateNote("sound")
 	}
 	response += kept
 	o.log.Info("steering accepted", "event", "steering", "input", text, "ack", response)
@@ -124,9 +115,7 @@ func (o *Orchestrator) Clear() string {
 	forked := o.forkLocked(before)
 	o.epoch++
 	o.queue = nil
-	if o.sess.Mode == session.ModeMusic {
-		o.steerPending = true
-	}
+	o.steerPending = true
 	o.mu.Unlock()
 	kept := o.afterFork(before, forked)
 	o.saveSession()
@@ -155,10 +144,6 @@ func (o *Orchestrator) Clear() string {
 // asked to be rid of, and the offline 'iar buffer clear' does the same.
 func (o *Orchestrator) RestartGeneration() string {
 	o.mu.Lock()
-	if o.sess.Mode == session.ModeNoise {
-		o.mu.Unlock()
-		return "noise mode: nothing is generated ahead, so there is nothing to start over"
-	}
 	oldEpoch := o.epoch
 	o.epoch++
 	queued := len(o.queue)
@@ -247,9 +232,9 @@ func (o *Orchestrator) LyricsGen(name string) string {
 	ack := "lyric writer: " + gen.Name()
 	o.sess.RecordOnly("lyrics "+gen.Name(), ack)
 	forked := o.forkLocked(before)
-	// Only vocal music tracks sound different under a new writer;
-	// drop the queue then so the change is heard soon.
-	refresh := o.sess.Vocal && o.sess.Mode == session.ModeMusic
+	// Only vocal tracks sound different under a new writer; drop the
+	// queue then so the change is heard soon.
+	refresh := o.sess.Vocal
 	if refresh {
 		o.epoch++
 		o.queue = nil
@@ -273,7 +258,6 @@ func (o *Orchestrator) LyricsGen(name string) string {
 // is empty.
 func (o *Orchestrator) Skip() string {
 	o.mu.Lock()
-	noise := o.sess.Mode == session.ModeNoise
 	queued := len(o.queue)
 	stale := o.lastGoodStaleLocked()
 	looping := o.lastGood != nil && !stale
@@ -287,11 +271,11 @@ func (o *Orchestrator) Skip() string {
 	// it against itself - which is what "skipping" looked like from the
 	// outside.
 	var skipped float64
-	if noise || queued > 0 {
+	if queued > 0 {
 		o.switchReq = true
 		// The rest of this song is music consumed without being heard:
 		// the ladder's next rung comes that much sooner.
-		if ts, ok := o.cur.(*trackSource); ok && queued > 0 {
+		if ts, ok := o.cur.(*trackSource); ok {
 			if rem := ts.remaining(); rem > 0 {
 				skipped = float64(rem) / audio.SampleRate
 			}
@@ -305,8 +289,6 @@ func (o *Orchestrator) Skip() string {
 		loopNote = " (loop turned off)"
 	}
 	switch {
-	case noise:
-		return "noise mode: nothing to skip"
 	case queued > 0:
 		return "skipping to the next track" + loopNote
 	case stale:
@@ -700,17 +682,12 @@ func (o *Orchestrator) stateLocked() string {
 		return "paused"
 	case o.cur == nil:
 		return "starting"
-	case o.sess.Mode == session.ModeNoise:
-		return "noise"
 	default:
-		switch o.cur.(type) {
-		case silenceSource:
-			return "preparing"
-		case *noiseSource:
-			if o.eng == nil || !o.eng.Ready() {
-				return "waiting for engine (noise bed)"
+		if _, silent := o.cur.(silenceSource); silent {
+			if o.eng == nil {
+				return "waiting for engine"
 			}
-			return "noise bed (first track generating)"
+			return "preparing"
 		}
 		return "playing"
 	}
@@ -858,7 +835,7 @@ func (o *Orchestrator) changeLanguages(apply func(*session.Session), event, deta
 	if changed {
 		pinned = o.releasePinLocked()
 	}
-	refresh := vocal && changed && o.sess.Mode == session.ModeMusic
+	refresh := vocal && changed
 	if refresh {
 		o.epoch++
 		o.queue = nil

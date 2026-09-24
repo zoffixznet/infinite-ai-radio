@@ -1,6 +1,6 @@
 // Package audio implements the PCM plumbing shared by the whole
 // application: the internal sample format, a non-blocking ring buffer,
-// crossfading, noise synthesis, WAV decoding and the playback backends.
+// crossfading, WAV decoding and the playback backends.
 //
 // Everything in the pipeline uses one format: signed 16-bit little-endian
 // samples, 48 kHz, stereo. Anything else is converted at the boundary.

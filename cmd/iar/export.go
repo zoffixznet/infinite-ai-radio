@@ -81,7 +81,7 @@ started (or reused) as needed.`,
 				Log:              a.log,
 				Progress:         func(line string) { fmt.Println(line) },
 			}
-			if sess.Mode == session.ModeMusic {
+			{
 				// The radio's own order: the writer gets the card to
 				// itself for every song, and only then does the engine
 				// wake to plan and render them.

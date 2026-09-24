@@ -16,8 +16,8 @@ func TestPresetFilesAllParse(t *testing.T) {
 	if len(ps) != len(entries) {
 		t.Fatalf("%d preset files but %d parsed presets (malformed JSON is dropped silently)", len(entries), len(ps))
 	}
-	if len(ps) != 21 {
-		t.Fatalf("preset count = %d; want 21", len(ps))
+	if len(ps) != 20 {
+		t.Fatalf("preset count = %d; want 20", len(ps))
 	}
 	names := map[string]bool{}
 	for _, p := range ps {
@@ -31,14 +31,14 @@ func TestPresetFilesAllParse(t *testing.T) {
 		if GroupIndex(p.Group) >= len(GroupOrder) {
 			t.Errorf("preset %s has unknown group %q", p.Name, p.Group)
 		}
-		if p.Mode == ModeMusic && p.Prompt == "" {
-			t.Errorf("music preset %s has no prompt", p.Name)
+		if p.Prompt == "" {
+			t.Errorf("preset %s has no prompt", p.Name)
 		}
 		if p.Vocal && p.LyricsTheme == "" {
 			t.Errorf("vocal preset %s has no lyrics theme", p.Name)
 		}
 	}
-	for _, want := range []string{"nu-metal", "grind", "hard-rock", "pink-noise", "lofi-study"} {
+	for _, want := range []string{"nu-metal", "grind", "hard-rock", "sleep", "lofi-study"} {
 		if !names[want] {
 			t.Errorf("preset %s missing", want)
 		}
@@ -68,7 +68,7 @@ func TestPresetGroupsOrdered(t *testing.T) {
 	mixed := []*Preset{
 		{Name: "z", Group: "high-energy"},
 		{Name: "a", Group: "mystery"},
-		{Name: "m", Group: "sleep-noise"},
+		{Name: "m", Group: "sleep"},
 	}
 	SortPresets(mixed)
 	if mixed[0].Name != "z" || mixed[1].Name != "m" || mixed[2].Name != "a" {

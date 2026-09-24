@@ -25,21 +25,22 @@ fail() { echo "SMOKE FAIL: $1"; exit 1; }
 log="$IAR_DATA_DIR/logs/iar.log"
 out="$SANDBOX/out.txt"
 
-# Drive a full interactive session through the plain interface. The noise
-# engine keeps the run heavy-model-free; every other layer is the real one.
+# Drive a full interactive session through the plain interface. The tone
+# engine keeps the run heavy-model-free; every other layer is the real
+# one, the store, the ladder and the export included.
 {
   echo "status"
-  echo "generate white noise"
+  echo "calmer"
   sleep 2
-  echo "brown noise please"
+  echo "more synths"
   sleep 1
   echo "name smoke-session"
   echo "mp3 1"
   # Give the background export time to finish.
-  sleep 6
+  sleep 8
   echo "sessions"
   echo "quit"
-} | "$BIN" --engine noise --player null --plain > "$out" 2>&1 || fail "iar exited non-zero"
+} | "$BIN" --engine tone --player null --plain --no-llm > "$out" 2>&1 || fail "iar exited non-zero"
 
 # Which build is running, in both places a listener can read it: the
 # line printed at startup and the status block. The phone shows the same
@@ -47,39 +48,42 @@ out="$SANDBOX/out.txt"
 grep -q "^iar: Infinite AI Radio " "$out" || fail "the startup output does not name the running build"
 grep -qE "^ +version:  " "$out" || fail "status does not name the running build"
 
-grep -q "switching to white noise" "$out" || fail "steering acknowledgment missing"
-grep -q "switching to brown noise" "$out" || fail "second steering acknowledgment missing"
+grep -q "steering: calmer" "$out" || fail "steering acknowledgment missing"
+grep -q "steering: more synths" "$out" || fail "second steering acknowledgment missing"
 grep -q "session saved as smoke-session" "$out" || fail "session naming failed"
 grep -q "smoke-session" "$IAR_DATA_DIR/sessions/smoke-session.json" || fail "session file missing"
 
-# Playback actually ran: the log must show a noise source playing.
+# Playback actually ran: the log must show a song playing.
 grep -q '"event":"now_playing"' "$log" || fail "no playback in log"
+grep -q '"event":"render_finished"' "$log" || fail "no song rendered into the store"
 grep -q '"event":"steering"' "$log" || fail "no steering event in log"
 
-# The export completed and is a valid MP3 of ~1 minute.
+# The export completed and is a valid MP3 of at least a minute: whole
+# songs are joined until the minute is reached, never cut mid-song, so
+# it may run up to one tone song (20 s) longer.
 mp3=$(ls "$IAR_DATA_DIR"/exports/*.mp3 2>/dev/null | head -1)
 [ -n "$mp3" ] || fail "no exported mp3 found"
 codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$mp3")
 [ "$codec" = "mp3" ] || fail "export codec is $codec"
 dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$mp3")
-awk -v d="$dur" 'BEGIN { exit !(d >= 58 && d <= 62) }' || fail "export duration $dur not ~60s"
+awk -v d="$dur" 'BEGIN { exit !(d >= 58 && d <= 85) }' || fail "export duration $dur not ~60-80s"
 
 # A session with a generated name is kept, however old: every change to
 # the sound branches into one, so they are the states to go back to.
 cat > "$IAR_DATA_DIR/sessions/session-20260101-000000.json" <<'JSON'
 {"name":"session-20260101-000000","created":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z",
- "last_played":"2026-01-01T00:00:00Z","mode":"music","base_prompt":"old stale prompt","noise_bed":"pink"}
+ "last_played":"2026-01-01T00:00:00Z","base_prompt":"old stale prompt"}
 JSON
 
 # Resume the saved session by flag and confirm it comes back with the
-# same steering context (brown noise).
+# same steering context (two tweaks).
 resume_out="$SANDBOX/resume.txt"
 {
   echo "status"
   sleep 1
   echo "quit"
-} | "$BIN" --session smoke-session --player null --plain > "$resume_out" 2>&1 || fail "resume run exited non-zero"
-grep -q "brown noise" "$resume_out" || fail "resumed session lost its steering context"
+} | "$BIN" --session smoke-session --engine tone --player null --plain --no-llm > "$resume_out" 2>&1 || fail "resume run exited non-zero"
+grep -q "+2 tweaks" "$resume_out" || fail "resumed session lost its steering context"
 [ -f "$IAR_DATA_DIR/sessions/session-20260101-000000.json" ] || fail "an old automatic session was deleted by itself"
 [ -f "$IAR_DATA_DIR/sessions/smoke-session.json" ] || fail "named session lost"
 
@@ -92,7 +96,7 @@ grep -q "^presets:" "$list" || fail "listing lacks the presets group"
 grep -q "^auto-saved sessions:" "$list" || fail "listing lacks the auto group"
 awk '/^your sessions:/{a=NR} /^presets:/{b=NR} /^auto-saved sessions:/{c=NR} END{exit !(a && b && c && a<b && b<c)}' "$list" \
   || fail "listing groups out of order"
-grep -qE "^  smoke-session +brown noise +[0-9]+[smh] ago|^  smoke-session +brown noise +just now" "$list" \
+grep -qE "^  smoke-session +[a-z].* +[0-9]+[smh] ago$|^  smoke-session +[a-z].* +just now$" "$list" \
   || fail "named row lacks summary/last played: $(grep smoke-session "$list")"
 grep -qE "^    jazz-club +Late-night jazz combo" "$list" || fail "preset row format"
 grep -qE "^  high-energy:" "$list" || fail "preset group header missing"
@@ -114,7 +118,7 @@ grep -q "no session or preset named ghost-session" "$SANDBOX/ghost.txt" || fail 
 "$BIN" sessions delete sleep --yes | grep -q "preset sleep hidden" || fail "preset delete failed"
 "$BIN" presets | grep -q "^  sleep " && fail "hidden preset still listed"
 "$BIN" sessions | grep -q "^  sleep " && fail "hidden preset in the sessions listing"
-"$BIN" --preset sleep --player null --plain < /dev/null > "$SANDBOX/hidden.txt" 2>&1 && fail "hidden preset could be started"
+"$BIN" --preset sleep --engine tone --player null --plain < /dev/null > "$SANDBOX/hidden.txt" 2>&1 && fail "hidden preset could be started"
 grep -q "restore-presets" "$SANDBOX/hidden.txt" || fail "hidden preset start lacks the restore hint"
 "$BIN" sessions restore-presets | grep -q "restored 1 preset" || fail "restore-presets failed"
 "$BIN" presets | grep -q "^  sleep " || fail "preset not restored"

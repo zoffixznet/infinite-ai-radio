@@ -49,7 +49,7 @@ type LanguageState struct {
 
 // Status is a point-in-time snapshot for status displays.
 type Status struct {
-	// State summarizes what is audible: starting, playing, noise,
+	// State summarizes what is audible: starting, playing, stopped,
 	// looping, bed or paused.
 	State string
 	// Source describes the current audio source.
@@ -245,11 +245,6 @@ type Orchestrator struct {
 	// became the session's own. It is read only to convert sessions
 	// saved back then, and only those that carry no answer at all.
 	LegacyLanguagesOff []string
-	// Ephemeral keeps this run out of the record a restart resumes
-	// from: what it plays is a stand-in for what was asked for (a
-	// machine with no music engine can only make noise), and coming
-	// back to it later would be coming back to the wrong thing.
-	Ephemeral bool
 	// StateDir, when set, records which session is playing so other
 	// processes (the CLI's delete) can refuse to remove it.
 	StateDir *state.Dir
@@ -391,7 +386,7 @@ type Orchestrator struct {
 }
 
 // New assembles an orchestrator. eng may be nil to run without a music
-// engine (noise only, with clear messaging).
+// engine (silence, with clear messaging).
 func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store *session.Store, sess *session.Session, pl audio.Player, log *slog.Logger) *Orchestrator {
 	o := &Orchestrator{
 		cfg:      cfg,
@@ -455,7 +450,7 @@ func (o *Orchestrator) adoptLanguages(s *session.Session) {
 func (o *Orchestrator) Events() <-chan Event { return o.events }
 
 // Start launches the stream. It returns immediately; audio begins with the
-// session's noise bed and crossfades into generated music when ready.
+// silence and crossfades into generated music when ready.
 func (o *Orchestrator) Start(ctx context.Context) {
 	ctx, o.cancel = context.WithCancel(ctx)
 	o.runCtx = ctx
@@ -542,7 +537,7 @@ func (o *Orchestrator) Start(ctx context.Context) {
 // session's vague description into structured fields, in the
 // background. Curated preset prompts are already tag-rich and skipped.
 func (o *Orchestrator) expandSeedAsync(sess *session.Session) {
-	if sess.Preset != "" || sess.Mode != session.ModeMusic {
+	if sess.Preset != "" {
 		return
 	}
 	o.mu.Lock()
@@ -852,7 +847,7 @@ func (o *Orchestrator) wantGeneration() bool {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.sess.Mode == session.ModeMusic && len(o.queue) < o.cfg.BufferTracks
+	return len(o.queue) < o.cfg.BufferTracks
 }
 
 // failureBackoffBase scales the retry delay after generation failures
@@ -1027,14 +1022,10 @@ func (o *Orchestrator) phaseLoop(ctx context.Context) {
 // currentPhase derives the user-visible startup phase.
 func (o *Orchestrator) currentPhase() string {
 	o.mu.Lock()
-	mode := o.sess.Mode
 	genCount := o.genCount
 	queued := len(o.queue)
 	last := o.lastGood
 	o.mu.Unlock()
-	if mode == session.ModeNoise {
-		return "playing"
-	}
 	if o.eng == nil {
 		return "engine unavailable"
 	}
@@ -1100,10 +1091,9 @@ func (o *Orchestrator) engineFailed() bool {
 // library has one for this session's vibe.
 func (o *Orchestrator) seedFromLibrary() {
 	o.mu.Lock()
-	mode := o.sess.Mode
 	sessCopy := o.sess
 	o.mu.Unlock()
-	if o.eng == nil || mode != session.ModeMusic {
+	if o.eng == nil {
 		return
 	}
 	ctx := o.runCtx

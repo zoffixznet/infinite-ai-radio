@@ -66,9 +66,10 @@ that wants a graphics card and a few ordinary system tools.
   `pacat`. No other platform is supported yet.
 - An NVIDIA GPU with 8 GB or more of VRAM, and a reasonably current
   driver. Without one the music engine is impractically slow, though the
-  noise modes (pink, white, brown) still work on any machine. The engine
-  installs its own CUDA build of PyTorch, so there is no CUDA toolkit to
-  set up yourself.
+  radio itself runs on any machine with the tone engine (`--engine
+  tone`), which plays simple tone songs through the whole pipeline. The
+  engine installs its own CUDA build of PyTorch, so there is no CUDA
+  toolkit to set up yourself.
 - About 20 GB of disk space for the engine and the model weights.
 - `ffmpeg` (built with libmp3lame) and its `ffprobe`, plus `git`, `curl`
   and a C compiler. `iar setup` uses them once to fetch and build the
@@ -107,9 +108,9 @@ degrades gracefully rather than refusing to play:
   interpreter, and the music engine's own planner invents each song's
   words from the theme. Everything works; the lyrics are noticeably
   simpler than the lyric writer's.
-- **No GPU**: the noise modes (pink, white, brown) are synthesized by
-  the player itself and run anywhere; music generation is impractically
-  slow without a card.
+- **No GPU**: `--engine tone` plays short tone songs made by the
+  player itself, through the same store, ladder, phone and exports;
+  music generation is impractically slow without a card.
 
 ## Install
 
@@ -171,7 +172,7 @@ The other flags:
 ./iar "dark techno"          # start straight from a prompt
 ./iar --preset lofi-study    # start from a built-in preset
 ./iar --session gym-grind    # resume a saved session
-./iar --engine noise         # noise only, no GPU needed
+./iar --engine tone          # tone songs instead of music, no GPU needed
 ./iar --telemetry            # add a CPU, memory and graphics-card readout
 ./iar --plain                # line-based interface (used automatically in pipes)
 ./iar presets                # list the built-in presets
@@ -198,7 +199,7 @@ calmer
 switch to piano
 add vocals about winning
 no vocals
-generate pink noise
+switch to piano
 ```
 
 The player switches to the newly steered sound as soon as the first
@@ -389,7 +390,7 @@ one seeds a fresh session you can steer and name.
 | upbeat | `chiptune` · `deep-house` · `funk-soul` · `sunshine-pop` |
 | cruise | `boom-bap` · `epic-score` · `night-drive` · `reggae-dub` · `roadhouse-country` |
 | chill | `chamber-strings` · `deep-focus` · `jazz-club` · `lofi-study` |
-| sleep-noise | `pink-noise` · `sleep` |
+| sleep | `sleep` |
 
 `./iar presets` describes each one. A preset can be deleted like a
 session; `./iar sessions restore-presets` brings them all back.
@@ -744,8 +745,9 @@ everything else keeps its default. The complete set, with defaults:
 
 ### Top level
 
-- `engine`: `"acestep"` (AI music, default) or `"noise"` (pure noise
-  synthesis, no GPU needed). The `--engine` flag overrides per run.
+- `engine`: `"acestep"` (AI music, default) or `"tone"` (short tone
+  songs made by the player itself, no GPU needed). The `--engine` flag
+  overrides per run.
 - `player`: `"auto"` picks the best available backend (currently the
   pw-play/pacat pipe). `"pipe"`, `"null"` (silent, realtime-paced) and
   `"file"` (raw PCM to a file, used with `--player-file`) are mostly for
@@ -767,8 +769,6 @@ everything else keeps its default. The complete set, with defaults:
   control). A machine started with `--remote` has its own player off
   until `play` is typed; enabling the remote through the config file
   alone changes nothing.
-- `bed_while_waiting`: when true, a quiet noise bed plays while the
-  first track is prepared instead of the default silence-with-progress.
 - `pipe_latency_ms` (20-2000): how much buffering the system audio
   player is asked for. Larger values ride out heavy system load at the
   cost of a slightly slower response to volume/pause.
@@ -1095,13 +1095,6 @@ word-frequency list from Peter Norvig's [Natural Language Corpus
 Data](https://norvig.com/ngrams/), derived from the Google Web Trillion
 Word Corpus.
 
-**Noise synthesis.** White, pink and brown noise are synthesized
-directly by the player in pure Go - no model, no GPU: pink via Paul
-Kellet's filter, brown via a leaky integrator. Noise serves as the
-instant-start bed, the last-resort fallback when the engine is
-unavailable, and a first-class mode for sleep and masking via the
-`pink-noise` preset or steering ("generate brown noise").
-
 ## Troubleshooting
 
 `iar doctor` checks system tools, the GPU, the engine install and
@@ -1117,9 +1110,9 @@ log, which has the full story including the engine's own output.
   (in the header and in `iar doctor`) stays at zero, the audio stream
   itself is clean and the noise is electrical interference induced
   after the digital output.
-- **Generation failures** - the stream degrades gracefully (buffer,
-  then looping the last track, then a noise bed) and the engine
-  restarts itself; expect at most a couple of minutes of looped music.
+- **Generation failures** - the stream degrades gracefully (the store,
+  then looping the last track, then silence) and the engine restarts
+  itself; expect at most a couple of minutes of looped music.
   The interface and `iar doctor` show the failure streak and the last
   reason.
 

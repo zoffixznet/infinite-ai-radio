@@ -67,7 +67,8 @@ func TestLoadOverridesAndSanitizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Engine != "noise" {
+	// The noise engine of older versions is the tone engine now.
+	if cfg.Engine != "tone" {
 		t.Fatalf("engine = %s", cfg.Engine)
 	}
 	if cfg.TrackSeconds != 300 || cfg.Volume != 100 || cfg.CrossfadeSeconds != 0.5 {

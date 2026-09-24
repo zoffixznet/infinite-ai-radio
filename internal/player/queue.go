@@ -7,7 +7,6 @@ import (
 	"iar/internal/engine"
 	"iar/internal/library"
 	"iar/internal/prompting"
-	"iar/internal/session"
 	"iar/internal/trackbuffer"
 )
 
@@ -52,10 +51,6 @@ const maxLibraryFiller = 6
 func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	o.mu.Lock()
 	epoch := o.epoch
-	if o.sess.Mode != session.ModeMusic {
-		o.mu.Unlock()
-		return epoch, nil
-	}
 	key := library.Key(o.sess)
 	out := make([]QueueTrack, 0, len(o.queue)+maxLibraryFiller)
 	for _, t := range o.queue {

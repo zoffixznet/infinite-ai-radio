@@ -17,12 +17,9 @@ type Preset struct {
 	Name string `json:"name"`
 	// Description is a one-line summary for listings.
 	Description string `json:"description"`
-	// Mode, Prompt, NoiseColor, NoiseBed, Vocal and LyricsTheme seed the
-	// corresponding Session fields.
-	Mode        Mode   `json:"mode"`
+	// Prompt, Vocal and LyricsTheme seed the corresponding Session
+	// fields.
 	Prompt      string `json:"prompt"`
-	NoiseColor  string `json:"noise_color,omitempty"`
-	NoiseBed    string `json:"noise_bed"`
 	Vocal       bool   `json:"vocal"`
 	LyricsTheme string `json:"lyrics_theme,omitempty"`
 	// Group is the energy group the preset is listed under (one of
@@ -37,7 +34,7 @@ type Preset struct {
 // GroupOrder is the fixed display order of the preset energy groups:
 // pick a feeling first, steer the genre later. Unknown groups sort
 // after these.
-var GroupOrder = []string{"high-energy", "upbeat", "cruise", "chill", "sleep-noise"}
+var GroupOrder = []string{"high-energy", "upbeat", "cruise", "chill", "sleep"}
 
 // GroupIndex ranks a preset group for sorting; unknown groups come last.
 func GroupIndex(group string) int {
