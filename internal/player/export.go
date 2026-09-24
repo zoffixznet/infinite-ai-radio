@@ -129,9 +129,9 @@ func (o *Orchestrator) exportGate(ctx context.Context) error {
 		o.mu.Unlock()
 		healthy := mode == session.ModeNoise || o.eng == nil
 		if !healthy && o.phasedEnabled() {
-			// Phased playback feeds from disk; the export may run as
-			// long as a comfortable margin of rendered audio remains.
-			healthy = o.bufferedSeconds(epoch) >= float64(o.cfg.Buffer.RenderLowMinutes)*60/2
+			// Playback draws from the store; the export may have the
+			// engine whenever the generator has no rung of its own due.
+			healthy = !o.wantCycle(epoch)
 		} else if !healthy {
 			healthy = queued >= o.cfg.BufferTracks || !o.eng.Ready()
 		}

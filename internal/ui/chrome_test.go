@@ -35,7 +35,7 @@ func TestChromeDoesNotMoveWhileGenerating(t *testing.T) {
 		State: "playing", Source: "nu-metal", Session: "drive", Phase: "playing",
 		Phased: true, EngineName: "acestep", EngineReady: true,
 		BufferedTracks: 11, BufferedSeconds: 2000,
-		BufferTargetSeconds: 7200, BufferLowSeconds: 2700, Volume: 80,
+		StoreLevel: 11, StoreTarget: 72, NextBatchIn: 45 * time.Minute, Volume: 80,
 		Elapsed: 30 * time.Second, Duration: 200 * time.Second,
 	}
 	gen := base

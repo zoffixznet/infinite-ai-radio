@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,12 @@ type queueJSON struct {
 }
 
 func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	// Every check for new songs carries the seconds skipped with Next
+	// since the last one; skipping is faster consumption, and the
+	// generator's next batch comes that much sooner.
+	if v, err := strconv.ParseFloat(r.URL.Query().Get("skipped"), 64); err == nil && v > 0 && v < 24*60*60 {
+		s.ctl.ReportSkipped(v)
+	}
 	epoch, tracks := s.ctl.QueueTracks()
 	out := queueJSON{Epoch: epoch, Tracks: []queueTrackJSON{}}
 	for _, t := range tracks {

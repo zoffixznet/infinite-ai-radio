@@ -292,11 +292,20 @@ func (o *Orchestrator) Skip() string {
 	// skipping would restart the recording already playing and crossfade
 	// it against itself - which is what "skipping" looked like from the
 	// outside.
+	var skipped float64
 	if noise || queued > 0 {
 		o.switchReq = true
+		// The rest of this song is music consumed without being heard:
+		// the ladder's next rung comes that much sooner.
+		if ts, ok := o.cur.(*trackSource); ok && queued > 0 {
+			if rem := ts.remaining(); rem > 0 {
+				skipped = float64(rem) / audio.SampleRate
+			}
+		}
 	}
 	o.mu.Unlock()
-	o.log.Info("skip requested", "event", "skip", "queued", queued)
+	o.ReportSkipped(skipped)
+	o.log.Info("skip requested", "event", "skip", "queued", queued, "skipped_seconds", skipped)
 	loopNote := ""
 	if wasLoop {
 		loopNote = " (loop turned off)"
@@ -627,19 +636,19 @@ func (o *Orchestrator) Status() Status {
 		st.BufferedTracks = o.bufTracks
 		st.WordsmithWant = o.wordsmithWantNow
 		st.WordsmithWrote = o.wordsmithWroteNow
-		// The batch's own size while one has run; the next rung before
-		// the first cycle, so the gauge has a target to draw against.
+		// The batch's own size while one runs; the next rung's between
+		// cycles, so the gauge has a target to draw against.
 		st.RampBatch = o.batchCapNow
-		if st.RampBatch == 0 {
-			st.RampBatch = rampBatchFor(o.playedInEpoch, o.properPlayedInEpoch)
+		if !o.genBusy || st.RampBatch == 0 {
+			st.RampBatch = o.batchForLocked(o.bufLevel)
 		}
 		st.BatchRendered = o.batchRenderedNow
 		st.BufferedSeconds = o.bufSeconds
 		st.PlannedTracks = o.bufPlans
 		st.PlannedSeconds = o.bufPlanSeconds
-		// Under the batch ladder the gauge always tracks the batch;
-		// the retired time target is left unset.
-		st.BufferLowSeconds = float64(o.cfg.Buffer.RenderLowMinutes) * 60
+		st.StoreLevel = o.bufLevel
+		st.StoreTarget = o.cfg.Buffer.Songs
+		st.NextBatchIn = o.rungWaitLeftLocked()
 	}
 	if o.Telemetry != nil {
 		// The sampler measures on its own timer; this is a copy of the

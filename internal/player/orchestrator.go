@@ -101,6 +101,13 @@ type Status struct {
 	// BufferedTracks and BufferedSeconds are the songs already rendered
 	// and waiting to play (on disk, plus the in-memory prefetch).
 	BufferedTracks int
+	// StoreLevel is how many songs nobody has taken yet, and
+	// StoreTarget the depth the generator fills to; NextBatchIn is how
+	// long the tap still waits before the next rung, zero when a rung
+	// is due or the store is full.
+	StoreLevel  int
+	StoreTarget int
+	NextBatchIn time.Duration
 	// WordsmithWant/WordsmithWrote report a wordsmith round in
 	// progress: the writer holding the freed card, writing the coming
 	// batch's words. Zero when no round is running.
@@ -110,19 +117,15 @@ type Status struct {
 	// batch cycle, so the gauge can say "rendered 40 · 23 to play"
 	// instead of an ambiguous count.
 	BatchRendered int
-	// RampBatch is the song count the current ramp stage renders per
-	// batch (1 for a fresh context, the small batch while steering
-	// settles); 0 once cycles fill to the configured depths.
+	// RampBatch is the song count the running (or next) batch makes
+	// (1 for a fresh context, then the ladder's rungs, capped at the
+	// room left in the store); 0 when the store is full.
 	RampBatch       int
 	BufferedSeconds float64
 	// PlannedTracks and PlannedSeconds are songs the planner has
 	// written but the renderer has not turned into audio yet.
 	PlannedTracks  int
 	PlannedSeconds float64
-	// BufferTargetSeconds is the rendered-audio depth the cycle aims
-	// for, and BufferLowSeconds the depth that triggers a refill.
-	BufferTargetSeconds float64
-	BufferLowSeconds    float64
 	// Telemetry is a recent machine-resource sample, present only when
 	// the radio was started with resource telemetry enabled.
 	Telemetry *telemetry.Sample
@@ -301,11 +304,21 @@ type Orchestrator struct {
 	genBusy  bool
 	genCount int
 	// Phased-generation state: the epoch the buffer currently belongs
-	// to, the last handed-out file sequence number, and how many tracks
-	// of this epoch have been fed to playback (drives the batch ramp).
-	phasedEpoch   int
-	phasedSeq     int
-	playedInEpoch int
+	// to and the last handed-out file sequence number.
+	phasedEpoch int
+	phasedSeq   int
+	// The ladder: rung indexes ladder for the batch the next cycle
+	// makes; rungMade and rungSeconds count what this rung has made so
+	// far; rungDoneAt and rungWait say when the last rung finished and
+	// how long its music runs, which is how long the tap waits before
+	// the next; skipCredit is the music listeners skipped since, which
+	// shortens that wait. All reset by a steer.
+	rung        int
+	rungMade    int
+	rungSeconds float64
+	rungDoneAt  time.Time
+	rungWait    time.Duration
+	skipCredit  time.Duration
 	// phasedSynced flags that the buffer was reconciled with this
 	// run's identity at least once; cycleCooldown blocks new cycles
 	// after persistent failures; renderFails counts render failures
@@ -313,9 +326,10 @@ type Orchestrator struct {
 	phasedSynced  bool
 	cycleCooldown time.Time
 	renderFails   map[int]int
-	// Cached on-disk buffer depth, refreshed by the phased loops. The
-	// status display repaints four times a second; counting the buffer
-	// directory that often is not worth the disk.
+	// Cached store depth, refreshed by the phased loops for the status
+	// display: the level (songs nobody has taken), and the same plus
+	// the in-memory prefetch as songs and seconds.
+	bufLevel       int
 	bufTracks      int
 	bufSeconds     float64
 	bufPlans       int
@@ -342,16 +356,9 @@ type Orchestrator struct {
 	// it. Bounded by retiredOrder, oldest dropped first.
 	retired      map[string]string
 	retiredOrder []string
-	// properPlayedInEpoch counts played songs that carried written
-	// words (or were instrumental); the deep batch unlocks on these,
-	// not on the engine-worded openers a cold start may serve first.
-	properPlayedInEpoch int
 	// batchRenderedNow counts renders in the current batch cycle.
 	batchRenderedNow int
-	// batchCapNow is the size THIS cycle set out to render. The ladder
-	// rung is recomputed from live play counts, so it can climb while a
-	// batch is still running; reporting a batch against a target it was
-	// never given reads as a batch that stopped half way.
+	// batchCapNow is the size THIS cycle set out to render.
 	batchCapNow int
 	// wordsmithWantNow/wordsmithWroteNow mirror the running wordsmith
 	// round for the status display.

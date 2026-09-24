@@ -3,7 +3,6 @@ package player
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"iar/internal/audio"
@@ -19,42 +18,30 @@ import (
 // never share the graphics card: a cycle plans a batch of songs (the
 // planner LM alone on the card, the diffusion model dropped), then
 // renders the batch (the diffusion model alone, the planner untouched),
-// stores everything on disk, and puts the engine to sleep. Playback
-// feeds from the disk buffer; the engine wakes only when the buffer
-// runs low or the listener steers.
+// stores everything in the tub, and puts the engine to sleep. The
+// engine wakes only when the tub's level - the songs nobody has taken
+// yet - is below the configured depth, and a rung is due.
 //
-// Batch sizes ramp with confidence in the steering context: the first
-// track of a fresh context goes through alone (music as fast as the
-// fused path), the next batch is small, and only after the listener has
-// let a handful of songs play uninterrupted does the cycle commit to
-// the full plan-ahead depth - so an evening of prompt-fiddling never
-// wastes an hour of planned songs.
+// Batch sizes climb a ladder on the clock: one opener as fast as
+// possible, then ten songs straight after it, then 20, 40 and 80. After
+// a rung is made the tap waits as long as that rung's music runs before
+// the next, less whatever listeners skipped - so an evening of
+// prompt-fiddling never wastes an hour of planned songs, and a tub
+// nobody is drawing from still fills while the house is empty.
 const (
 	// phasedPrefetch is how many decoded tracks sit in memory ahead of
 	// playback (the one playing rides the mixer; these cover decode
 	// latency and the crossfade).
 	phasedPrefetch = 2
-	// rampSmallBatch is the audition batch: the first written-words
-	// songs the listener judges the station by.
-	rampSmallBatch = 10
-	// lyricEmergencySeconds is the buffer level below which keeping
-	// sound coming outranks waiting for the writer.
-	lyricEmergencySeconds = 180
-	// rampStableTracks is how many tracks must play in a context before
-	// the cycle goes to the full configured depth.
-	rampStableTracks = 5
 	// engineWakeBudget bounds one engine wake (cold start plus model
 	// load); beyond it the cycle backs off and retries.
 	engineWakeBudget = 4 * time.Minute
-	// starveMinutes is how little rendered audio counts as an
-	// emergency: below it, rendering preempts planning mid-batch so
-	// playback cannot run dry. This is deliberately NOT the refill
-	// trigger (render_low_minutes, 45 minutes by default). Using the
-	// refill trigger here made every batch degenerate into one plan
-	// and one render, with a model swap between every single song,
-	// until three quarters of an hour of audio had accumulated.
-	starveMinutes = 8
 )
+
+// ladder is the batch ladder: how many songs each rung makes. The
+// opener rung is one song; the ceiling rung refills the tub in
+// batches of eighty (capped at the room left in it).
+var ladder = [...]int{1, 10, 20, 40, 80}
 
 // phasedEngine is what phased generation needs from the engine.
 type phasedEngine interface {
@@ -114,9 +101,14 @@ func (o *Orchestrator) syncPhasedState() int {
 	changed := epoch != o.phasedEpoch
 	if changed {
 		o.phasedEpoch = epoch
-		o.playedInEpoch = 0
-		o.properPlayedInEpoch = 0
 		o.phasedSeq = 0
+		// A fresh context starts the ladder over at the opener.
+		o.rung = 0
+		o.rungMade = 0
+		o.rungSeconds = 0
+		o.rungDoneAt = time.Time{}
+		o.rungWait = 0
+		o.skipCredit = 0
 	}
 	o.mu.Unlock()
 	if !booted {
@@ -179,6 +171,7 @@ func (o *Orchestrator) publishBufferStats(epoch int) {
 	tracks, secs := o.Buffer.Level(epoch)
 	plans, planSecs := o.Buffer.PlanStats(epoch)
 	o.mu.Lock()
+	o.bufLevel = tracks
 	o.bufTracks = tracks
 	o.bufSeconds = secs
 	o.bufPlans = plans
@@ -204,44 +197,105 @@ func (o *Orchestrator) bufferedSeconds(epoch int) float64 {
 	return secs
 }
 
-// cycleTargets returns the plan-ahead and render-ahead targets in
-// seconds for the current ramp stage, and the stage's batch cap.
-// rampBatchFor is the batch ladder: how many songs one cycle plans and
-// renders, growing as un-steered listening proves the context settled.
-// One opener as fast as possible; a ten-song audition of written-words
-// songs; then 20, 40 and 80-song batches. The escalation points are
-// cumulative proper plays - five audition songs unlock the 20-batch,
-// fifteen songs into the 20-batch (5+15=20) unlock the 40, thirty-five
-// into the 40 (20+35=55) unlock the 80, and 80 is the ceiling: from
-// there every refill is another 80-song batch, started when the
-// rendered buffer runs down to the refill trigger.
-func rampBatchFor(played, proper int) int {
-	switch {
-	case played == 0:
-		return 1
-	case proper < rampStableTracks:
-		return rampSmallBatch
-	case proper < 20:
-		return 20
-	case proper < 55:
-		return 40
-	default:
-		return 80
-	}
-}
-
-func (o *Orchestrator) cycleTargets(epoch int) (planSecs, renderSecs float64, batchCap int) {
+// batchFor is how many songs the next cycle makes: the rung's size,
+// less what this rung has made already, capped at the room left in the
+// tub. Zero when the tub is full.
+func (o *Orchestrator) batchFor(epoch int) int {
+	level, _ := o.Buffer.Level(epoch)
 	o.mu.Lock()
-	played := o.playedInEpoch
-	proper := o.properPlayedInEpoch
-	o.mu.Unlock()
-	// Everything is a batch now: a cycle plans its batch, renders all
-	// of it, and hibernates; the refill trigger decides when the next
-	// batch starts. The old time-based fill targets are unused.
-	return 0, 0, rampBatchFor(played, proper)
+	defer o.mu.Unlock()
+	return o.batchForLocked(level)
 }
 
-// wantCycle reports whether the engine should wake and produce.
+// batchForLocked is batchFor against a known level. Callers hold o.mu.
+func (o *Orchestrator) batchForLocked(level int) int {
+	size := ladder[o.rung] - o.rungMade
+	if room := o.cfg.Buffer.Songs - level; size > room {
+		size = room
+	}
+	if size < 0 {
+		size = 0
+	}
+	return size
+}
+
+// rungWaitLeft is how long the tap still waits before the next rung:
+// the last rung's music, less the time gone by and the music listeners
+// skipped meanwhile. Zero when a rung is due.
+func (o *Orchestrator) rungWaitLeft() time.Duration {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.rungWaitLeftLocked()
+}
+
+// rungWaitLeftLocked is rungWaitLeft under the lock.
+func (o *Orchestrator) rungWaitLeftLocked() time.Duration {
+	if o.rungDoneAt.IsZero() {
+		return 0
+	}
+	left := o.rungWait - time.Since(o.rungDoneAt) - o.skipCredit
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+// plannable is how many songs a cycle starting now may plan: the
+// batch, once the rung is due; nothing while the tap is waiting.
+func (o *Orchestrator) plannable(epoch int) int {
+	if o.rungWaitLeft() > 0 {
+		return 0
+	}
+	return o.batchFor(epoch)
+}
+
+// completeRung closes the rung once its batch is made (or the tub is
+// full): the tap waits as long as the batch's music runs before the
+// next rung, and the ladder climbs. The opener's rung waits nothing,
+// so the ten-song batch follows it straight away.
+func (o *Orchestrator) completeRung(epoch int) {
+	level, _ := o.Buffer.Level(epoch)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.rungMade == 0 {
+		return
+	}
+	if o.rungMade < ladder[o.rung] && level < o.cfg.Buffer.Songs {
+		return // the rung is not made yet; the next cycle carries on
+	}
+	o.rungWait = time.Duration(o.rungSeconds * float64(time.Second))
+	if o.rung == 0 {
+		o.rungWait = 0
+	}
+	o.rungDoneAt = time.Now()
+	o.skipCredit = 0
+	o.log.Info("ladder rung made", "event", "ladder_rung", "rung", ladder[o.rung],
+		"songs", o.rungMade, "wait_seconds", o.rungWait.Seconds(), "level", level)
+	if o.rung < len(ladder)-1 {
+		o.rung++
+	}
+	o.rungMade = 0
+	o.rungSeconds = 0
+}
+
+// ReportSkipped credits the ladder with music a listener skipped:
+// skipping is faster consumption, so the next rung comes sooner.
+// Listeners report it on every check for new songs; the credits add up
+// across them.
+func (o *Orchestrator) ReportSkipped(seconds float64) {
+	if seconds <= 0 {
+		return
+	}
+	o.mu.Lock()
+	o.skipCredit += time.Duration(seconds * float64(time.Second))
+	o.mu.Unlock()
+	o.kickGen()
+}
+
+// wantCycle reports whether the engine should wake and produce: plans
+// left over from an interrupted cycle always get their audio; past
+// that, a rung is due only while the tub is below its depth and the
+// last rung's wait has run out.
 func (o *Orchestrator) wantCycle(epoch int) bool {
 	o.mu.Lock()
 	mode := o.sess.Mode
@@ -249,8 +303,8 @@ func (o *Orchestrator) wantCycle(epoch int) bool {
 	held := o.standby
 	o.mu.Unlock()
 	if held {
-		// The hold outranks an empty buffer: a radio nobody is
-		// listening to has no work worth waking the card for.
+		// The hold outranks an empty tub: a radio nobody is listening
+		// to has no work worth waking the card for.
 		return false
 	}
 	if mode != session.ModeMusic {
@@ -261,20 +315,10 @@ func (o *Orchestrator) wantCycle(epoch int) bool {
 		// the engine awake again until the cooldown passes.
 		return false
 	}
-	low := float64(o.cfg.Buffer.RenderLowMinutes) * 60
-	planned, plannedSecs := o.Buffer.PlanStats(epoch)
-	buffered := o.bufferedSeconds(epoch)
-	if buffered == 0 && planned == 0 {
-		// Nothing anywhere: the first track of a context always comes.
+	if planned, _ := o.Buffer.PlanStats(epoch); planned > 0 {
 		return true
 	}
-	if buffered < low {
-		return true
-	}
-	// Plans left over from an interrupted cycle deserve their audio
-	// even while the rendered buffer is healthy.
-	_ = plannedSecs
-	return planned > 0
+	return o.plannable(epoch) > 0
 }
 
 // cycleLoop is phased generation's producer: it sleeps until work is
@@ -378,24 +422,16 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 	}
 
 	epoch := o.syncPhasedState()
-	planTarget, renderTarget, batchCap := o.cycleTargets(epoch)
-	// Whatever the ladder says later, this cycle's own size is what its
-	// rendered count must be read against: the rung is recomputed from
-	// live play counts and can climb while the batch is still running.
+	// Nothing while the tap is waiting: a cycle then only renders the
+	// plans an interrupted one left behind.
+	batchCap := o.plannable(epoch)
+	// This cycle's own size is what its rendered count is read against.
 	o.mu.Lock()
 	o.batchCapNow = batchCap
 	o.mu.Unlock()
-	if batchCap > 0 {
-		// A batch cycle renders every plan it wrote before sleeping;
-		// the buffer's depth is the ladder's business, not a clock's.
-		renderTarget = math.MaxFloat64
-	}
-	// starve is the floor that interrupts a plan burst, never the
-	// refill target: a batch is only a batch if planning gets to run.
-	starve := float64(starveMinutes) * 60
-	if low := float64(o.cfg.Buffer.RenderLowMinutes) * 60; starve > low {
-		starve = low
-	}
+	// The rung is closed on every way out, and only closes when its
+	// batch is made: an interrupted cycle leaves it open for the next.
+	defer o.completeRung(epoch)
 	plannedThisCycle := 0
 	storeFails := 0
 
@@ -502,6 +538,8 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		o.mu.Lock()
 		o.genCount++
 		o.batchRenderedNow++
+		o.rungMade++
+		o.rungSeconds += track.Duration().Seconds()
 		o.lastGen = elapsed
 		delete(o.renderFails, seq)
 		o.mu.Unlock()
@@ -532,16 +570,10 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			o.coolDown(2 * time.Minute)
 			return
 		}
-		planned, plannedSecs := o.Buffer.PlanStats(epoch)
-		buffered := o.bufferedSeconds(epoch)
+		planned, _ := o.Buffer.PlanStats(epoch)
 		var ok bool
 		switch nextCycleStep(cycleState{
 			planned:          planned,
-			plannedSecs:      plannedSecs,
-			buffered:         buffered,
-			planTarget:       planTarget,
-			renderTarget:     renderTarget,
-			starve:           starve,
 			batchCap:         batchCap,
 			plannedThisCycle: plannedThisCycle,
 		}) {
@@ -549,15 +581,14 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			ok = renderOne()
 		case stepPlan:
 			_, sess := o.snapshotSession()
-			// Engine-invented words are allowed only for the opener
-			// (nothing has played yet and the speakers want sound) or
-			// in a true emergency; past that, every song waits for the
+			// Engine-invented words are allowed only for the opener,
+			// when the tub is empty and a listener may be waiting on
+			// the first song; past that, every song waits for the
 			// writer - the audition batch especially.
 			o.mu.Lock()
-			playedNow := o.playedInEpoch
+			opener := o.rung == 0
 			o.mu.Unlock()
-			fallbackOK := playedNow == 0 || buffered < lyricEmergencySeconds
-			if !fallbackOK && (o.builder.AwaitingLyrics(sess) || o.builder.AwaitingInstrumentalCaptions(sess)) {
+			if !opener && (o.builder.AwaitingLyrics(sess) || o.builder.AwaitingInstrumentalCaptions(sess)) {
 				// The writer has no words ready for the next song, and
 				// planning past the writer is what turns a station
 				// into one song in a hundred costumes. Planning stops
@@ -599,18 +630,11 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 
 // cycleState is everything one scheduling decision depends on.
 type cycleState struct {
-	// planned and plannedSecs are the stored plans awaiting a render.
-	planned     int
-	plannedSecs float64
-	// buffered is the rendered audio already secured, in seconds.
-	buffered float64
-	// planTarget and renderTarget are the depths this ramp stage aims
-	// for; starve is the depth below which playback is in danger.
-	planTarget   float64
-	renderTarget float64
-	starve       float64
-	// batchCap limits how many plans this cycle writes (0 means plan to
-	// planTarget instead); plannedThisCycle counts those written so far.
+	// planned is the stored plans awaiting a render.
+	planned int
+	// batchCap is how many plans this cycle writes (0 for a cycle that
+	// only renders what an interrupted one left); plannedThisCycle
+	// counts those written so far.
 	batchCap         int
 	plannedThisCycle int
 }
@@ -624,22 +648,15 @@ const (
 	stepRender
 )
 
-// nextCycleStep chooses between planning ahead and rendering now.
-// Rendering preempts a plan burst only when playback is genuinely close
-// to running dry, so the models swap once per burst rather than once
-// per song. The far larger refill trigger decides whether a cycle runs
-// at all, never what it does once it is running - conflating the two
-// turned every batch into a single plan followed by a single render.
+// nextCycleStep plans the whole batch, then renders all of it: the
+// models swap once per cycle, not once per song. Nothing preempts the
+// plan burst - no player draws straight from the generator, so there
+// is nothing to starve.
 func nextCycleStep(s cycleState) cycleStep {
-	if s.planned > 0 && s.buffered < s.starve {
-		return stepRender
-	}
-	needPlan := (s.batchCap > 0 && s.plannedThisCycle < s.batchCap) ||
-		(s.batchCap == 0 && s.plannedSecs+s.buffered < s.planTarget)
-	if needPlan {
+	if s.plannedThisCycle < s.batchCap {
 		return stepPlan
 	}
-	if s.planned > 0 && s.buffered < s.renderTarget {
+	if s.planned > 0 {
 		return stepRender
 	}
 	return stepDone
@@ -784,13 +801,12 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 }
 
 // wordsmithWant is how many lyric sheets the coming batch needs: the
-// full plan gap, because a deep batch is in no hurry - the writer sits
-// on the free card until every planned song has its own words. Ramp
-// stages want exactly their batch, and a starved buffer wants a single
-// sheet so first audio is never kept waiting.
+// whole batch, because a deep batch is in no hurry - the writer sits
+// on the free card until every planned song has its own words. The
+// opener wants a single sheet so the first song is never kept waiting,
+// and a tap that is waiting wants none.
 func (o *Orchestrator) wordsmithWant(epoch int) int {
-	_, _, batchCap := o.cycleTargets(epoch)
-	return batchCap
+	return o.plannable(epoch)
 }
 
 // wordsmithPhase writes the coming batch's lyrics - and names their
@@ -818,31 +834,13 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 	// branch further down has always been written for it; this guard
 	// used to turn it away at the door, so it had never once run.
 	want := o.wordsmithWant(epoch)
-	o.mu.Lock()
-	playedNow := o.playedInEpoch
-	o.mu.Unlock()
-	buffered := o.bufferedSeconds(epoch)
-	if playedNow == 0 || buffered < lyricEmergencySeconds {
-		// The opener, or a true emergency: write a single sheet so the
-		// next song still gets real words without keeping the
-		// speakers waiting on a whole shelf.
-		want = 1
-	}
 	if want <= 0 {
 		return
 	}
-	// The phase ends when a steer makes its context stale, or - after
-	// at least one sheet is on the shelf - when the rendered buffer
-	// decays to the starve floor and the engine must have the card
-	// back. The refill trigger deliberately does NOT stop the writer:
-	// every refill wake starts below it by definition, and stopping
-	// there would hand the card straight back with an empty shelf,
-	// planning nothing, forever. The writer resumes on the next
-	// hibernation, so a deep batch is covered across rounds, all of
-	// them on the card.
-	floor := float64(lyricEmergencySeconds)
-	var lastBuffered float64
-	var lastCheck time.Time
+	// The phase ends when a steer makes its context stale, an export
+	// claims the card, or a hold arrives. Nothing else hurries it: no
+	// player draws straight from the generator, so a deep batch's words
+	// are written in full before the engine wakes.
 	stop := func(wrote int) bool {
 		o.mu.Lock()
 		steered := o.epoch != epoch
@@ -861,23 +859,10 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 			// sheet just finished is already on the shelf - every
 			// stocker banks one before asking again - so the phase
 			// stops having lost nothing, and the next cycle counts what
-			// is there and writes only the rest. Above the wrote == 0
-			// guard on purpose: a hold stops the phase even before the
-			// first sheet, and the buffer rule below can never fire
-			// while held, because nothing is playing to drain it.
+			// is there and writes only the rest.
 			return true
 		}
-		if wrote == 0 {
-			return false
-		}
-		// The disk scan behind bufferedSeconds is not free; a few
-		// seconds of staleness cannot matter against a 2.5-minute
-		// song.
-		if time.Since(lastCheck) > 5*time.Second {
-			lastBuffered = o.bufferedSeconds(epoch)
-			lastCheck = time.Now()
-		}
-		return lastBuffered < floor
+		return false
 	}
 	phaseCtx, cancel := context.WithTimeout(ctx, wordsmithBudget)
 	defer cancel()

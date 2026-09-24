@@ -91,14 +91,11 @@ type Buffer struct {
 	// generates each track in one fused engine job, holding the audio
 	// model resident the whole time (the pre-buffer behavior).
 	Phased bool `json:"phased"`
-	// RenderLowMinutes is the refill trigger: when the rendered buffer
-	// drops below this, the engine wakes for another cycle. The batch
-	// ladder decides how much each cycle plans and renders.
-	RenderLowMinutes int `json:"render_low_minutes"`
 	// Songs is how many songs the store keeps: made ahead for the
 	// players to take, and, once taken, kept for players that have not
-	// caught up. The deepest phone setting holds 72, so that is the
-	// default; the store never holds more than twice this.
+	// caught up. The generator fills to this many untaken songs, one
+	// ladder rung at a time; the deepest phone setting holds 72, so
+	// that is the default. The store never holds more than twice this.
 	Songs int `json:"songs"`
 }
 
@@ -240,9 +237,8 @@ func Default() Config {
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
 		Buffer: Buffer{
-			Phased:           true,
-			RenderLowMinutes: 45,
-			Songs:            72,
+			Phased: true,
+			Songs:  72,
 		},
 		ACEStep: ACEStep{
 			Port:            0,
@@ -339,9 +335,6 @@ func purgeObsoleteKeys(data []byte) ([]byte, bool) {
 
 // sanitize clamps out-of-range values back to safe ones.
 func (c *Config) sanitize() {
-	if c.Buffer.RenderLowMinutes < 5 {
-		c.Buffer.RenderLowMinutes = 5
-	}
 	if c.Buffer.Songs < 3 {
 		c.Buffer.Songs = 3
 	}

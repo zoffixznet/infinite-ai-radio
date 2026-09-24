@@ -72,9 +72,9 @@ func TestPhasedCyclePlansRendersFeedsAndHibernates(t *testing.T) {
 	pl := &capturePlayer{}
 	cfg := testConfig()
 	cfg.Buffer.Phased = true
-	// A zero refill trigger keeps the mock's single 1-second track
-	// "enough", so exactly one cycle runs and then hibernates.
-	cfg.Buffer.RenderLowMinutes = 0
+	// A store that fills at one song is full after the opener, so
+	// exactly one cycle runs and then hibernates.
+	cfg.Buffer.Songs = 1
 	sess := session.New()
 	builder := prompting.NewBuilder(nil, testLogger())
 	o := New(cfg, eng, builder, session.NewStore(t.TempDir()), sess, pl, testLogger())
@@ -92,7 +92,7 @@ func TestPhasedCyclePlansRendersFeedsAndHibernates(t *testing.T) {
 	waitFor(t, 15*time.Second, "track fed from disk", func() bool {
 		o.mu.Lock()
 		defer o.mu.Unlock()
-		return o.playedInEpoch >= 1 && o.lastGood != nil
+		return o.lastGood != nil
 	})
 	if got := eng.renders.Load(); got != 1 {
 		t.Fatalf("stage-0 cycle rendered %d tracks; want exactly 1", got)
@@ -213,43 +213,106 @@ func TestAdoptionRefusesAnotherContextsBuffer(t *testing.T) {
 	}
 }
 
-// The deep batch unlocks on played songs that carried written words,
-// not on the engine-worded openers of a cold start.
-func TestDeepBatchWaitsForProperSongs(t *testing.T) {
+// The ladder climbs on the clock. One opener; the ten-song batch
+// straight after it; then every rung waits as long as its music runs
+// before the next, less what listeners skipped; a rung that was cut
+// short stays open; and a rung never makes more than the room left in
+// the store.
+func TestTheLadderClimbsOnTime(t *testing.T) {
 	cfg := testConfig()
 	cfg.Buffer.Phased = true
-	o := New(cfg, enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()), session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
-
-	o.mu.Lock()
-	o.playedInEpoch = 8 // eight songs heard...
-	o.properPlayedInEpoch = 2
-	o.mu.Unlock()
-	if _, _, c := o.cycleTargets(0); c != rampSmallBatch {
-		t.Fatalf("batchCap = %d; two proper plays must not unlock the ladder", c)
+	cfg.Buffer.Songs = 25
+	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
+		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
+	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
+	made := func(songs int, seconds float64) {
+		o.mu.Lock()
+		o.rungMade += songs
+		o.rungSeconds += float64(songs) * seconds
+		o.mu.Unlock()
+		o.completeRung(0)
 	}
-	o.mu.Lock()
-	o.properPlayedInEpoch = rampStableTracks
-	o.mu.Unlock()
-	if _, _, c := o.cycleTargets(0); c != 20 {
-		t.Fatalf("batchCap = %d; five proper plays unlock the 20-batch", c)
+
+	if got := o.batchFor(0); got != 1 {
+		t.Fatalf("the first batch = %d, want the opener alone", got)
+	}
+	// The opener waits for nothing: the ten-song batch follows it.
+	made(1, 200)
+	if left, next := o.rungWaitLeft(), o.batchFor(0); left != 0 || next != 10 {
+		t.Fatalf("after the opener: wait %v, next batch %d; want 0 and 10", left, next)
+	}
+	// Ten songs of 200 seconds: the next rung is due when they have
+	// played out, and nothing is planned before then.
+	made(10, 200)
+	if left := o.rungWaitLeft(); left < 1990*time.Second || left > 2000*time.Second {
+		t.Fatalf("after the ten-batch the wait is %v, want about 2000s", left)
+	}
+	if o.plannable(0) != 0 || o.wantCycle(0) {
+		t.Fatal("a rung was due while the last one's music was still playing")
+	}
+	// Listeners skipping through it bring the rung forward; the
+	// credits add up across them.
+	o.ReportSkipped(1500)
+	o.ReportSkipped(500)
+	if left, next := o.rungWaitLeft(), o.plannable(0); left != 0 || next != 20 {
+		t.Fatalf("after 2000s skipped: wait %v, next batch %d; want 0 and 20", left, next)
+	}
+	// A rung cut short stays open: the next cycle makes the rest.
+	made(3, 200)
+	if next := o.batchFor(0); next != 17 {
+		t.Fatalf("after 3 of 20: next batch %d, want the remaining 17", next)
+	}
+	made(17, 200)
+	o.ReportSkipped(20 * 200)
+	// The 40-rung is capped at the room left in a store of 25.
+	if next := o.batchFor(0); next != 25 {
+		t.Fatalf("the 40-rung's batch = %d, want the store's room of 25", next)
 	}
 }
 
-// The full ladder, rung by rung.
+// A full store is the off switch: no rung is due, however long the
+// wait has been over. Taking a song makes room for exactly that much.
+func TestAFullStoreRunsNoCycle(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	o, _ := idOrchestrator(t)
+	o.cfg.Buffer.Songs = 3
+	o.mu.Lock()
+	o.rung = len(ladder) - 1
+	o.mu.Unlock()
+	for seq := 1; seq <= 3; seq++ {
+		renderSong(t, o, seq, "t-1790000000000-005"+string(rune('0'+seq)))
+	}
+	if o.batchFor(0) != 0 || o.wantCycle(0) {
+		t.Fatal("a full store still wants a cycle")
+	}
+	o.Buffer.Take(0, "e00000000-00000001")
+	if next := o.batchFor(0); next != 1 || !o.wantCycle(0) {
+		t.Fatalf("one song taken: next batch %d, want 1 and a cycle due", next)
+	}
+}
+
+// The full ladder, rung by rung, as the store empties.
 func TestBatchLadder(t *testing.T) {
-	for _, tc := range []struct{ played, proper, want int }{
-		{0, 0, 1},      // the opener: sound as fast as possible
-		{1, 0, 10},     // audition: written words only
-		{8, 4, 10},     // engine-worded plays do not advance it
-		{9, 5, 20},     // five proper songs unlock the 20-batch
-		{20, 19, 20},   // fifteen songs into the 20-batch...
-		{21, 20, 40},   // ...unlock the 40
-		{50, 54, 40},   // thirty-five into the 40-batch...
-		{56, 55, 80},   // ...unlock the 80
-		{300, 299, 80}, // and 80 is the ceiling, refill after refill
+	cfg := testConfig()
+	cfg.Buffer.Phased = true
+	cfg.Buffer.Songs = 72
+	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
+		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
+	for _, tc := range []struct{ rung, level, want int }{
+		{0, 0, 1},   // the opener: sound as fast as possible
+		{1, 1, 10},  // the audition batch
+		{2, 11, 20}, // then 20...
+		{3, 31, 40}, // ...and 40
+		{4, 0, 72},  // 80 is the ceiling, capped at the room in the store
+		{4, 71, 1},  // a top-up makes just what was taken
+		{4, 72, 0},  // and a full store makes nothing
 	} {
-		if got := rampBatchFor(tc.played, tc.proper); got != tc.want {
-			t.Errorf("rampBatchFor(%d, %d) = %d, want %d", tc.played, tc.proper, got, tc.want)
+		o.mu.Lock()
+		o.rung, o.rungMade = tc.rung, 0
+		got := o.batchForLocked(tc.level)
+		o.mu.Unlock()
+		if got != tc.want {
+			t.Errorf("rung %d at level %d makes %d, want %d", tc.rung, tc.level, got, tc.want)
 		}
 	}
 }
@@ -295,20 +358,18 @@ func TestStatusReportsTheBatchItActuallyRan(t *testing.T) {
 	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
 
 	// Before any cycle the next rung stands in, so the bar has a target.
-	if got := o.Status().RampBatch; got != rampBatchFor(0, 0) {
-		t.Fatalf("pre-cycle batch = %d, want the next rung %d", got, rampBatchFor(0, 0))
+	if got := o.Status().RampBatch; got != 1 {
+		t.Fatalf("pre-cycle batch = %d, want the opener", got)
 	}
 
-	// A cycle ran a ten-song batch; afterwards enough proper plays land
-	// to move the ladder on to twenty.
+	// A cycle is running a ten-song batch while the ladder has already
+	// moved on to twenty.
 	o.mu.Lock()
+	o.genBusy = true
 	o.batchCapNow = 10
 	o.batchRenderedNow = 10
-	o.playedInEpoch, o.properPlayedInEpoch = 25, 25
+	o.rung = 2
 	o.mu.Unlock()
-	if next := rampBatchFor(25, 25); next == 10 {
-		t.Fatal("the ladder did not move on; the test proves nothing")
-	}
 
 	st := o.Status()
 	if st.RampBatch != 10 {

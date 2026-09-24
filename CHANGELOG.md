@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The batch ladder climbs on the clock instead of on songs played
+  through the speakers. After a rung is made the generator waits as
+  long as that rung's music runs before making the next, less what
+  listeners skipped - every phone reports the seconds it skipped with
+  Next on its checks for new songs, and so does the terminal's `next`.
+  A cycle runs only while the store holds fewer than `buffer.songs`
+  untaken songs, and a batch never makes more than the room left, so a
+  full store is the off switch and the engine sleeps until somebody
+  takes a song. Engine-invented words are allowed for the opener only;
+  every later song waits for the writer. `buffer.render_low_minutes`
+  is gone.
 - Playing a song no longer deletes it from the store. The player takes
   it, which marks it consumed and leaves it on disk for a player that
   has not caught up, and the store keeps the newest `buffer.songs` (72

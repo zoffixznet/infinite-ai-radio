@@ -58,6 +58,9 @@ type Controls interface {
 	CurrentName() string
 	Status() player.Status
 	QueueTracks() (int, []player.QueueTrack)
+	// ReportSkipped credits the generator's ladder with seconds of
+	// music a listener skipped (see player.Orchestrator.ReportSkipped).
+	ReportSkipped(seconds float64)
 	TrackData(id string) (*engine.Track, bool)
 	// TrackFile is the stored MP3 of a track still on disk, served
 	// exactly as written; ok is false when the track is anywhere else.

@@ -442,11 +442,14 @@ func (sb *sandbox) env() []string {
 }
 
 // startPlayer launches (or relaunches) the player process: chosen
-// engine, null audio, plain mode with stdin held open.
+// engine, null audio, plain mode with stdin held open, and no lyric
+// helper - a live Ollama on the machine running the tests would
+// otherwise be found and asked for every batch's words, and the phone
+// is what is under test here, not the writer.
 func (sb *sandbox) startPlayer(t *testing.T) {
 	t.Helper()
 	sb.player = exec.Command(sb.bin, append([]string{
-		"--engine", sb.engine, "--player", "null", "--plain"}, sb.args...)...)
+		"--engine", sb.engine, "--player", "null", "--plain", "--no-llm"}, sb.args...)...)
 	// Tie the player's life to the test's. A test that dies without
 	// running its cleanups - killed, panicking, or terminated by the
 	// engine supervision it is pretending to be - must not leave a
@@ -1551,6 +1554,16 @@ func TestRealBrowserResilience(t *testing.T) {
 		return strings.Contains(ack, "loop off")
 	})
 
+	// After a steer the new sound's opener plays alone while its first
+	// batch is planned in full and then rendered; the skip has somewhere
+	// to go only once a second song is in the queue.
+	waitFor(t, 90*time.Second, "a song queued behind the opener", func() bool {
+		var st struct {
+			Queued int `json:"queued"`
+		}
+		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/state').then(function(r){return r.json()}).then(cb);`, &st)
+		return st.Queued >= 1
+	})
 	// A marionette click occasionally evaporates mid-repaint (the
 	// element is present, unobscured and enabled - verified with
 	// elementFromPoint - yet the event never reaches the page), so the

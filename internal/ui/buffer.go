@@ -60,10 +60,10 @@ func genIdle(st player.Status) string {
 	return "idle"
 }
 
-// bufferGauge describes the buffer for the status bar: how much of the
-// batch is rendered (the bar), how much of that is already played (the
-// bar's leading own-color share), and the line beside it. ok is false
-// when there is nothing meaningful to draw.
+// bufferGauge describes the store for the status bar: while a batch
+// runs, how much of it is rendered; between batches, how full the
+// store is and when the tap next runs. ok is false when there is
+// nothing meaningful to draw.
 func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool) {
 	if !st.Phased {
 		if st.BufferTarget <= 0 {
@@ -72,57 +72,32 @@ func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool
 		return float64(st.Queued) / float64(st.BufferTarget), 0,
 			fmt.Sprintf("%d/%d buffered", st.Queued, st.BufferTarget), true
 	}
-	// Songs are the exact number; spans of time are how long those
-	// songs happen to run. The bar tracks whichever target the current
-	// ramp stage is filling: a batch of N songs early on, the
-	// configured depth of audio once steering settles.
-	if st.RampBatch > 0 {
-		toPlay := st.BufferedTracks + st.Queued
-		rendered := st.BatchRendered
-		// Between batches the batch's own count is finished business:
-		// a cycle that stopped at 11 of 20 because the writer ran out
-		// of words is not still working on the other nine, and saying
-		// "11 of 20 rendered" beside an idle engine reads as a stall.
-		// What matters then is how much music is banked and what will
-		// start the next batch.
-		if !st.Generating {
-			text = fmt.Sprintf("%d songs to play (%s)", toPlay, fmtSpan(st.BufferedSeconds))
-			if st.BufferLowSeconds > 0 {
-				text += fmt.Sprintf(" · next batch when %s left", fmtSpan(st.BufferLowSeconds))
-			}
-			frac = float64(rendered) / float64(st.RampBatch)
-			if eaten := rendered - toPlay; eaten > 0 {
-				consumed = float64(eaten) / float64(st.RampBatch)
-			}
-			return frac, consumed, text, true
-		}
+	toPlay := st.BufferedTracks
+	if st.Generating && st.RampBatch > 0 {
+		// The batch is live and its progress is the news.
 		text = fmt.Sprintf("%d of %d songs rendered · %d to play",
-			rendered, st.RampBatch, toPlay)
+			st.BatchRendered, st.RampBatch, toPlay)
 		if st.PlannedTracks > 0 {
 			text += fmt.Sprintf(" · %d planned", st.PlannedTracks)
 		}
-		frac = float64(rendered) / float64(st.RampBatch)
-		if eaten := rendered - toPlay; eaten > 0 {
-			consumed = float64(eaten) / float64(st.RampBatch)
-		}
-		return frac, consumed, text, true
+		return float64(st.BatchRendered) / float64(st.RampBatch), 0, text, true
 	}
-	if st.BufferTargetSeconds > 0 {
-		frac = st.BufferedSeconds / st.BufferTargetSeconds
+	// Between batches the batch's own count is finished business: a
+	// cycle that stopped at 11 of 20 because the writer ran out of
+	// words is not still working on the other nine, and saying "11 of
+	// 20 rendered" beside an idle engine reads as a stall. What matters
+	// then is how much music is banked and what starts the next batch.
+	text = fmt.Sprintf("%d songs to play (%s)", toPlay, fmtSpan(st.BufferedSeconds))
+	switch {
+	case st.StoreTarget > 0 && st.StoreLevel >= st.StoreTarget:
+		text += " · store full"
+	case st.NextBatchIn > 0:
+		text += " · next batch in " + fmtSpan(st.NextBatchIn.Seconds())
+	case st.RampBatch > 0:
+		text += fmt.Sprintf(" · next batch of %d due", st.RampBatch)
 	}
-	text = fmt.Sprintf("%d songs (%s) rendered", st.BufferedTracks, fmtSpan(st.BufferedSeconds))
-	if st.BufferTargetSeconds > 0 {
-		if st.BufferedSeconds >= st.BufferTargetSeconds {
-			text += fmt.Sprintf(" · %s target met", fmtSpan(st.BufferTargetSeconds))
-		} else {
-			text += fmt.Sprintf(" of the %s target", fmtSpan(st.BufferTargetSeconds))
-		}
-	}
-	if st.PlannedTracks > 0 {
-		text += fmt.Sprintf(" · %d planned (%s)", st.PlannedTracks, fmtSpan(st.PlannedSeconds))
-	}
-	if st.BufferLowSeconds > 0 {
-		text += fmt.Sprintf(" · next batch when %s left", fmtSpan(st.BufferLowSeconds))
+	if st.StoreTarget > 0 {
+		frac = float64(st.StoreLevel) / float64(st.StoreTarget)
 	}
 	return frac, 0, text, true
 }

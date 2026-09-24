@@ -305,6 +305,7 @@ type fakeCtl struct {
 	loaded    []string
 	deleted   []string
 	uploads   []upload
+	skipped   float64
 	// storedT1, when set, is a file on disk that t-1 is served from.
 	storedT1 string
 }
@@ -494,6 +495,12 @@ func (f *fakeCtl) QueueTracks() (int, []player.QueueTrack) {
 		{ID: "t-2", Prompt: "dark techno, deeper", Title: "Deep Descent", Subtitle: "deeper", Seconds: 2, Kind: "queue"},
 		{ID: "lib:techno/20260823-000000-0001", Prompt: "banked techno", Title: "Banked Techno", Seconds: 2, Kind: "library"},
 	}
+}
+
+func (f *fakeCtl) ReportSkipped(seconds float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.skipped += seconds
 }
 
 func (f *fakeCtl) SaveUpload(hash, tag string, body io.Reader) string {

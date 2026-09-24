@@ -741,7 +741,6 @@ everything else keeps its default. The complete set, with defaults:
   },
   "buffer": {
     "phased": true,
-    "render_low_minutes": 45,
     "songs": 72
   },
   "ollama": {
@@ -942,13 +941,12 @@ it. A cycle begins before the engine wakes, with the card still free:
 the lyric helper writes the coming batch's words there and names and
 describes each song from them in the same breath (the wordsmith phase).
 The writer keeps the card until every planned song has its own words,
-yielding early only to a steer, an export, or the rendered buffer
-decaying to its starve floor - and planning never outruns it: a batch
-that empties the shelf pauses, renders what is already planned, and
-hands the card back to the writer for the next round. With the buffer
-starved the phase writes a single song's words so first audio is never
-kept waiting, and it skips entirely when the engine was left warm.
-Then the engine wakes and plans the batch (planner
+yielding early only to a steer or an export - and planning never
+outruns it: a batch that empties the shelf pauses, renders what is
+already planned, and hands the card back to the writer for the next
+round. For the opener the phase writes a single song's words so the
+first song is never kept waiting, and it skips entirely when the
+engine was left warm. Then the engine wakes and plans the batch (planner
 alone on the card, the audio model dropped entirely, the pre-written
 words consumed as-is), renders it from the planned audio codes (audio
 model alone, streamed from disk), stores the songs on disk under the
@@ -956,22 +954,25 @@ data directory, and shuts down completely - between cycles the engine
 holds no video memory and no system memory at all. Playback feeds from
 the disk buffer.
 
-Batch sizes climb a ladder as un-steered listening proves the context
-settled: one opener as fast as possible (engine-invented words
-allowed), a ten-song audition of songs with the writer's own words,
-then batches of 20, 40 and 80 - the ceiling; each refill from there is
-another 80-song batch. The rungs unlock on played songs that carried
-written words, so the audition is of the quality the deep batches will
-have. A cycle renders everything it plans and hibernates; the next
-batch starts when the rendered buffer runs down to `render_low_minutes`
-of audio left. A steer drops every stored plan and song and restarts
-the ladder, so trying prompts never wastes deep work - but a restart
-of the player does not: the buffer carries a context and a build
-stamp, continues across restarts of the same binary, and is cleared
-when a different build of the player takes over, so songs rendered by
-older code never linger into an upgrade. `restart` empties it and puts
-the ladder back on its first rung without touching the session, and
-`iar buffer clear` does the same to a stopped radio.
+Batch sizes climb a ladder: one opener as fast as possible
+(engine-invented words allowed), then a ten-song audition of songs with
+the writer's own words straight after it, then batches of 20, 40 and
+80 - the ceiling. The ladder climbs on the clock: after a rung is made,
+the generator waits as long as that rung's music runs before making
+the next, less whatever listeners skipped meanwhile (every device
+reports the seconds it skipped with Next, and skipping is faster
+consumption). A cycle renders everything it plans and hibernates; it
+runs at all only while the store holds fewer than `songs` untaken
+songs, and a batch never makes more than the room left, so a full
+store is the off switch - the engine sleeps until somebody takes a
+song. A steer drops every stored plan and song and restarts the
+ladder, so trying prompts never wastes deep work - but a restart of
+the player does not: the store carries a context and a build stamp,
+continues across restarts of the same binary, and is cleared when a
+different build of the player takes over, so songs rendered by older
+code never linger into an upgrade. `restart` empties it and puts the
+ladder back on its first rung without touching the session, and `iar
+buffer clear` does the same to a stopped radio.
 
 Playing a song does not delete it from the store. The player takes
 it, which marks it as consumed and leaves it on disk for a player that
@@ -984,13 +985,13 @@ they are never trimmed. A steer or `restart` drops the lot.
 - `phased`: turns the split pipeline on (the default). false restores
   the fused path: each track generated in one engine job with the audio
   model resident the whole time.
-- `render_low_minutes` (5 or more): the refill trigger; when the
-  rendered buffer runs down to this much audio left, the next batch
-  starts. Out-of-range values are clamped at load.
-- `songs` (3 or more, 72 by default): how many taken songs the store
-  keeps for players that have not caught up. The deepest phone setting
-  holds 72, so the default lets a phone that comes back find everything
-  it missed; the store never holds more than twice this.
+- `songs` (3 or more, 72 by default): how many songs the generator
+  makes ahead - it fills to this many untaken songs, one rung at a
+  time - and how many taken songs the store keeps for players that
+  have not caught up. The deepest phone setting holds 72, so the
+  default lets a phone that comes back find everything it missed; the
+  store never holds more than twice this. Out-of-range values are
+  clamped at load.
 
 ### ollama
 

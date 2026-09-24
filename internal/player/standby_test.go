@@ -168,7 +168,7 @@ func heldOrchestrator(t *testing.T, eng *pausableMock, builder *prompting.Builde
 	o := New(cfg, eng, builder, session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
 	o.mu.Lock()
-	o.playedInEpoch, o.properPlayedInEpoch = 9, 5
+	o.rung = 1
 	o.mu.Unlock()
 	return o
 }

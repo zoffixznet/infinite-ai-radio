@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"iar/internal/player"
 )
@@ -13,15 +14,16 @@ import (
 // ready" while half an hour of music sat on disk.
 func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 	st := player.Status{
-		Queued:              2, // the in-memory prefetch, and nothing more
-		BufferTarget:        6, // the fused path's setting
-		Phased:              true,
-		BufferedTracks:      11,
-		BufferedSeconds:     37 * 60,
-		PlannedTracks:       1,
-		PlannedSeconds:      200,
-		BufferTargetSeconds: 2 * 60 * 60,
-		BufferLowSeconds:    45 * 60,
+		Queued:          2, // the in-memory prefetch, and nothing more
+		BufferTarget:    6, // the fused path's setting
+		Phased:          true,
+		BufferedTracks:  11,
+		BufferedSeconds: 37 * 60,
+		PlannedTracks:   1,
+		PlannedSeconds:  200,
+		StoreLevel:      9,
+		StoreTarget:     72,
+		NextBatchIn:     45 * time.Minute,
 	}
 
 	ready := bufferReady(st)
@@ -36,19 +38,28 @@ func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 	if !ok {
 		t.Fatal("phased status produced no gauge")
 	}
-	// 37 minutes of a 2 hour target.
-	if frac < 0.29 || frac > 0.32 {
-		t.Errorf("gauge fraction %.3f, want about 0.31", frac)
+	// Nine untaken songs of a store that fills to 72.
+	if frac < 0.12 || frac > 0.13 {
+		t.Errorf("gauge fraction %.3f, want about 0.125", frac)
 	}
-	for _, want := range []string{"11 songs (37m) rendered of the 2h00m target", "1 planned", "next batch when 45m left"} {
+	for _, want := range []string{"11 songs to play (37m)", "next batch in 45m"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("gauge text %q is missing %q", text, want)
 		}
 	}
+	// A full store says so, and a due batch says how big it is.
+	st.StoreLevel = 72
+	if _, _, text, _ = bufferGauge(st); !strings.Contains(text, "store full") {
+		t.Errorf("a full store reads %q", text)
+	}
+	st.StoreLevel, st.NextBatchIn, st.RampBatch = 9, 0, 20
+	if _, _, text, _ = bufferGauge(st); !strings.Contains(text, "next batch of 20 due") {
+		t.Errorf("a due batch reads %q", text)
+	}
 }
 
 func TestBufferPhasedWithNothingYet(t *testing.T) {
-	st := player.Status{Phased: true, BufferTargetSeconds: 7200}
+	st := player.Status{Phased: true, StoreTarget: 72}
 	if got := bufferReady(st); got != "nothing buffered yet" {
 		t.Errorf("ready line reads %q", got)
 	}
@@ -127,12 +138,14 @@ func TestGenIdleText(t *testing.T) {
 // next batch instead.
 func TestBufferLineBetweenBatches(t *testing.T) {
 	st := player.Status{
-		Phased:           true,
-		RampBatch:        20,
-		BatchRendered:    11,
-		BufferedTracks:   17,
-		BufferedSeconds:  51 * 60,
-		BufferLowSeconds: 45 * 60,
+		Phased:          true,
+		RampBatch:       20,
+		BatchRendered:   11,
+		BufferedTracks:  17,
+		BufferedSeconds: 51 * 60,
+		StoreLevel:      15,
+		StoreTarget:     72,
+		NextBatchIn:     45 * time.Minute,
 	}
 
 	// Idle: the batch count is gone from the words.
@@ -143,7 +156,7 @@ func TestBufferLineBetweenBatches(t *testing.T) {
 	if strings.Contains(text, "of 20") {
 		t.Errorf("an idle engine still advertises an unfinished batch: %q", text)
 	}
-	for _, want := range []string{"17 songs to play", "51m", "next batch when 45m left"} {
+	for _, want := range []string{"17 songs to play", "51m", "next batch in 45m"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("idle line %q is missing %q", text, want)
 		}

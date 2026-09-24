@@ -52,10 +52,10 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	o.queue = []*engine.Track{mkTrack("staged one", 2), mkTrack("staged two", 2)}
 	o.lastGood, o.lastGoodEpoch = o.queue[1], o.epoch
 	o.loopOn, o.loopEpoch = true, o.epoch
-	o.playedInEpoch, o.properPlayedInEpoch = 56, 55
+	o.rung = len(ladder) - 1
 	o.phasedEpoch, o.phasedSynced = o.epoch, true
 	o.mu.Unlock()
-	if _, _, batch := o.cycleTargets(0); batch != 80 {
+	if batch := o.batchFor(0); batch <= 10 {
 		t.Fatalf("batch before the restart = %d; the test needs the ladder at the top", batch)
 	}
 	desc := sess.Describe()
@@ -105,7 +105,7 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	if synced := o.syncPhasedState(); synced != epoch {
 		t.Fatalf("the loops reconcile against epoch %d, want %d", synced, epoch)
 	}
-	if _, _, batch := o.cycleTargets(epoch); batch != 1 {
+	if batch := o.batchFor(epoch); batch != 1 {
 		t.Errorf("batch after the restart = %d, want 1", batch)
 	}
 }

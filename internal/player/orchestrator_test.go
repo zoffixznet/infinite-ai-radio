@@ -1527,13 +1527,10 @@ func TestRequestedLoopRepeatsTheTrackUntilTurnedOff(t *testing.T) {
 		t.Fatalf("replay label = %q", ts.label())
 	}
 	o.mu.Lock()
-	qlen, played := len(o.queue), o.playedInEpoch
+	qlen := len(o.queue)
 	o.mu.Unlock()
 	if qlen != 1 {
 		t.Fatalf("the loop consumed the queue: %d left", qlen)
-	}
-	if played != 0 {
-		t.Fatal("a replay counted toward the batch ladder's play count")
 	}
 	// The replay must not be interrupted as a warm-up either.
 	if o.fallbackShouldYield(ts) {
