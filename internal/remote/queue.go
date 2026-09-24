@@ -55,7 +55,7 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleQueueTrack serves one queued or library track as MP3 with Range
+// handleQueueTrack serves one listed track as MP3 with Range
 // support. A song still on disk goes out as the file itself, byte for
 // byte, so the hash the radio recorded for it is the hash of what the
 // phone holds. One that is only in memory is encoded in the request

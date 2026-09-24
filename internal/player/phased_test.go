@@ -12,7 +12,6 @@ import (
 	"iar/internal/audio"
 	"iar/internal/engine"
 	"iar/internal/engine/enginetest"
-	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/trackbuffer"
@@ -141,7 +140,7 @@ func TestExportWithADiskBufferButNoEngineDoesNotCrash(t *testing.T) {
 func TestRestartAdoptsThePreviousRunsBuffer(t *testing.T) {
 	dir := t.TempDir()
 	sess := session.New()
-	key := library.Key(sess)
+	key := sess.ContextKey()
 
 	// The previous run: context recorded, songs stored under epoch 3.
 	prev := trackbuffer.New(dir, 0, testLogger())
@@ -309,7 +308,7 @@ func TestAnotherBuildsBufferIsCleared(t *testing.T) {
 	dir := t.TempDir()
 	prev := trackbuffer.New(dir, 0, testLogger())
 	prev.SetBuild("old-commit")
-	prev.SetContext(library.Key(session.New()))
+	prev.SetContext(session.New().ContextKey())
 	track := &engine.Track{Lyrics: "[Verse]\nx", Samples: make([]int16, 9600)}
 	if _, err := prev.PutTrack(context.Background(), 0, 1, track); err != nil {
 		t.Fatal(err)

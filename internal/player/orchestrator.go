@@ -14,7 +14,6 @@ import (
 	"iar/internal/audio"
 	"iar/internal/config"
 	"iar/internal/engine"
-	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/songbook"
@@ -210,9 +209,6 @@ type Orchestrator struct {
 	// Timings records how long startup phases take across runs; set it
 	// before Start. Nil disables persistence (estimates use defaults).
 	Timings *state.Timings
-	// Library is the on-disk track cache used for instant starts and
-	// opportunistic banking; nil disables it. Set before Start.
-	Library *library.Library
 	// Buffer is the on-disk buffer of phased generation (plans awaiting
 	// render, rendered songs awaiting play). Set before Start; nil (or
 	// buffer.phased=false in the config) selects the fused path.
@@ -276,10 +272,7 @@ type Orchestrator struct {
 	// loopNoticeEpoch remembers which epoch already announced the loop
 	// fallback, so a burst of skips does not flush the event channel.
 	loopNoticeEpoch int
-	// seededLib holds the library ids already queued as an instant
-	// start, so the same audio is not also listed as filler.
-	seededLib map[string]bool
-	cur       source
+	cur             source
 	// loopOn marks a listener's request to repeat the playing track;
 	// it holds only while loopEpoch matches the steering epoch, so any
 	// context change breaks the loop without ceremony.
@@ -348,15 +341,6 @@ type Orchestrator struct {
 	// engineBusy mirrors whether a generation cycle currently holds the
 	// graphics card; the lyric writer works only while it is free.
 	engineBusy atomic.Bool
-	// bankRefs remembers where a live track's banked library copy lives
-	// (track ID -> key and library id), so a listener renaming a song
-	// reaches the banked sidecar too. Pruned as tracks retire.
-	bankRefs map[string]bankRef
-	// retired remembers songs that have finished playing (id -> genre
-	// line), so a listener whose own device is still on one can rename
-	// it. Bounded by retiredOrder, oldest dropped first.
-	retired      map[string]string
-	retiredOrder []string
 	// batchRenderedNow counts renders in the current batch cycle.
 	batchRenderedNow int
 	// batchCapNow is the size THIS cycle set out to render.
@@ -399,7 +383,6 @@ func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store
 		sess:     sess,
 		events:   make(chan Event, 16),
 		wake:     make(chan struct{}, 1),
-		bankRefs: map[string]bankRef{},
 		Songbook: songbook.Open("", log),
 		// A session that has played before has made songs before:
 		// resuming one and changing it straight away must still keep
@@ -463,7 +446,6 @@ func (o *Orchestrator) Start(ctx context.Context) {
 	if o.Idle {
 		o.log.Info("starting with the player off", "event", "player_idle")
 	}
-	o.seedFromLibrary()
 	// Prompt-seeded sessions carry a raw user description; let the
 	// helper enrich it in the background when it is available.
 	o.mu.Lock()
@@ -796,28 +778,6 @@ func (o *Orchestrator) genLoop(ctx context.Context) {
 		}
 		kept := epoch == o.epoch
 		o.mu.Unlock()
-		if kept {
-			// Bank the fresh track for future instant starts. Tracked
-			// in the WaitGroup so shutdown never races a disk write
-			// (adding here is safe: genLoop itself holds the group).
-			key := library.Key(sess)
-			// A snapshot, not the live track: a listener's rename
-			// writes Title under the lock while this write is still
-			// running.
-			o.mu.Lock()
-			banked := *track // shallow: Samples are shared and immutable
-			o.mu.Unlock()
-			o.wg.Add(1)
-			go func() {
-				defer o.wg.Done()
-				id, err := o.Library.Put(ctx, key, &banked)
-				if err != nil {
-					o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
-					return
-				}
-				o.rememberBank(banked.ID, bankRef{key: key, id: id})
-			}()
-		}
 		o.log.Info("generation finished", "event", "generation_finished",
 			"elapsed_seconds", elapsed.Seconds(), "track_seconds", track.Duration().Seconds(),
 			"kept", kept, "prompt", track.Prompt)
@@ -831,7 +791,7 @@ func newTrackID() string {
 
 // fillTitle gives a track a deterministic display name derived from its
 // own description. It is the last resort, for tracks that arrive with no
-// name of their own - a library file from an older run, or a song whose
+// name of their own - a song stored by an older run, or one whose
 // words the engine invented - and what it writes is final.
 func (o *Orchestrator) fillTitle(t *engine.Track) {
 	if t.Title == "" {
@@ -1085,45 +1045,4 @@ func (o *Orchestrator) engineFailed() bool {
 		return p.Phase() == "unavailable"
 	}
 	return false
-}
-
-// seedFromLibrary starts playback instantly from a banked track when the
-// library has one for this session's vibe.
-func (o *Orchestrator) seedFromLibrary() {
-	o.mu.Lock()
-	sessCopy := o.sess
-	o.mu.Unlock()
-	if o.eng == nil {
-		return
-	}
-	ctx := o.runCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	track, libID, ok := o.Library.Pick(ctx, library.Key(sessCopy))
-	if !ok {
-		return
-	}
-	if track.ID == "" {
-		// A starter track, or one banked before songs carried an id.
-		track.ID = newTrackID()
-	}
-	o.fillTitle(track)
-	o.mu.Lock()
-	o.queue = append(o.queue, track)
-	o.lastGood = track
-	o.lastGoodEpoch = o.epoch
-	// This one came out of the library rather than into it, but a
-	// rename has the same job to do: the file it was loaded from is
-	// where the name has to land.
-	o.bankRefs[track.ID] = bankRef{key: library.Key(sessCopy), id: libID}
-	// The same file must not also be offered as filler under its
-	// library id: a remote client would list and play it twice.
-	if o.seededLib == nil {
-		o.seededLib = map[string]bool{}
-	}
-	o.seededLib[libID] = true
-	o.mu.Unlock()
-	o.log.Info("instant start from library", "event", "library_start", "prompt", track.Prompt)
-	o.emit("playing a saved track for this vibe while a fresh one generates")
 }

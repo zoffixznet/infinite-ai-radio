@@ -11,9 +11,9 @@ import (
 
 	"iar/internal/engine"
 	"iar/internal/engine/enginetest"
-	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
+	"iar/internal/songbook"
 	"iar/internal/trackbuffer"
 )
 
@@ -124,54 +124,6 @@ func TestRenamingFollowsASongOutOfTheBuffer(t *testing.T) {
 	}
 }
 
-// Renaming reaches the banked copy kept for instant starts, so the
-// stand-in cannot come back in a later run.
-func TestRenamingReachesTheBankedCopy(t *testing.T) {
-	b := prompting.NewBuilder(nil, testLogger())
-	o := New(testConfig(), enginetest.NewMock(), b, session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
-	lib := library.New(t.TempDir(), 100, 9, testLogger())
-	o.Library = lib
-
-	key := "test-vibe"
-	banked := namedTrack("b")
-	banked.Samples = make([]int16, 9600)
-	libID, err := lib.Put(context.Background(), key, banked)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Playing it as filler: the listener's rename must land in the file
-	// it came from.
-	if ack := o.Retitle(libFillerPrefix+key+"/"+libID, "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
-		t.Fatalf("rename ack = %q", ack)
-	}
-	entries := lib.Entries(key)
-	if len(entries) != 1 || entries[0].Title != "Harbour Lights" {
-		t.Fatalf("banked entry: %+v", entries)
-	}
-	if entries[0].Subtitle != banked.Subtitle {
-		t.Fatalf("rename dropped the genre line: %q", entries[0].Subtitle)
-	}
-
-	// And through the in-memory path, for a song banked while it played.
-	live := namedTrack("l")
-	live.Samples = make([]int16, 9600)
-	o.mu.Lock()
-	o.cur = newTrackSource(live, "music")
-	o.curTrack = live
-	o.mu.Unlock()
-	id2, err := lib.Put(context.Background(), key, live)
-	if err != nil {
-		t.Fatal(err)
-	}
-	o.rememberBank(live.ID, bankRef{key: key, id: id2})
-	o.Retitle("", "Ash And Anchor")
-	for _, e := range lib.Entries(key) {
-		if e.ID == id2 && e.Title != "Ash And Anchor" {
-			t.Fatalf("banked copy of the playing song: %+v", e)
-		}
-	}
-}
-
 // A song the listener already saved is on disk under its old name.
 // Renaming what is playing renames those files too - tag and all -
 // because "rename this song" means the copy they kept as well.
@@ -241,36 +193,25 @@ func TestRenamingMovesTheSavedCopy(t *testing.T) {
 
 // A phone plays its own downloaded copies, at its own pace, and can be
 // a long way behind the speakers. Renaming what it is hearing must
-// still work when this machine finished with that song a while ago: the
-// audio is gone from here, but the banked copy and any saved file are
-// not, and the phone renames its own copy itself.
+// still work when this machine has let that song go entirely: the
+// audio is gone from here, but the book remembers the song, and the
+// name it records is the one a later save from the phone's copy uses.
 func TestRenamingASongTheMachineHasFinishedWith(t *testing.T) {
 	b := prompting.NewBuilder(nil, testLogger())
 	o := New(testConfig(), enginetest.NewMock(), b, session.NewStore(t.TempDir()),
 		session.New(), &capturePlayer{}, testLogger())
-	lib := library.New(t.TempDir(), 100, 9, testLogger())
-	o.Library = lib
 
 	gone := namedTrack("old")
-	gone.Samples = make([]int16, 9600)
-	key := "test-vibe"
-	libID, err := lib.Put(context.Background(), key, gone)
-	if err != nil {
+	if err := o.Songbook.Record(songbook.Song{ID: gone.ID, Hash: "h", Title: gone.Title, Subtitle: gone.Subtitle}); err != nil {
 		t.Fatal(err)
 	}
-	o.rememberBank(gone.ID, bankRef{key: key, id: libID})
-	// It played, and then two more played after it.
-	o.retireTrack(gone)
 
 	if ack := o.Retitle(gone.ID, "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
-		t.Fatalf("rename of a finished song = %q", ack)
+		t.Fatalf("rename of a gone song = %q", ack)
 	}
-	entries := lib.Entries(key)
-	if len(entries) != 1 || entries[0].Title != "Harbour Lights" {
-		t.Fatalf("the banked copy kept the old name: %+v", entries)
-	}
-	if entries[0].Subtitle != gone.Subtitle {
-		t.Fatalf("the rename dropped the genre line: %q", entries[0].Subtitle)
+	rec, _ := o.Songbook.ByID(gone.ID)
+	if rec.Title != "Harbour Lights" || rec.Subtitle != gone.Subtitle {
+		t.Fatalf("the book's record: %+v", rec)
 	}
 	// A song nobody has ever heard of is still refused.
 	if ack := o.Retitle("t-nothing", "Nowhere"); !strings.Contains(ack, "no longer here") {

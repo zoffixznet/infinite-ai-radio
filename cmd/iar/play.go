@@ -79,7 +79,6 @@ func runPlay(pf playFlags) error {
 	store := session.NewStore(a.paths.SessionsDir())
 	orch := player.New(a.cfg, eng, builder, store, sess, pl, a.log)
 	orch.Timings = a.timings
-	orch.Library = a.library()
 	// Which build is running: the buffer is stamped with it, the status
 	// display shows it, and the phone shows the same string in its
 	// settings.

@@ -57,6 +57,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   command and its hold across restarts. A full store is the off
   switch now - the engine sleeps on its own once nobody is taking
   songs - and `stop` covers this machine's speakers.
+- The track library, its `library_max_mb` setting, the starter tracks
+  `iar setup` banked (`--no-bank` with them) and the instant start from
+  a banked song. The store keeps played songs now, so saving and
+  renaming reach a song the radio has moved past without a second copy
+  of it, and a restart plays from the store at once. `library/` in the
+  data directory can be deleted.
 - Noise mode: the `pink-noise` preset, "generate brown noise" steering,
   the noise bed under a starting radio and the `bed_while_waiting`
   setting, and the `noise` engine. A machine without a graphics card
@@ -75,11 +81,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   flushed would count 34 songs on a radio holding 18, spend a download
   on every copy, and could play a song it had already played.
 - A song the radio has already played can still be saved from the
-  phone that is playing it. Every song is kept in the track library as
-  it is played, but saving only ever looked at the song playing and the
-  one before, so a phone playing its own copy well behind the speakers
-  was told the song was "no longer available" while its audio sat on
-  disk. It is found in the library now, after a restart too, and a
+  phone that is playing it. Saving only ever looked at the song playing
+  and the one before, so a phone playing its own copy well behind the
+  speakers was told the song was "no longer available" while its audio
+  sat on disk. It is found in the store now, after a restart too, and a
   save queued in a dead zone waits a day for the radio to come back
   instead of giving up after a quarter of an hour.
 - A phone keeps its place in the stream. The songs the radio has just

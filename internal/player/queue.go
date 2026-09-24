@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"iar/internal/engine"
-	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/trackbuffer"
 )
@@ -25,8 +24,9 @@ type QueueTrack struct {
 	// playing its own downloaded copy has no other way to show the
 	// words in step with what it is hearing.
 	Lyrics string
-	// Kind is "queue" for freshly generated upcoming tracks and
-	// "library" for same-vibe banked filler.
+	// Kind is "queue" for the songs ahead - this machine's prefetch and
+	// the songs in the store nobody has taken - and "library" for the
+	// taken songs the store keeps as spares.
 	Kind string
 	// Hash is the SHA-256 of the track's MP3 as served, when the radio
 	// recorded one at render; a client sends it back to save the song
@@ -34,25 +34,22 @@ type QueueTrack struct {
 	Hash string
 }
 
-// libFillerPrefix marks track ids that resolve to the on-disk library.
-const libFillerPrefix = "lib:"
-
 // bufTrackPrefix marks queue-listing ids that live in the phased disk
 // buffer rather than the in-memory queue.
 const bufTrackPrefix = "buf:"
 
-// maxLibraryFiller bounds how many banked tracks pad the queue listing.
-const maxLibraryFiller = 6
+// maxSpares bounds how many kept songs pad the queue listing.
+const maxSpares = 6
 
 // QueueTracks returns the steering epoch and the tracks a remote client
-// may prefetch: the in-memory queue first, then same-vibe library
-// tracks as lower-priority filler. Reading the queue never touches the
-// audio path.
+// may prefetch: this machine's in-memory prefetch first, then the songs
+// in the store nobody has taken, then a few of the taken songs the
+// store keeps as spares. Reading the queue never touches the audio
+// path.
 func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	o.mu.Lock()
 	epoch := o.epoch
-	key := library.Key(o.sess)
-	out := make([]QueueTrack, 0, len(o.queue)+maxLibraryFiller)
+	out := make([]QueueTrack, 0, len(o.queue)+maxSpares)
 	for _, t := range o.queue {
 		out = append(out, QueueTrack{
 			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
@@ -96,16 +93,15 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 			out = append(out, row(e, "queue"))
 		}
 		// Taken songs stay in the store for players that have not
-		// caught up. To a phone they are what the library's filler was:
-		// songs the radio has moved past, worth holding as spares. The
-		// newest few, the ones in the in-memory queue excepted - those
-		// are listed above.
+		// caught up. To a phone they are songs the radio has moved past,
+		// worth holding as spares. The newest few, the ones in the
+		// in-memory queue excepted - those are listed above.
 		queued := make(map[string]bool, len(out))
 		for _, r := range out {
 			queued[r.ID] = true
 		}
 		spares := 0
-		for i := len(kept) - 1; i >= 0 && spares < maxLibraryFiller; i-- {
+		for i := len(kept) - 1; i >= 0 && spares < maxSpares; i-- {
 			r := row(kept[i], "library")
 			if queued[r.ID] {
 				continue
@@ -113,65 +109,6 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 			out = append(out, r)
 			spares++
 		}
-	}
-	o.mu.Lock()
-	// Mid-switchover the queue is empty by design, so filler would be
-	// the whole listing - and a remote client that starts playing it is
-	// switching into audio older than what it is already playing, quite
-	// possibly in the language just switched off. Offer nothing until
-	// the first track of the new context exists, the same rule the
-	// local mixer follows.
-	switching := o.steerPending
-	langs := o.enabledLanguageNamesLocked()
-	seeded := o.seededLib
-	o.mu.Unlock()
-	if switching {
-		return epoch, out
-	}
-	listed := make(map[string]bool, len(out))
-	for _, row := range out {
-		listed[row.ID] = true
-	}
-	for i, e := range o.Library.Entries(key) {
-		if i >= maxLibraryFiller {
-			break
-		}
-		if seeded[e.ID] {
-			continue // already queued above as an instant start
-		}
-		if langs != nil && !langs[e.Language] {
-			// A configured list means the listener said which languages
-			// they want. A banked track from before languages were
-			// recorded has an empty one, which is unknown rather than
-			// acceptable.
-			continue
-		}
-		prompt := e.Prompt
-		if prompt == "" {
-			prompt = "banked track"
-		}
-		title, subtitle := e.Title, e.Subtitle
-		if title == "" {
-			title, subtitle = prompting.TrackTitle(prompt)
-		}
-		id := libFillerPrefix + key + "/" + e.ID
-		if e.TrackID != "" {
-			// A banked song is still the song it was, so it goes out
-			// under its own id. Every song is banked the moment it is
-			// fed, and filler is taken newest first - so under a
-			// library id of its own, the filler was always the last few
-			// songs the radio had fed, and a phone that had them
-			// already took each one again. One in the play queue right
-			// now is already listed above.
-			if listed[e.TrackID] {
-				continue
-			}
-			id = e.TrackID
-		}
-		out = append(out, QueueTrack{
-			ID: id, Prompt: prompt, Title: title, Subtitle: subtitle,
-			Seconds: e.Seconds, Kind: "library", Lyrics: e.Lyrics,
-		})
 	}
 	for i := range out {
 		if s, ok := o.Songbook.ByID(out[i].ID); ok {
@@ -181,9 +118,9 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	return epoch, out
 }
 
-// TrackFile returns the MP3 of a song still waiting on disk, to be
-// served exactly as written. ok is false for a song that is anywhere
-// else in its life - in memory or banked - or unknown.
+// TrackFile returns the MP3 of a song in the store, to be served
+// exactly as written. ok is false for a song that is only in memory,
+// or unknown.
 func (o *Orchestrator) TrackFile(id string) (string, bool) {
 	if o.Buffer == nil || !o.cfg.Buffer.Phased {
 		return "", false
@@ -198,26 +135,10 @@ func (o *Orchestrator) TrackFile(id string) (string, bool) {
 	return o.Buffer.TrackPath(epoch, base)
 }
 
-// enabledLanguageNamesLocked is the set of language names a vocal
-// session currently sings in, or nil when the listener has not narrowed
-// it down and anything banked is fair game. Callers hold o.mu.
-func (o *Orchestrator) enabledLanguageNamesLocked() map[string]bool {
-	if !o.sess.Vocal || len(o.sess.SungLanguages) == 0 {
-		// No list means the engine chooses, so anything banked goes.
-		return nil
-	}
-	on := map[string]bool{}
-	for _, name := range o.sess.SungLanguages {
-		on[name] = true
-	}
-	return on
-}
-
 // TrackData resolves a track id to its audio, wherever the song is in
-// its life: waiting on disk, in the play queue, playing or just played,
-// or banked in the library after the radio has moved past it. The track
-// comes back labelled with the id it was asked for. ok is false when the
-// id is unknown or its audio has been evicted.
+// its life: in the store, in the play queue, playing or just played.
+// The track comes back labelled with the id it was asked for. ok is
+// false when the id is unknown or its audio is gone.
 func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 	if id == "" {
 		return nil, false
@@ -226,23 +147,8 @@ func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if rest, isLib := strings.CutPrefix(id, libFillerPrefix); isLib {
-		key, fileID, found := strings.Cut(rest, "/")
-		if !found {
-			return nil, false
-		}
-		t, ok := o.Library.Load(ctx, key, fileID)
-		if !ok {
-			return nil, false
-		}
-		if t.Title == "" {
-			t.Title, t.Subtitle = prompting.TrackTitle(t.Prompt)
-		}
-		t.ID = id
-		return t, true
-	}
-	// The live copy first: a song keeps its id from disk into the play
-	// queue, and feeding it deletes it from disk.
+	// The live copy first: a song keeps its id from the store into the
+	// play queue.
 	if t, ok := o.liveTrack(id); ok {
 		return t, true
 	}
@@ -260,13 +166,13 @@ func (o *Orchestrator) TrackData(id string) (*engine.Track, bool) {
 			t.ID = id
 			return t, true
 		}
-		// Fed while we were looking: the file is gone because the song
-		// just moved into the play queue.
+		// Trimmed while we were looking; the play queue may still
+		// hold it.
 		if t, ok := o.liveTrack(id); ok {
 			return t, true
 		}
 	}
-	return o.bankedTrack(ctx, id)
+	return nil, false
 }
 
 // liveTrack finds a song in memory: queued, playing, just played, or
@@ -292,9 +198,9 @@ func (o *Orchestrator) liveTrack(id string) (*engine.Track, bool) {
 	return nil, false
 }
 
-// bufferedBase names the disk file a song is waiting in. A song rendered
-// before songs carried their own id is listed under its file name, so
-// that one is read straight off the id; anything else is looked up.
+// bufferedBase names the file a song sits in. A song rendered before
+// songs carried their own id is listed under its file name, so that
+// one is read straight off the id; anything else is looked up.
 func (o *Orchestrator) bufferedBase(id string) (string, bool) {
 	if o.Buffer == nil {
 		return "", false
@@ -318,34 +224,4 @@ func (o *Orchestrator) bufferedBase(id string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// bankedTrack finds a song the radio has already played past. Every
-// song is banked in the library as it is fed, so its audio outlives its
-// place in the stream by as much as the library holds - which is what a
-// phone playing its own copy long after the speakers needs, the moment
-// its listener presses save. The remembered location is the quick way;
-// reading the library's sidecars is the one that survives a restart.
-func (o *Orchestrator) bankedTrack(ctx context.Context, id string) (*engine.Track, bool) {
-	o.mu.Lock()
-	ref, known := o.bankRefs[id]
-	o.mu.Unlock()
-	var (
-		t  *engine.Track
-		ok bool
-	)
-	if known {
-		t, ok = o.Library.Load(ctx, ref.key, ref.id)
-	}
-	if !ok {
-		t, ok = o.Library.Find(ctx, id)
-	}
-	if !ok {
-		return nil, false
-	}
-	if t.Title == "" {
-		t.Title, t.Subtitle = prompting.TrackTitle(t.Prompt)
-	}
-	t.ID = id
-	return t, true
 }

@@ -17,88 +17,9 @@ import (
 // playing right now, which is the worst possible moment to be sent to
 // another screen to fix it. Retitle renames whatever is playing from
 // wherever the listener is, and then chases that name into every place
-// the song is remembered: the playing copy, the rendered song still on
-// disk, the banked copy kept for instant starts, and - if this song was
-// already saved - the file and its ID3 tag in the snippets folder.
-
-// bankRef locates a track's banked library copy so a rename can be
-// written into its sidecar as well.
-type bankRef struct {
-	key string
-	id  string
-}
-
-// maxRetired bounds how many finished songs stay renameable. A phone
-// plays its own copies at its own pace and can be a long way behind the
-// speakers, so "rename what I am hearing" often names a song this
-// machine finished with; its audio is gone, but the copies that outlive
-// it - the banked one, a saved file - are not.
-const maxRetired = 64
-
-// maxBankRefs bounds the remembered banked-copy locations; the oldest
-// are pruned when the map outgrows it and their tracks are gone.
-const maxBankRefs = 96
-
-// retireTrack remembers a song that has finished playing, by name only:
-// enough to rename it afterwards, nothing that pins its audio.
-func (o *Orchestrator) retireTrack(t *engine.Track) {
-	if t == nil || t.ID == "" {
-		return
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.retired == nil {
-		o.retired = map[string]string{}
-	}
-	if _, seen := o.retired[t.ID]; !seen {
-		o.retiredOrder = append(o.retiredOrder, t.ID)
-	}
-	o.retired[t.ID] = t.Subtitle
-	for len(o.retiredOrder) > maxRetired {
-		delete(o.retired, o.retiredOrder[0])
-		o.retiredOrder = o.retiredOrder[1:]
-	}
-}
-
-// rememberBank records where a track's banked library copy lives.
-func (o *Orchestrator) rememberBank(id string, ref bankRef) {
-	if id == "" || ref.id == "" {
-		return
-	}
-	o.mu.Lock()
-	o.bankRefs[id] = ref
-	over := len(o.bankRefs) > maxBankRefs
-	o.mu.Unlock()
-	if over {
-		o.pruneBankRefs()
-	}
-}
-
-// pruneBankRefs drops banked-copy locations whose tracks are no longer
-// anywhere a rename could still find them.
-func (o *Orchestrator) pruneBankRefs() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	live := map[string]bool{}
-	for _, t := range o.queue {
-		live[t.ID] = true
-	}
-	if ts, ok := o.cur.(*trackSource); ok {
-		live[ts.track.ID] = true
-	}
-	for _, t := range []*engine.Track{o.incoming, o.prevTrack, o.lastGood, o.curTrack} {
-		if t != nil {
-			live[t.ID] = true
-		}
-	}
-	for id := range o.bankRefs {
-		// A finished song can still be renamed, so where it was banked
-		// is still worth knowing.
-		if _, retired := o.retired[id]; !live[id] && !retired {
-			delete(o.bankRefs, id)
-		}
-	}
-}
+// the song is remembered: the playing copy, the song in the store, the
+// songbook's record of it, and - if this song was already saved - the
+// file and its ID3 tag in the snippets folder.
 
 // Retitle renames a song. which selects it exactly as saving does:
 // empty for what the speakers are playing, "prev" for the one before
@@ -111,25 +32,10 @@ func (o *Orchestrator) Retitle(which, title string) string {
 		return "a new name is needed"
 	}
 	// A song keeps one id from the render on, so there is nothing to
-	// translate here: the song is looked for in memory, then on disk,
-	// then in the library, whatever stage it has reached. That includes
-	// a song rendered before songs had ids of their own, whose file name
-	// is its id for good. This used to follow a table of which file had
-	// become which new id when it was fed, which only existed because
-	// feeding renamed the song.
-	if rest, isLib := strings.CutPrefix(which, libFillerPrefix); isLib {
-		key, fileID, found := strings.Cut(rest, "/")
-		if !found {
-			return "that song cannot be renamed"
-		}
-		return o.retitleBanked(key, fileID, which, title)
-	}
-	return o.retitleLive(which, title)
-}
-
-// retitleLive renames a song that is in memory - playing, played, or
-// waiting in the queue - and every copy of it that outlives playback.
-func (o *Orchestrator) retitleLive(which, title string) string {
+	// translate here: the song is looked for in memory, then in the
+	// store, then in the book, whatever stage it has reached. That
+	// includes a song rendered before songs had ids of their own, whose
+	// file name is its id for good.
 	o.mu.Lock()
 	var (
 		hits []*engine.Track
@@ -151,7 +57,7 @@ func (o *Orchestrator) retitleLive(which, title string) string {
 	case "prev", "previous", "last":
 		take(o.prevTrack)
 	case "":
-		// Only what is actually coming out of the speakers: with the
+		// Only what is actually coming out of the speakers: with
 		// nothing but silence there is no song on screen to rename.
 		if ts, ok := o.cur.(*trackSource); ok {
 			take(ts.track)
@@ -169,101 +75,71 @@ func (o *Orchestrator) retitleLive(which, title string) string {
 		take(o.lastGood)
 	}
 	if len(hits) == 0 {
-		// Not here any more, but a listener whose device trails the
-		// speakers is still hearing it. The audio is gone; the copies
-		// that outlive it are not.
-		subtitle, retired := o.retired[which]
-		ref, banked := o.bankRefs[which]
 		o.mu.Unlock()
-		if !retired {
-			if which == "" {
-				return "nothing is playing to rename yet"
-			}
-			// Not played yet, and not fed either: a phone that has
-			// downloaded ahead of the speakers is playing a song that is
-			// still a file on disk, listed under the song's own id.
-			if base, ok := o.bufferedBase(which); ok {
-				return o.retitleOnDisk(base, which, title)
-			}
-			// Played long ago, or before a restart forgot it: the library
-			// still holds it under its own id, which is the id a phone
-			// offered it as filler under.
-			if key, fileID, ok := o.Library.Locate(which); ok {
-				return o.retitleBanked(key, fileID, which, title)
-			}
-			o.log.Info("rename found no such song", "event", "track_rename_missed", "id", which)
-			return "that song is no longer here to rename"
+		if which == "" {
+			return "nothing is playing to rename yet"
 		}
-		if banked {
-			o.Library.SetTitle(ref.key, ref.id, title, subtitle)
+		// Not in memory here. A phone ahead of the speakers, or a long
+		// way behind them, is playing a song that is still a file in the
+		// store, listed under the song's own id.
+		if base, ok := o.bufferedBase(which); ok {
+			return o.retitleOnDisk(base, which, title)
 		}
-		o.log.Info("song renamed", "event", "track_renamed", "id", which, "title", title, "retired", true)
-		return o.renameAck(which, title)
+		// Gone from the store too, but made here: the book keeps the
+		// name, for the copy the phone still holds and for the saved
+		// file.
+		if _, known := o.Songbook.ByID(which); known {
+			o.log.Info("song renamed", "event", "track_renamed", "id", which, "title", title, "gone", true)
+			return o.renameAck(which, title)
+		}
+		o.log.Info("rename found no such song", "event", "track_rename_missed", "id", which)
+		return "that song is no longer here to rename"
 	}
-	var (
-		id       = hits[0].ID
-		subtitle = hits[0].Subtitle
-	)
+	id := hits[0].ID
 	for _, t := range hits {
 		t.Title = title
 	}
-	ref, banked := o.bankRefs[id]
 	o.mu.Unlock()
-
-	if banked {
-		o.Library.SetTitle(ref.key, ref.id, title, subtitle)
+	// The copy in the store, while the song is still there: a player
+	// that has not caught up reads its name from that.
+	if base, ok := o.bufferedBase(id); ok {
+		o.setStoredTitle(base, title)
 	}
 	o.log.Info("song renamed", "event", "track_renamed", "id", id, "title", title)
 	return o.renameAck(id, title)
 }
 
-// retitleOnDisk renames a rendered song still waiting in the disk
-// buffer: nothing is playing it yet, so the sidecar is the whole job.
-// id is the one the listener named it by, and the one the answer uses.
+// retitleOnDisk renames a song that is only in the store: nothing here
+// is playing it, so the sidecar is the whole job. id is the one the
+// listener named it by, and the one the answer uses.
 func (o *Orchestrator) retitleOnDisk(base, id, title string) string {
-	if o.Buffer == nil {
+	if !o.setStoredTitle(base, title) {
 		return "that song is no longer here to rename"
+	}
+	o.log.Info("song renamed", "event", "track_renamed", "id", id, "title", title)
+	return o.renameAck(id, title)
+}
+
+// setStoredTitle writes a new title into a stored song's sidecar,
+// keeping its genre line. Reports whether the song was still there.
+func (o *Orchestrator) setStoredTitle(base, title string) bool {
+	if o.Buffer == nil {
+		return false
 	}
 	o.mu.Lock()
 	epoch := o.epoch
 	o.mu.Unlock()
-	var subtitle string
-	var found bool
 	for _, e := range o.Buffer.List(epoch) {
-		if e.Base != base {
-			continue
-		}
-		subtitle, found = e.Subtitle, true
-		break
-	}
-	if !found || !o.Buffer.SetTitle(epoch, base, title, subtitle) {
-		return "that song is no longer here to rename"
-	}
-	o.log.Info("song renamed", "event", "track_renamed", "id", id, "title", title)
-	return o.renameAck(id, title)
-}
-
-// retitleBanked renames a library track a listener is playing as
-// filler; the banked file is the only copy there is.
-// id is the one the listener named it by, and the one the answer uses.
-func (o *Orchestrator) retitleBanked(key, fileID, id, title string) string {
-	var subtitle string
-	for _, e := range o.Library.Entries(key) {
-		if e.ID == fileID {
-			subtitle = e.Subtitle
-			break
+		if e.Base == base {
+			return o.Buffer.SetTitle(epoch, base, title, e.Subtitle)
 		}
 	}
-	if !o.Library.SetTitle(key, fileID, title, subtitle) {
-		return "that song is no longer here to rename"
-	}
-	o.log.Info("song renamed", "event", "track_renamed", "id", id, "title", title)
-	return o.renameAck(id, title)
+	return false
 }
 
-// renameAck finishes a rename: a song already saved to disk is renamed
-// there too, because a listener who renames what they are hearing means
-// the copy they kept as well.
+// renameAck finishes a rename: the book records the name, and a song
+// already saved to disk is renamed there too, because a listener who
+// renames what they are hearing means the copy they kept as well.
 func (o *Orchestrator) renameAck(id, title string) string {
 	// The book keeps the name past the audio: a copy that comes back
 	// from a phone to be saved is saved under the name it was given.

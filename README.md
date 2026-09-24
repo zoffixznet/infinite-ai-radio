@@ -144,10 +144,10 @@ it continues where it stopped. It never uses sudo. The examples below use
 ./iar
 ```
 
-That is all. Setup banks a few starter tracks, so a launch begins playing
-within seconds and crossfades to freshly generated music as soon as it is
-ready. A bare `./iar` starts on the `nu-metal` preset; `default_preset`
-in the [configuration](#configuration) picks a different one.
+That is all. A bare `./iar` starts on the `nu-metal` preset;
+`default_preset` in the [configuration](#configuration) picks a
+different one. The first song takes a minute or so to make; after that
+the store fills ahead of you, and a restart plays from it at once.
 
 The best way to drive the radio is the **web interface** - the station
 picker, live lyrics, per-song saving, seeking and buffered playback all
@@ -545,13 +545,13 @@ as that song plays - on the page and on the car screen alike, rather
 than a confirmation you had to be looking at the right second to catch.
 A save that cannot reach the radio at all, in a tunnel or on a mountain
 road, is queued on the device and goes through by itself when the signal
-comes back. The radio can save a song long after it has played it -
-every song is kept in its track library once it has been fed to the
-stream - so a phone playing its own copy well behind the speakers can
-still save what it is hearing, for as long as the library holds it
-(see `library_max_mb`). A queued save waits up to a day for the radio
-to come back into reach; past that the phone says it has given up
-instead of retrying for ever.
+comes back. The radio can save a song long after it has played it - a
+played song stays in the store for as long as `buffer.songs` allows,
+and the radio's book remembers every song it ever made - so a phone
+playing its own copy well behind the speakers can still save what it
+is hearing. A queued save waits up to a day for the radio to come back
+into reach; past that the phone says it has given up instead of
+retrying for ever.
 
 The pencil beside the song's name renames it, so a name you disagree
 with can be fixed while the song is still playing instead of from the
@@ -697,7 +697,6 @@ everything else keeps its default. The complete set, with defaults:
   "normalize_loudness": true,
   "mp3_quality": 0,
   "snippets_dir": "",
-  "library_max_mb": 600,
   "lyrics_generator": "scribe",
   "vocal_languages": [],
   "default_preset": "nu-metal",
@@ -782,11 +781,6 @@ everything else keeps its default. The complete set, with defaults:
 - `snippets_dir`: where the `save` command writes captured tracks, one
   subdirectory per tag (`untagged/` for saves without one). Empty means
   `snippets/` under the data directory.
-- `library_max_mb`: total size cap for the on-disk track library that
-  powers instant starts (0 disables the library). Tracks are banked as
-  MP3 at `mp3_quality`, so the 600 MB default holds roughly a hundred
-  songs; raise it if you want the radio to reach further back.
-
 - `lyrics_generator`: which lyric writer pens the words on vocal
   tracks: `"scribe"` (default; plans, drafts and revises against
   dictionary-checked rhyme, syllable, repetition and topic rules) or
@@ -1027,14 +1021,11 @@ Inside the data directory:
   checkpoints
 - `sessions/` - one JSON file per saved session, plus `deleted-presets`
   (the list of presets hidden with `iar sessions delete`)
-- `library/` - banked tracks for instant starts: MP3s with a JSON
-  metadata sidecar, the same shape as the buffer's (size-capped)
 - `buffer/` - the song store: `plans/` (small JSON song plans),
   `tracks/` (rendered MP3s, each with a JSON metadata sidecar that also
   records when the song was taken), the stored steering context, and
-  the player's cursor. The largest directory after `engine/` and
-  `library/`; how much it holds follows the batch ladder and the
-  `songs` setting
+  the player's cursor. The largest directory after `engine/`; how much
+  it holds follows the batch ladder and the `songs` setting
 - `songbook.jsonl` - one line per song the radio has made: the file's
   hash, its name, words and prompt, and where it was saved
 - `snippets/<tag>/` - tracks captured with the save command, one

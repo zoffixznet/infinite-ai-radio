@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"iar/internal/engine"
-	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/trackbuffer"
@@ -30,7 +29,7 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
-	o.Buffer.SetContext(library.Key(sess))
+	o.Buffer.SetContext(sess.ContextKey())
 
 	// An evening of settled listening: songs and plans on disk, two
 	// songs staged in the prefetch, one of them looping on request, and

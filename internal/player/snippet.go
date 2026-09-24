@@ -62,7 +62,7 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 			return "that track is no longer available to save"
 		}
 		if t.ID == "" {
-			t.ID = which // library tracks load without an id of their own
+			t.ID = which // a song rendered before songs carried an id of their own
 		}
 		track = t
 	}
@@ -276,8 +276,7 @@ func (o *Orchestrator) SaveUpload(hash, tag string, body io.Reader) string {
 // isTrackID reports whether a save selector is a track id rather than a
 // which keyword.
 func isTrackID(which string) bool {
-	return strings.HasPrefix(which, "t-") || strings.HasPrefix(which, libFillerPrefix) ||
-		strings.HasPrefix(which, bufTrackPrefix)
+	return strings.HasPrefix(which, "t-") || strings.HasPrefix(which, bufTrackPrefix)
 }
 
 // maxSavedIDs bounds how many saved ids the status carries.
@@ -312,7 +311,6 @@ func (o *Orchestrator) NewSession(prompt string) string {
 	o.mu.Unlock()
 	o.saveSession()
 	o.recordCurrent()
-	o.seedFromLibrary()
 	o.kickGen()
 	o.expandSeedAsync(fresh)
 	o.log.Info("new session from prompt", "event", "session_new_prompt", "prompt", prompt, "vocal", fresh.Vocal)

@@ -115,15 +115,6 @@ func (o *Orchestrator) fallbackShouldYield(cur source) bool {
 			return false
 		}
 	}
-	// A library track is a warm-up: hand over as soon as a freshly
-	// generated track is waiting.
-	if ts, ok := cur.(*trackSource); ok && ts.track.FromLibrary {
-		for _, q := range o.queue {
-			if !q.FromLibrary {
-				return true
-			}
-		}
-	}
 	return false
 }
 
@@ -272,9 +263,7 @@ func (o *Orchestrator) setCurrent(s source) {
 	o.cur = s
 	o.incoming = nil // whatever was fading in is current now, or was passed over
 	ts, isTrack := s.(*trackSource)
-	var retiring *engine.Track
 	if isTrack && (o.curTrack == nil || o.curTrack != ts.track) {
-		retiring = o.prevTrack
 		o.prevTrack = o.curTrack
 		o.curTrack = ts.track
 		o.playCount++
@@ -286,9 +275,6 @@ func (o *Orchestrator) setCurrent(s source) {
 	}
 	started := o.started
 	o.mu.Unlock()
-	// The song that just fell out of "previous" is finished here, but a
-	// device playing its own copy may still be on it.
-	o.retireTrack(retiring)
 	o.log.Info("now playing", "event", "now_playing", "source", s.label())
 	if firstMusic {
 		seconds := time.Since(started).Seconds()
@@ -302,9 +288,6 @@ func summarize(t *engine.Track) string {
 	p := t.Prompt
 	if len(p) > 60 {
 		p = p[:57] + "..."
-	}
-	if t.FromLibrary {
-		p += " [library]"
 	}
 	if t.Lyrics != "" && t.Lyrics != engine.InstrumentalLyrics {
 		p += " [vocals]"

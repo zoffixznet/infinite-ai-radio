@@ -251,6 +251,24 @@ func (s *Session) TweakPhrases() []string {
 	return out
 }
 
+// ContextKey names the steering context the session's songs belong
+// to: the preset name when the session came from one, otherwise a slug
+// of its base prompt. A store of songs made for one context is no use
+// to another.
+func (s *Session) ContextKey() string {
+	if s.Preset != "" {
+		return s.Preset
+	}
+	slug := SanitizeName(s.BasePrompt)
+	if len(slug) > 48 {
+		slug = slug[:48]
+	}
+	if slug == "" || slug == "unnamed" {
+		return "default"
+	}
+	return slug
+}
+
 // Describe returns a one-line summary for status displays.
 func (s *Session) Describe() string {
 	parts := []string{s.BasePrompt}

@@ -7,7 +7,6 @@ import (
 
 	"iar/internal/audio"
 	"iar/internal/engine"
-	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
 	"iar/internal/songbook"
@@ -66,7 +65,7 @@ func (o *Orchestrator) phasedEnabled() bool {
 // matching world.
 func (o *Orchestrator) adoptDiskBuffer() {
 	_, sess := o.snapshotSession()
-	if sess == nil || o.Buffer.Context() != library.Key(sess) {
+	if sess == nil || o.Buffer.Context() != sess.ContextKey() {
 		return
 	}
 	de, ok := o.Buffer.DiskEpoch()
@@ -93,7 +92,7 @@ func (o *Orchestrator) adoptDiskBuffer() {
 // steer drops the old epoch's files and restarts the ramp).
 func (o *Orchestrator) syncPhasedState() int {
 	_, sess := o.snapshotSession()
-	key := library.Key(sess)
+	key := sess.ContextKey()
 	o.mu.Lock()
 	epoch := o.epoch
 	booted := o.phasedSynced
@@ -482,7 +481,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		// names it later.
 		o.nameTrack(track)
 		// The song gets its id here, with its audio, and keeps it for
-		// good: on disk, in the play queue, and in the library once it
+		// good: in the store, in the play queue, and in the book once it
 		// has played. It used to be named afresh at each of those
 		// stops, so a phone watching the listing saw one song as two
 		// or three and downloaded every one of them.
@@ -698,7 +697,7 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		if !need {
 			continue
 		}
-		epoch, sess := o.snapshotSession()
+		epoch, _ := o.snapshotSession()
 		entry, ok := o.Buffer.Next(epoch, cursor)
 		if !ok {
 			o.kickGen() // nothing on disk: the cycle loop should wake
@@ -739,29 +738,6 @@ func (o *Orchestrator) feedLoop(ctx context.Context) {
 		}
 		o.mu.Unlock()
 		o.publishBufferStats(epoch)
-		if !kept {
-			continue
-		}
-		// Bank on consumption: a track goes into the instant-start
-		// library when it is actually about to be heard, so a dropped
-		// buffer never churns the library. The banked copy is a
-		// snapshot taken under the lock - a listener may rename the
-		// live track at any moment - and the banked location is
-		// remembered so that rename reaches the sidecar too.
-		key := library.Key(sess)
-		o.mu.Lock()
-		banked := *track // shallow: Samples are shared and immutable
-		o.mu.Unlock()
-		o.wg.Add(1)
-		go func() {
-			defer o.wg.Done()
-			id, err := o.Library.Put(ctx, key, &banked)
-			if err != nil {
-				o.log.Debug("library banking failed", "event", "library_put_failed", "error", err.Error())
-				return
-			}
-			o.rememberBank(banked.ID, bankRef{key: key, id: id})
-		}()
 	}
 }
 

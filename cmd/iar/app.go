@@ -15,7 +15,6 @@ import (
 	"iar/internal/engine"
 	"iar/internal/engine/acestep"
 	"iar/internal/engine/tone"
-	"iar/internal/library"
 	"iar/internal/logging"
 	"iar/internal/mail"
 	"iar/internal/prompting"
@@ -234,11 +233,6 @@ func resolvePathsEnsured() (config.Paths, error) {
 // full app wiring (the engine daemon).
 func loadConfig(paths config.Paths) (config.Config, error) {
 	return config.Load(paths)
-}
-
-// library returns the on-disk track cache (nil when disabled).
-func (a *app) library() *library.Library {
-	return library.New(filepath.Join(a.paths.DataDir, "library"), a.cfg.LibraryMaxMB, a.cfg.MP3Quality, a.log)
 }
 
 // snippetsDir resolves where saved tracks land.

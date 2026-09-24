@@ -46,9 +46,6 @@ type Config struct {
 	// SnippetsDir is where the in-app save command puts captured tracks.
 	// Empty uses a snippets directory under the data dir.
 	SnippetsDir string `json:"snippets_dir"`
-	// LibraryMaxMB caps the on-disk track library that powers instant
-	// startup. Zero disables the library.
-	LibraryMaxMB int `json:"library_max_mb"`
 	// LyricsGenerator names the default lyric writer for vocal tracks
 	// ("scribe" or "smoothbrain"); the lyrics command and the phone
 	// remote switch it per session at runtime.
@@ -230,7 +227,6 @@ func Default() Config {
 		PipeLatencyMS:     200,
 		NormalizeLoudness: true,
 		MP3Quality:        0,
-		LibraryMaxMB:      600,
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
 		Buffer: Buffer{
@@ -375,9 +371,6 @@ func (c *Config) sanitize() {
 	}
 	if c.MP3Quality < 0 || c.MP3Quality > 9 {
 		c.MP3Quality = 0
-	}
-	if c.LibraryMaxMB < 0 {
-		c.LibraryMaxMB = 0
 	}
 	if c.Remote.Port < 1 || c.Remote.Port > 65535 {
 		c.Remote.Port = 8246

@@ -15,7 +15,6 @@ import (
 
 	"iar/internal/audio"
 	"iar/internal/engine"
-	"iar/internal/library"
 
 	"iar/internal/config"
 	"iar/internal/engine/enginetest"
@@ -333,42 +332,6 @@ func TestNewSessionFromPromptCommand(t *testing.T) {
 	}
 }
 
-func TestLibraryInstantStart(t *testing.T) {
-	dir := t.TempDir()
-	lib := library.New(dir, 100, 9, testLogger())
-	banked := &engine.Track{Samples: make([]int16, audio.SampleRate*2*2), Prompt: "banked lofi"}
-	for i := range banked.Samples {
-		banked.Samples[i] = int16(i % 2000)
-	}
-	sess := session.New()
-	if _, err := lib.Put(context.Background(), library.Key(sess), banked); err != nil {
-		t.Fatal(err)
-	}
-
-	eng := enginetest.NewMock()
-	eng.Delay = 800 * time.Millisecond // fresh generation is not instant
-	pl := &capturePlayer{}
-	store := session.NewStore(t.TempDir())
-	builder := prompting.NewBuilder(nil, testLogger())
-	o := New(testConfig(), eng, builder, store, sess, pl, testLogger())
-	o.Library = lib
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	o.Start(ctx)
-	t.Cleanup(func() { o.Close() })
-
-	// The banked track must be playing well before fresh generation lands.
-	waitFor(t, 2*time.Second, "library track playing", func() bool {
-		st := o.Status()
-		return st.State == "playing" && strings.Contains(st.Source, "[library]")
-	})
-	// The freshly generated track takes over when it arrives.
-	waitFor(t, 10*time.Second, "fresh track takes over", func() bool {
-		st := o.Status()
-		return st.State == "playing" && !strings.Contains(st.Source, "[library]")
-	})
-}
-
 // drainEvents collects events until the predicate matches or timeout.
 func drainEvents(t *testing.T, o *Orchestrator, timeout time.Duration, match func(string) bool) string {
 	t.Helper()
@@ -531,33 +494,6 @@ func TestTapCarriesEveryAudiblePath(t *testing.T) {
 		o, tap := newTappedOrchestrator(t, enginetest.NewMock(), session.New())
 		waitFor(t, 10*time.Second, "playing", func() bool { return o.Status().State == "playing" })
 		waitFor(t, 10*time.Second, "music on tap", func() bool { return nonSilent(tap.tail(8000)) })
-	})
-
-	t.Run("library track", func(t *testing.T) {
-		dir := t.TempDir()
-		lib := library.New(dir, 100, 9, testLogger())
-		banked := &engine.Track{Samples: make([]int16, audio.SampleRate*2*2), Prompt: "banked"}
-		for i := range banked.Samples {
-			banked.Samples[i] = int16(1500)
-		}
-		sess := session.New()
-		if _, err := lib.Put(context.Background(), library.Key(sess), banked); err != nil {
-			t.Fatal(err)
-		}
-		eng := enginetest.NewMock()
-		eng.Delay = 2 * time.Second
-		tap := &tapRecorder{}
-		o := New(testConfig(), eng, prompting.NewBuilder(nil, testLogger()),
-			session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
-		o.Tap = tap
-		o.Library = lib
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		o.Start(ctx)
-		t.Cleanup(func() { o.Close() })
-		waitFor(t, 5*time.Second, "library audio on tap", func() bool {
-			return strings.Contains(o.Status().Source, "[library]") && nonSilent(tap.tail(8000))
-		})
 	})
 
 	t.Run("loop-last-track fallback", func(t *testing.T) {
@@ -1045,67 +981,10 @@ func TestLanguageSwitchesSurviveAReload(t *testing.T) {
 	}
 }
 
-func TestQueueListingDuringASwitchover(t *testing.T) {
-	lib := library.New(t.TempDir(), 100, 9, testLogger())
-	sess := session.New()
-	sess.Vocal = true
-	o, _ := newTestOrchestrator(t, enginetest.NewMock(), sess)
-	o.Library = lib
-	o.SetLanguages([]string{"English", "Russian"})
-
-	// Two banked tracks for this vibe, one in each language.
-	for _, lang := range []string{"English", "Russian"} {
-		tr := mkTrack("banked "+lang, 1)
-		tr.Spec.VocalLanguageName = lang
-		if _, err := lib.Put(context.Background(), library.Key(sess), tr); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(1100 * time.Millisecond) // ids start with a whole-second timestamp
-	}
-
-	fillerLangs := func() []string {
-		var out []string
-		_, tracks := o.QueueTracks()
-		for _, qt := range tracks {
-			if qt.Kind == "library" {
-				out = append(out, qt.Prompt)
-			}
-		}
-		return out
-	}
-
-	// A language the session no longer sings in must not be offered:
-	// a remote client would download it and present it as the new
-	// setting taking effect.
-	o.SetLanguage("English", false)
-	o.mu.Lock()
-	o.steerPending = false // the switchover suppression is tested below
-	o.mu.Unlock()
-	for _, p := range fillerLangs() {
-		if strings.Contains(p, "English") {
-			t.Fatalf("filler still offers a language that is switched off: %q", p)
-		}
-	}
-	if len(fillerLangs()) == 0 {
-		t.Fatal("filler dropped the language that is still switched on")
-	}
-
-	// While the first track of a new context generates, nothing banked
-	// is offered at all: it is all older than what is already playing.
-	o.mu.Lock()
-	o.steerPending = true
-	o.mu.Unlock()
-	if got := fillerLangs(); len(got) != 0 {
-		t.Fatalf("filler offered during a switchover: %v", got)
-	}
-}
-
 func TestQueueTracksAndTrackData(t *testing.T) {
 	eng := enginetest.NewMock()
 	sess := session.New()
 	o, pl := newTestOrchestrator(t, eng, sess)
-	dir := t.TempDir()
-	o.Library = library.New(dir, 100, 9, testLogger())
 	// Read the listing inside the wait: checking Status first and
 	// listing after leaves a window for the mixer to take the only
 	// queued track, which makes this test flake under load.
@@ -1155,20 +1034,6 @@ func TestQueueTracksAndTrackData(t *testing.T) {
 		t.Fatalf("playing track %q not resolvable", cur)
 	}
 
-	// Library filler appears once tracks are banked for this vibe.
-	waitFor(t, 10*time.Second, "library banked", func() bool {
-		_, tracks := o.QueueTracks()
-		for _, qt := range tracks {
-			if qt.Kind == "library" {
-				if _, ok := o.TrackData(qt.ID); !ok {
-					t.Fatalf("library id %q not loadable", qt.ID)
-				}
-				return true
-			}
-		}
-		return false
-	})
-
 	// Serving track data never disturbs playback: hammer the queue
 	// surface while audio flows and expect zero underruns.
 	before := pl.bytes()
@@ -1206,7 +1071,6 @@ func TestSaveSnippetByIDAndIdempotency(t *testing.T) {
 	eng := enginetest.NewMock()
 	o, _ := newTestOrchestrator(t, eng, session.New())
 	o.SnippetsDir = t.TempDir()
-	o.Library = library.New(t.TempDir(), 100, 9, testLogger())
 	waitFor(t, 10*time.Second, "a track playing", func() bool { return o.Status().TrackID != "" })
 
 	// Saving by explicit track id (what a buffered phone sends).
@@ -1248,35 +1112,6 @@ func TestSaveSnippetByIDAndIdempotency(t *testing.T) {
 		t.Fatalf("unknown id ack = %q", ack)
 	}
 
-	// A banked song is still the song it was: the library holds the one
-	// just saved under the same id, not a new one of its own. (Asked of
-	// the library directly - this radio banks songs far faster than real
-	// time, and the newest few that are offered as filler move on in a
-	// fraction of a second.)
-	waitFor(t, 10*time.Second, "the saved song banked under its own id", func() bool {
-		_, _, ok := o.Library.Locate(id)
-		return ok
-	})
-
-	// Any other banked song saves through the id it is listed under.
-	var libID string
-	waitFor(t, 10*time.Second, "another library filler listed", func() bool {
-		_, tracks := o.QueueTracks()
-		for _, qt := range tracks {
-			if qt.Kind == "library" && qt.ID != id {
-				libID = qt.ID
-				return true
-			}
-		}
-		return false
-	})
-	if ack := o.SaveSnippet(libID, "banked"); !strings.Contains(ack, "saving this track to banked/") {
-		t.Fatalf("library save ack = %q", ack)
-	}
-	waitFor(t, 15*time.Second, "library snippet file", func() bool {
-		entries, _ := os.ReadDir(filepath.Join(o.SnippetsDir, "banked"))
-		return len(entries) == 1
-	})
 }
 
 // TestTracksGetTitlesAndNumbers: every generated track enters the
@@ -1467,9 +1302,6 @@ func TestRequestedLoopRepeatsTheTrackUntilTurnedOff(t *testing.T) {
 
 	banger := mkTrack("banger", 2)
 	banger.Title = "Banger"
-	// A library warm-up is exactly the track fallbackShouldYield wants
-	// to interrupt; the loop guard must hold it in place regardless.
-	banger.FromLibrary = true
 	cur := newTrackSource(banger, "t1")
 	o.mu.Lock()
 	o.cur = cur
