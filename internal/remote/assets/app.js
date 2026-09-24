@@ -2231,11 +2231,33 @@
       return d;
     });
   }
+  // noRadio turns a request that never got an answer - no connection,
+  // or a deadline passed on one - into the signal to queue for.
   function noRadio() {
     var gone = new Error("no connection to the radio");
     gone.offline = true;
     throw gone;
   }
+  // savePost sends one step of a save with a deadline. A post into a
+  // dead zone that drops packets otherwise sits on the browser's own
+  // connect timeout - minutes - and the queue behind it sits with it.
+  // A deadline passed is no answer at all, so the entry stays queued
+  // and is tried again when the signal is back.
+  function savePost(url, opts, ms) {
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var deadline = null;
+    if (ctrl) {
+      opts.signal = ctrl.signal;
+      deadline = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ms);
+    }
+    function done() { if (deadline) clearTimeout(deadline); }
+    return fetch(url, opts).then(
+      function (r) { done(); return saveAnswer(r); },
+      function (e) { done(); return noRadio(e); });
+  }
+  // A song's copy is a few megabytes, and a slow connection that is
+  // still a connection deserves the time to carry it.
+  var uploadTimeout = 120000;
   // bankedBlob reads a song's bytes back out of this device's store.
   function bankedBlob(id) {
     return dbReady().then(function () { return idbReq(idbStore("readonly").get(id)); })
@@ -2248,11 +2270,13 @@
   // checks them against the record it kept of the song, and saves them
   // under the name and words it recorded. A song this device no longer
   // holds either is simply gone, which no amount of retrying fixes.
+  // The radio writes saves one after another, so a save that reaches
+  // it while another is being written waits its turn there; its
+  // answer says the song is on its way, which is a save.
   function postSave(which, tag) {
     var body = "tag=" + encodeURIComponent(tag || "");
     if (which) body += "&which=" + encodeURIComponent(which);
-    return fetch("/save", { method: "POST", headers: headers, body: body })
-      .then(saveAnswer, noRadio)
+    return savePost("/save", { method: "POST", headers: headers, body: body }, actTimeout)
       .then(function (d) {
         if (!d || !d.upload || !which) return d;
         return bankedBlob(which).then(function (blob) {
@@ -2261,8 +2285,8 @@
           var hash = (rec && rec.hash) || "";
           var url = "/save/upload?tag=" + encodeURIComponent(tag || "") +
             (hash ? "&hash=" + encodeURIComponent(hash) : "");
-          return fetch(url, { method: "POST", headers: { "X-IAR-Remote": "1", "Content-Type": "audio/mpeg" }, body: blob })
-            .then(saveAnswer, noRadio);
+          return savePost(url, { method: "POST", headers: { "X-IAR-Remote": "1", "Content-Type": "audio/mpeg" }, body: blob },
+            uploadTimeout);
         });
       });
   }

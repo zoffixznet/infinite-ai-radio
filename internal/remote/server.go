@@ -788,12 +788,13 @@ func (s *Server) handleSaveUpload(w http.ResponseWriter, r *http.Request, u acco
 // own limit, which this only fronts).
 const maxUploadBytes = 40 << 20
 
-// savedAck reports whether an acknowledgment from SaveSnippet means the
-// track is in the snippets or on its way there, so the page can grey
-// its save control without matching on English.
+// savedAck reports whether an acknowledgment from SaveSnippet or
+// SaveUpload means the track is in the snippets or on its way there -
+// written, being written, or waiting its turn behind another save - so
+// the page can grey its save control without matching on English.
 func savedAck(ack string) bool {
 	return strings.HasPrefix(ack, "saving this track to ") || strings.HasPrefix(ack, "already saved:") ||
-		strings.HasPrefix(ack, "track saved: ")
+		strings.HasPrefix(ack, "already saving:") || strings.HasPrefix(ack, "track saved: ")
 }
 
 // sessionJSON is one row of the web session picker.

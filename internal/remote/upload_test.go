@@ -144,3 +144,37 @@ func TestSavingFromTheDevicesCopy(t *testing.T) {
 		t.Fatalf("anonymous /save/upload = %d", resp.StatusCode)
 	}
 }
+
+// Every answer that means the track is in the snippets or on its way
+// there greys the page's save control: written, being written, or
+// waiting its turn behind another save. The rest do not.
+func TestSavedAckKnowsEveryKeptAnswer(t *testing.T) {
+	kept := []string{
+		"saving this track to gym/20260924-101500-song.mp3",
+		"saving this track to gym/20260924-101500-song.mp3, behind 1 other save",
+		"saving this track to gym/20260924-101500-song.mp3, behind 3 other saves",
+		"already saved: that track is in your snippets",
+		"already saving: that track is on its way to your snippets",
+		"track saved: gym/20260924-101500-song.mp3",
+	}
+	for _, ack := range kept {
+		if !savedAck(ack) {
+			t.Errorf("%q does not count as saved", ack)
+		}
+	}
+	notKept := []string{
+		"",
+		player.AckSendCopy,
+		"nothing to save yet: no generated track is playing",
+		"no previous track to save yet",
+		"that track is no longer available to save",
+		"saving the track failed: no space left on device",
+		"the radio is shutting down; that track was not saved",
+		"that copy is not a song this radio made",
+	}
+	for _, ack := range notKept {
+		if savedAck(ack) {
+			t.Errorf("%q counts as saved", ack)
+		}
+	}
+}

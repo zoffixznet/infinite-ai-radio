@@ -104,6 +104,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A save that reaches the radio while another is still being written
+  waits its turn behind it instead of being refused. A phone back in
+  reach after a dead patch delivers the saves it queued there one
+  after another, and the second used to arrive mid-write and be told
+  to try again in a moment - which the phone took as a final answer,
+  so that song was never saved. Every song a phone saved while out of
+  reach is delivered now, once, in the order it was asked for; a song
+  whose save is already on its way is told so rather than saved twice;
+  and two songs of one name saved in the same second get two files.
+  The phone also gives up on a save post nothing answers - packets
+  dropped in a dead zone - after the same short deadline as its other
+  controls, and queues it, instead of holding the queue on the
+  browser's own minutes-long timeout.
 - A song is one song from the moment it is made. It used to be given a
   new name at each stop of its life - one while it waited on disk,
   another when it joined the play queue, a third when it went into the

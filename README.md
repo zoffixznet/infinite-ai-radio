@@ -556,7 +556,9 @@ as that song plays - on the page and on the car screen alike, rather
 than a confirmation you had to be looking at the right second to catch.
 A save that cannot reach the radio at all, in a tunnel or on a mountain
 road, is queued on the device and goes through by itself when the signal
-comes back. The radio can save a song long after it has played it - a
+comes back; the radio writes saves one after another, so the several a
+phone delivers at once are all kept, in the order they were asked for,
+each as one file. The radio can save a song long after it has played it - a
 played song stays in the store for as long as `buffer.songs` allows,
 and the radio's book remembers every song it ever made - so a phone
 playing its own copy well behind the speakers can still save what it

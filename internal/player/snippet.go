@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +24,14 @@ const AckSendCopy = "the radio no longer has that song; send the copy on this de
 
 // ackAlreadySaved answers a repeat save: a success, never a second file.
 const ackAlreadySaved = "already saved: that track is in your snippets"
+
+// ackAlreadySaving answers a save of a song whose save is queued or
+// being written this moment: the same success, and the same one file.
+const ackAlreadySaving = "already saving: that track is on its way to your snippets"
+
+// ackClosing answers a save that arrives as the radio shuts down, when
+// nobody is left to write it.
+const ackClosing = "the radio is shutting down; that track was not saved"
 
 // SaveSnippet captures a generated track as an MP3 in the snippets
 // folder, under the directory for tag (empty means untagged). which
@@ -44,7 +53,7 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 		// encode of it.
 		if path, ok := o.TrackFile(which); ok {
 			if song, known := o.Songbook.ByID(which); known {
-				return o.runSave(tag, saveJob{
+				return o.runSave(tag, &saveJob{
 					song: song,
 					write: func(ctx context.Context, dst string, opts export.MP3Options) error {
 						return export.CopyMP3(ctx, path, dst, opts)
@@ -94,7 +103,7 @@ func (o *Orchestrator) SaveSnippet(which, tag string) string {
 		Lyrics: track.Lyrics, Language: track.Spec.VocalLanguage,
 	}
 	o.mu.Unlock()
-	return o.runSave(tag, saveJob{
+	return o.runSave(tag, &saveJob{
 		song: song,
 		live: track,
 		write: func(ctx context.Context, dst string, opts export.MP3Options) error {
@@ -112,60 +121,179 @@ type saveJob struct {
 	live *engine.Track
 	// write produces the MP3 at dst under opts' tags.
 	write func(ctx context.Context, dst string, opts export.MP3Options) error
+	// path, shown and opts are the file the save was promised - chosen
+	// when it joined the queue, so the acknowledgment names it.
+	path, shown string
+	opts        export.MP3Options
 }
 
-// runSave starts a save in the background and answers straight away.
-func (o *Orchestrator) runSave(tag string, job saveJob) string {
-	o.mu.Lock()
-	busy := o.saving
-	if !busy {
-		o.saving = true
-	}
-	o.mu.Unlock()
-	if busy {
-		return "a snippet is already being saved; try again in a moment"
-	}
-	path, shown, opts := o.snippetTarget(tag, job.song)
+// runSave puts a save in the queue and answers straight away. Saves are
+// written one after another by a worker that runs while the queue has
+// anything in it: a phone back on the network after a tunnel delivers
+// the saves it kept in a burst, and each one is kept, in order. A song
+// that already has a save on the way gets the same success and no
+// second file.
+func (o *Orchestrator) runSave(tag string, job *saveJob) string {
 	ctx := o.runCtx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	go func() {
-		defer func() {
-			o.mu.Lock()
-			o.saving = false
-			o.mu.Unlock()
-		}()
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
-			o.emit("saving the track failed: " + err.Error())
-			return
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.saveClosed || ctx.Err() != nil {
+		return ackClosing
+	}
+	if o.savePendingLocked(job.song.ID) {
+		return ackAlreadySaving
+	}
+	job.path, job.shown, job.opts = o.claimTargetLocked(tag, job.song)
+	ahead := len(o.saveQueue)
+	if o.saveNow != nil {
+		ahead++
+	}
+	o.saveQueue = append(o.saveQueue, job)
+	if !o.saveWorker {
+		o.saveWorker = true
+		o.saveWG.Add(1)
+		go o.saveLoop(ctx)
+	}
+	ack := "saving this track to " + job.shown
+	switch ahead {
+	case 0:
+	case 1:
+		ack += ", behind 1 other save"
+	default:
+		ack += fmt.Sprintf(", behind %d other saves", ahead)
+	}
+	return ack
+}
+
+// savePendingLocked reports whether a save of the song is queued or
+// being written - by the worker or as a copy sent from a device. A
+// song without an id cannot be told from another, so it never is.
+// Callers hold o.mu.
+func (o *Orchestrator) savePendingLocked(id string) bool {
+	if id == "" {
+		return false
+	}
+	if o.saveUploads[id] || (o.saveNow != nil && o.saveNow.song.ID == id) {
+		return true
+	}
+	for _, j := range o.saveQueue {
+		if j.song.ID == id {
+			return true
 		}
-		if err := job.write(ctx, path, opts); err != nil {
-			o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
-			o.emit("saving the track failed: " + err.Error())
-			return
+	}
+	return false
+}
+
+// saveLoop writes queued saves one after another until the queue is
+// empty or the radio stops. ctx is the radio's run context: stopping
+// the radio stops the write in flight, and whatever still waited is
+// dropped and said so in the log rather than left half written.
+func (o *Orchestrator) saveLoop(ctx context.Context) {
+	defer o.saveWG.Done()
+	for {
+		o.mu.Lock()
+		if o.saveNow != nil {
+			delete(o.savePaths, o.saveNow.path)
+			o.saveNow = nil
 		}
-		o.finishSave(job.song, path)
-		o.emit("track saved: " + shown)
-		// The write takes seconds and a rename takes none: a listener
-		// who renamed the song while it was being written would
-		// otherwise find the old name on disk forever.
-		latest := job.song.Title
-		if s, ok := o.Songbook.ByID(job.song.ID); ok {
-			latest = s.Title
-		} else if job.live != nil {
-			o.mu.Lock()
-			latest = job.live.Title
-			o.mu.Unlock()
-		}
-		if latest != "" && latest != opts.Title {
-			if moved, ok := o.retitleSaved(job.song.ID, latest); ok {
-				o.emit("saved as: " + moved)
+		if o.saveClosed || ctx.Err() != nil || len(o.saveQueue) == 0 {
+			dropped := o.saveQueue
+			o.saveQueue = nil
+			for _, j := range dropped {
+				delete(o.savePaths, j.path)
 			}
+			o.saveWorker = false
+			o.mu.Unlock()
+			for _, j := range dropped {
+				o.log.Warn("save dropped at shutdown", "event", "snippet_dropped", "id", j.song.ID, "path", j.path)
+			}
+			return
 		}
-	}()
-	return "saving this track to " + shown
+		job := o.saveQueue[0]
+		o.saveQueue = o.saveQueue[1:]
+		o.saveNow = job
+		o.mu.Unlock()
+		o.writeSave(ctx, job)
+	}
+}
+
+// writeSave writes one queued save and reports how it went through
+// Events.
+func (o *Orchestrator) writeSave(ctx context.Context, job *saveJob) {
+	if err := os.MkdirAll(filepath.Dir(job.path), 0o755); err != nil {
+		o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
+		o.emit("saving the track failed: " + err.Error())
+		return
+	}
+	if err := job.write(ctx, job.path, job.opts); err != nil {
+		o.log.Error("snippet save failed", "event", "snippet_failed", "error", err.Error())
+		o.emit("saving the track failed: " + err.Error())
+		return
+	}
+	o.finishSave(job.song, job.path)
+	o.emit("track saved: " + job.shown)
+	// The write takes seconds and a rename takes none: a listener
+	// who renamed the song while it was being written would
+	// otherwise find the old name on disk forever.
+	latest := job.song.Title
+	if s, ok := o.Songbook.ByID(job.song.ID); ok {
+		latest = s.Title
+	} else if job.live != nil {
+		o.mu.Lock()
+		latest = job.live.Title
+		o.mu.Unlock()
+	}
+	if latest != "" && latest != job.opts.Title {
+		if moved, ok := o.retitleSaved(job.song.ID, latest); ok {
+			o.emit("saved as: " + moved)
+		}
+	}
+}
+
+// claimTargetLocked chooses a song's saved file and speaks for the name
+// in savePaths until the save that took it is done. A saved file is
+// named to the second, so two songs with one title saved in the same
+// second - or one song and another whose copy a device is sending -
+// would otherwise land on one name, the second overwriting the first;
+// the later one is numbered instead. Callers hold o.mu.
+func (o *Orchestrator) claimTargetLocked(tag string, song songbook.Song) (path, shown string, opts export.MP3Options) {
+	path, shown, opts = o.snippetTarget(tag, song)
+	path = distinctPath(path, o.savePaths)
+	shown = filepath.Join(filepath.Dir(shown), filepath.Base(path))
+	o.savePaths[path] = true
+	return path, shown, opts
+}
+
+// distinctPath numbers a saved file's name ("...-title-2.en.mp3") until
+// it names neither a file on disk nor one a pending save has spoken
+// for. The number goes before the language segment so the name still
+// reads as one of the radio's.
+func distinctPath(path string, claimed map[string]bool) string {
+	taken := func(p string) bool {
+		if claimed[p] {
+			return true
+		}
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	if !taken(path) {
+		return path
+	}
+	file := filepath.Base(path)
+	suffix := ".mp3"
+	if lang := snippets.Language(file); lang != "" {
+		suffix = "." + lang + ".mp3"
+	}
+	stem := strings.TrimSuffix(file, suffix)
+	for n := 2; ; n++ {
+		p := filepath.Join(filepath.Dir(path), fmt.Sprintf("%s-%d%s", stem, n, suffix))
+		if !taken(p) {
+			return p
+		}
+	}
 }
 
 // snippetTarget decides where a song's saved copy goes and what tags it
@@ -254,7 +382,26 @@ func (o *Orchestrator) SaveUpload(hash, tag string, body io.Reader) string {
 	if song.Saved != "" {
 		return ackAlreadySaved
 	}
-	path, shown, opts := o.snippetTarget(tag, song)
+	// One file per song: a copy of a song whose save is already on
+	// its way from the radio's own store is the same save, not a
+	// second one. The song is spoken for while its copy is written so
+	// a save from the store arriving meanwhile is told the same.
+	o.mu.Lock()
+	if o.savePendingLocked(song.ID) {
+		o.mu.Unlock()
+		return ackAlreadySaving
+	}
+	if song.ID != "" {
+		o.saveUploads[song.ID] = true
+	}
+	path, shown, opts := o.claimTargetLocked(tag, song)
+	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		delete(o.saveUploads, song.ID)
+		delete(o.savePaths, path)
+		o.mu.Unlock()
+	}()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "saving the track failed: " + err.Error()
 	}

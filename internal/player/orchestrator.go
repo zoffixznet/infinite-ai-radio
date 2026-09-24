@@ -339,7 +339,23 @@ type Orchestrator struct {
 	// wordsmithWantNow/wordsmithWroteNow mirror the running wordsmith
 	// round for the status display.
 	wordsmithWantNow, wordsmithWroteNow int
-	saving                              bool
+	// The snippet writer. Saves wait their turn in saveQueue, oldest
+	// first, and one worker writes them one after another; saveNow is
+	// the one it is writing. saveUploads names the songs arriving as
+	// copies from a device, which are written on the caller's own
+	// goroutine; together with the queue they say which songs already
+	// have a save on the way, so no song is ever saved twice. savePaths
+	// are the file names spoken for by saves not yet finished, so two
+	// songs saved within one second do not land on one name. All
+	// guarded by o.mu; saveWorker says the worker goroutine is alive,
+	// saveClosed that Close has begun and no save may start.
+	saveQueue   []*saveJob
+	saveNow     *saveJob
+	saveWorker  bool
+	saveClosed  bool
+	saveUploads map[string]bool
+	savePaths   map[string]bool
+	saveWG      sync.WaitGroup
 	// playCount numbers the tracks as they start playing (per process);
 	// curTrackNum is the playing track's number.
 	playCount   int
@@ -364,17 +380,19 @@ type Orchestrator struct {
 // engine (silence, with clear messaging).
 func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store *session.Store, sess *session.Session, pl audio.Player, log *slog.Logger) *Orchestrator {
 	o := &Orchestrator{
-		cfg:      cfg,
-		eng:      eng,
-		builder:  builder,
-		store:    store,
-		log:      log,
-		player:   pl,
-		ring:     audio.NewRing(2 * audio.BytesPerSecond),
-		sess:     sess,
-		events:   make(chan Event, 16),
-		wake:     make(chan struct{}, 1),
-		Songbook: songbook.Open("", log),
+		cfg:         cfg,
+		eng:         eng,
+		builder:     builder,
+		store:       store,
+		log:         log,
+		player:      pl,
+		ring:        audio.NewRing(2 * audio.BytesPerSecond),
+		sess:        sess,
+		events:      make(chan Event, 16),
+		wake:        make(chan struct{}, 1),
+		Songbook:    songbook.Open("", log),
+		saveUploads: map[string]bool{},
+		savePaths:   map[string]bool{},
 		// A session that has played before has made songs before:
 		// resuming one and changing it straight away must still keep
 		// what it sounded like. A session made moments ago has nothing
@@ -578,11 +596,18 @@ func (o *Orchestrator) CurrentName() string {
 
 // Close stops all goroutines, saves the session and releases the player.
 func (o *Orchestrator) Close() error {
+	// No save may join the queue from here on: the worker is about to
+	// be waited for, and a save arriving after that would have nobody
+	// to write it.
+	o.mu.Lock()
+	o.saveClosed = true
+	o.mu.Unlock()
 	if o.cancel != nil {
 		o.cancel()
 	}
 	o.ring.Close()
 	o.wg.Wait()
+	o.saveWG.Wait()
 	o.saveSession()
 	if o.tempStore != "" {
 		os.RemoveAll(o.tempStore)
