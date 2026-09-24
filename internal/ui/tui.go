@@ -347,8 +347,15 @@ func (m *tuiModel) renderChrome() string {
 		if st.PhaseExpected > 0 {
 			frac = float64(st.PhaseElapsed) / float64(st.PhaseExpected)
 		}
+		// A phase with a recorded expectation fills its bar; one without
+		// (the words being written, say) pulses instead of sitting at
+		// zero as if stuck.
+		bar := m.bar(frac, barWidth)
+		if st.PhaseExpected == 0 {
+			bar = m.pulseBar(barWidth)
+		}
 		line := s.label.Render(fmt.Sprintf("%-8s", "status")) +
-			m.bar(frac, barWidth) +
+			bar +
 			fmt.Sprintf(" %s  %s", st.Phase, fmtDur(st.PhaseElapsed))
 		if st.PhaseExpected > 0 {
 			line += fmt.Sprintf(" of ~%s", fmtDur(st.PhaseExpected))
@@ -368,24 +375,10 @@ func (m *tuiModel) renderChrome() string {
 	// minute as the cycle moves between plan and render jobs, and a row
 	// that appears and disappears shifts everything below it.
 	genLine := s.label.Render(fmt.Sprintf("%-8s", "gen"))
-	switch {
-	case st.Generating:
-		genLine += m.pulseBar(barWidth) + " " + s.value.Render(clip("generating next track", m.textRoom()))
-	case st.WordsmithWant > 0:
-		// The engine sleeps while the writer holds the card; that is
-		// the pipeline's busiest quiet moment, not idleness.
-		// An instrumental batch is described rather than worded, and
-		// the line says which, because "writing song words" over a
-		// session with no singing in it is just wrong.
-		work := "song words"
-		if !st.Vocal {
-			work = "song descriptions"
-		}
-		text := fmt.Sprintf("writing %s on the freed card (%d of %d)",
-			work, st.WordsmithWrote, st.WordsmithWant)
+	if text, busy := genText(st); busy {
 		genLine += m.pulseBar(barWidth) + " " + s.value.Render(clip(text, m.textRoom()))
-	default:
-		genLine += m.bar(0, barWidth) + " " + s.muted.Render(clip(genIdle(st), m.textRoom()))
+	} else {
+		genLine += m.bar(0, barWidth) + " " + s.muted.Render(clip(text, m.textRoom()))
 	}
 	b.WriteString(genLine + "\n")
 	if frac, consumed, text, ok := bufferGauge(st); ok {
@@ -394,10 +387,10 @@ func (m *tuiModel) renderChrome() string {
 	}
 
 	// Resource telemetry, when the radio was started with --telemetry:
-	// what the machine has left, and what the engine is holding. Rows
+	// what the machine has left, and what the radio is holding. Rows
 	// without a gauge are indented past where the bars end, so every
 	// value in the block starts in the same column.
-	for _, row := range telemetryRows(st.Telemetry) {
+	for _, row := range telemetryRows(st) {
 		line := s.label.Render(fmt.Sprintf("%-8s", row.Label))
 		if row.Frac >= 0 {
 			line += m.splitBar(row.FracOwn, row.Frac, barWidth)

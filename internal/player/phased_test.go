@@ -440,3 +440,84 @@ func TestInstrumentalCycleRendersInsteadOfWakingForNothing(t *testing.T) {
 		t.Fatalf("the songbook has %+v (ok=%v) for the song on disk %+v", s, ok, made[0])
 	}
 }
+
+// sleepingMock is an engine whose daemon is down, the way the real one
+// reports it between cycles and while the writer has the card.
+type sleepingMock struct{ phasedMock }
+
+func (m *sleepingMock) Ready() bool   { return false }
+func (m *sleepingMock) Phase() string { return "hibernated" }
+
+// To the listener there is one engine and it makes songs: the phase
+// shown while the writer works reads as making songs, never as a
+// startup that has not begun. The log line for putting the daemon
+// down says which it was, too - stopping the render daemon so the
+// writer can have the card is not the engine going to sleep.
+func TestTheWriterPhaseIsMakingSongs(t *testing.T) {
+	sess := session.New()
+	sess.Vocal = true
+	o := New(testConfig(), &sleepingMock{}, prompting.NewBuilder(nil, testLogger()),
+		session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
+	if got := o.currentPhase(); got != "starting engine" {
+		t.Fatalf("with nothing made and nothing written the phase reads %q", got)
+	}
+	o.mu.Lock()
+	o.wordsmithWantNow = 10
+	o.mu.Unlock()
+	if got := o.currentPhase(); got != "writing song words" {
+		t.Errorf("during a wordsmith round the phase reads %q", got)
+	}
+	o.mu.Lock()
+	o.sess.Vocal = false
+	o.mu.Unlock()
+	if got := o.currentPhase(); got != "writing song descriptions" {
+		t.Errorf("during an instrumental round the phase reads %q", got)
+	}
+
+	for _, tc := range []struct {
+		why   sleepReason
+		event string
+		msg   string
+	}{
+		{sleepForWriter, "render_unloaded", "render model unloaded while the words are written"},
+		{sleepStoreFull, "engine_hibernated", "engine asleep: the store is full"},
+		{sleepUntilDue, "engine_hibernated", "engine asleep until the next batch is due"},
+		{sleepNoWork, "engine_hibernated", "engine asleep: no batch is due"},
+		{sleepQuit, "engine_hibernated", "engine stopped with the radio"},
+	} {
+		event, msg := sleepLog(tc.why)
+		if event != tc.event || msg != tc.msg {
+			t.Errorf("sleepLog(%d) = %q, %q; want %q, %q", tc.why, event, msg, tc.event, tc.msg)
+		}
+	}
+}
+
+// The reason picked when no more work is due follows the store and
+// the ladder's clock, the same facts the buffer row shows.
+func TestSleepReasonFollowsTheStoreAndTheClock(t *testing.T) {
+	cfg := testConfig()
+	cfg.Buffer.Songs = 1
+	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
+		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
+	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
+	// An empty store with no rung waiting: nothing to say but that
+	// no batch is due.
+	if got := o.sleepReasonNow(0); got != sleepNoWork {
+		t.Errorf("empty store, no wait: %d", got)
+	}
+	o.mu.Lock()
+	o.rungDoneAt, o.rungWait = time.Now(), time.Hour
+	o.mu.Unlock()
+	if got := o.sleepReasonNow(0); got != sleepUntilDue {
+		t.Errorf("waiting out the clock: %d", got)
+	}
+	// A full store outranks the clock.
+	skipWithoutFFmpeg(t)
+	track := &engine.Track{Samples: make([]int16, audio.SampleRate*audio.Channels), Spec: engine.Spec{Prompt: "p"}}
+	if _, err := o.Buffer.PutTrack(context.Background(), 0, 1, track); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.sleepReasonNow(0); got != sleepStoreFull {
+		t.Errorf("full store: %d", got)
+	}
+}

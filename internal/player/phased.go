@@ -335,7 +335,7 @@ func (o *Orchestrator) wantCycle(epoch int) bool {
 
 // cycleLoop is phased generation's producer: it sleeps until work is
 // needed, wakes the engine, runs a plan batch then a render batch, and
-// hibernates the engine again.
+// puts the engine down again.
 func (o *Orchestrator) cycleLoop(ctx context.Context) {
 	failures := 0
 	oomStreak := 0
@@ -362,7 +362,7 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 			// thing that legitimately owns a warm engine while the
 			// radio wants no cycle of its own.
 			if o.engineBusy.Load() && !o.exportingNow() {
-				o.hibernateEngine()
+				o.hibernateEngine(o.sleepReasonNow(epoch))
 			}
 			continue
 		}
@@ -399,16 +399,21 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		}
 		if lyricStarved {
 			// More plans are due, but they are waiting on words: the
-			// wordsmith needs the card, so the engine sleeps even
-			// though the cycle is not finished. The loop re-enters
-			// within seconds.
-			o.hibernateEngine()
+			// wordsmith needs the card, so the render daemon is stopped
+			// even though the cycle is not finished. The radio is still
+			// making songs; the loop re-enters within seconds.
+			o.hibernateEngine(sleepForWriter)
 			return
 		}
-		if ctx.Err() == nil && o.wantCycle(o.syncPhasedState()) {
+		if ctx.Err() != nil {
+			o.hibernateEngine(sleepQuit)
+			return
+		}
+		epoch := o.syncPhasedState()
+		if o.wantCycle(epoch) {
 			return // more work due (ramp climbing, or a fresh epoch): stay warm
 		}
-		o.hibernateEngine()
+		o.hibernateEngine(o.sleepReasonNow(epoch))
 	}()
 	if !o.waitEngineReady(ctx) {
 		o.log.Warn("engine did not become ready for a cycle", "event", "cycle_engine_unready")
@@ -580,8 +585,8 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 				// into one song in a hundred costumes. Planning stops
 				// here - but plans already written still deserve their
 				// audio, so renders drain first; then the cycle ends,
-				// hibernates, and the next round starts with the
-				// wordsmith owning the freed card.
+				// the render daemon is stopped, and the next round
+				// starts with the wordsmith owning the card.
 				if !lyricStarved {
 					lyricStarved = true
 					o.log.Info("plan paused for the wordsmith",
@@ -603,7 +608,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			}
 			ok = planOne(sess)
 		default:
-			return // all targets met; the defer hibernates
+			return // all targets met; the defer puts the engine down
 		}
 		if !ok {
 			if ctx.Err() == nil {
@@ -774,8 +779,8 @@ func (o *Orchestrator) wordsmithWant(epoch int) int {
 }
 
 // wordsmithPhase writes the coming batch's lyrics - and names their
-// songs - while the engine is still hibernated and the helper has the
-// whole graphics card. This is the point of phased generation: every
+// songs - while the render daemon is down and the helper has the whole
+// graphics card. This is the point of phased generation: every
 // model gets the card in turn, none of them fights another for it. The
 // engine wakes only after the words are on the shelf, so the plan step
 // consumes them instead of falling back to mid-cycle CPU calls. A
@@ -783,8 +788,8 @@ func (o *Orchestrator) wordsmithWant(epoch int) int {
 func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 	if o.engineBusy.Load() {
 		// A stay-warm cycle never gave the card back; writing lyrics
-		// now would fight the engine for it. The next hibernated
-		// wake-up gets the phase.
+		// now would fight the engine for it. The next wake-up from a
+		// stopped daemon gets the phase.
 		return
 	}
 	epoch, sess := o.snapshotSession()
@@ -815,7 +820,8 @@ func (o *Orchestrator) wordsmithPhase(ctx context.Context) {
 		}
 		if o.exportingNow() {
 			// An export claims the engine and the card; the writer
-			// yields immediately and resumes on the next hibernation.
+			// yields immediately and resumes the next time the daemon
+			// is down.
 			return true
 		}
 		return false
@@ -926,7 +932,7 @@ func (o *Orchestrator) notePhasedSuccess(failures, oomStreak *int) {
 }
 
 // waitEngineReady blocks until the engine answers with models loaded
-// (waking it involves a cold start when it was hibernated).
+// (waking it involves a cold start when the daemon was stopped).
 func (o *Orchestrator) waitEngineReady(ctx context.Context) bool {
 	if o.eng == nil {
 		return false
@@ -955,12 +961,70 @@ func (o *Orchestrator) setEngineActive(active bool) {
 	o.builder.SetEngineBusy(active)
 }
 
+// sleepReason is why the engine daemon is being put down. To the
+// listener there is one engine and it makes songs - writing the words
+// is the engine working as much as rendering is - so the daemon being
+// stopped for the writer's turn on the card is not the engine going to
+// sleep, and the log says which it was.
+type sleepReason int
+
+const (
+	// sleepForWriter: the render daemon is stopped only so the writer
+	// can have the card. The radio is still making songs.
+	sleepForWriter sleepReason = iota
+	// sleepStoreFull: nothing more to make until somebody takes a song.
+	sleepStoreFull
+	// sleepUntilDue: the ladder's clock is being waited out.
+	sleepUntilDue
+	// sleepNoWork: no cycle is wanted for another reason (a cooldown
+	// after failures, an engine that made everything it could).
+	sleepNoWork
+	// sleepQuit: the radio is shutting down.
+	sleepQuit
+)
+
+// sleepLog is the log event and message for each reason.
+func sleepLog(why sleepReason) (event, msg string) {
+	switch why {
+	case sleepForWriter:
+		return "render_unloaded", "render model unloaded while the words are written"
+	case sleepStoreFull:
+		return "engine_hibernated", "engine asleep: the store is full"
+	case sleepUntilDue:
+		return "engine_hibernated", "engine asleep until the next batch is due"
+	case sleepQuit:
+		return "engine_hibernated", "engine stopped with the radio"
+	}
+	return "engine_hibernated", "engine asleep: no batch is due"
+}
+
+// sleepReasonNow decides, on the paths where the engine sleeps because
+// no more work is due, between a full store, the clock, and anything
+// else that wants no cycle.
+func (o *Orchestrator) sleepReasonNow(epoch int) sleepReason {
+	level, _ := o.Buffer.Level(epoch)
+	o.mu.Lock()
+	full := level >= o.cfg.Buffer.Songs
+	waiting := o.rungWaitLeftLocked() > 0
+	o.mu.Unlock()
+	switch {
+	case full:
+		return sleepStoreFull
+	case waiting:
+		return sleepUntilDue
+	}
+	return sleepNoWork
+}
+
 // hibernateEngine stops heartbeating and shuts the engine daemon down,
 // giving all of its graphics and system memory back until the next
-// cycle. Playback continues from the disk buffer.
-func (o *Orchestrator) hibernateEngine() {
+// cycle. Playback continues from the disk buffer. why says whether
+// this is the engine going to sleep or only the writer's turn on the
+// card, which is what the log line reports.
+func (o *Orchestrator) hibernateEngine(why sleepReason) {
 	o.setEngineActive(false)
 	if h, ok := o.eng.(interface{ HibernateEngine() bool }); ok && h.HibernateEngine() {
-		o.log.Info("engine hibernated until the buffer runs low", "event", "engine_hibernated")
+		event, msg := sleepLog(why)
+		o.log.Info(msg, "event", event)
 	}
 }

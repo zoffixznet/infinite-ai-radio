@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"iar/internal/player"
+	"iar/internal/telemetry"
 )
 
 // The bug this replaces: both displays reported len(queue), which in
@@ -97,7 +98,7 @@ func TestGenIdleText(t *testing.T) {
 		want string
 	}{
 		{"plain idle", player.Status{EngineName: "acestep", EngineReady: true}, "idle"},
-		{"hibernated", player.Status{EngineName: "acestep"}, "idle · engine asleep"},
+		{"asleep", player.Status{EngineName: "acestep"}, "idle · engine asleep"},
 		{"exporting", player.Status{EngineName: "acestep", EngineReady: true, Exporting: "10 min"},
 			"idle · the engine is busy with an export"},
 		// An export outranks the sleep note: it explains the engine
@@ -105,9 +106,51 @@ func TestGenIdleText(t *testing.T) {
 		{"exporting while asleep", player.Status{Exporting: "10 min"},
 			"idle · the engine is busy with an export"},
 		{"no engine", player.Status{}, "idle"},
+		// Words being written is not idle, whichever way it is asked.
+		{"writing", player.Status{EngineName: "acestep", Vocal: true, WordsmithWant: 10, WordsmithWrote: 4},
+			"writing song words (4 of 10)"},
 	} {
 		if got := genIdle(tc.st); got != tc.want {
 			t.Errorf("%s: genIdle = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// To the listener there is one engine and it makes songs. While the
+// words are written the radio is making songs, and the row pulses and
+// says so - with no word about which program has the card - and it
+// says "asleep" only when nothing is being made at all.
+func TestGenTextReadsWritingAsMakingSongs(t *testing.T) {
+	writerBusy := &telemetry.Sample{Taken: time.Now(), WriterBusy: true}
+	writerWithEngineUp := &telemetry.Sample{Taken: time.Now(), WriterBusy: true, EnginePID: 99}
+	for _, tc := range []struct {
+		name string
+		st   player.Status
+		want string
+		busy bool
+	}{
+		{"rendering", player.Status{EngineName: "acestep", EngineReady: true, Generating: true}, "generating next track", true},
+		{"a wordsmith round", player.Status{EngineName: "acestep", Vocal: true, WordsmithWant: 10, WordsmithWrote: 4},
+			"writing song words (4 of 10)", true},
+		{"an instrumental round", player.Status{EngineName: "acestep", WordsmithWant: 10, WordsmithWrote: 4},
+			"writing song descriptions (4 of 10)", true},
+		// The writer answering the radio outside a round, with the
+		// engine off the card: still the words being written.
+		{"a background write", player.Status{EngineName: "acestep", Vocal: true, Telemetry: writerBusy},
+			"writing song words", true},
+		// With the daemon up, a lingering writer is not what the row
+		// is about.
+		{"writer lingering, engine up", player.Status{EngineName: "acestep", EngineReady: true, Vocal: true, Telemetry: writerWithEngineUp},
+			"idle", false},
+		{"asleep", player.Status{EngineName: "acestep", Telemetry: &telemetry.Sample{Taken: time.Now()}},
+			"idle · engine asleep", false},
+	} {
+		got, busy := genText(tc.st)
+		if got != tc.want || busy != tc.busy {
+			t.Errorf("%s: genText = %q, %v; want %q, %v", tc.name, got, busy, tc.want, tc.busy)
+		}
+		if strings.Contains(got, "card") || strings.Contains(got, "hibernat") {
+			t.Errorf("%s: the row talks components: %q", tc.name, got)
 		}
 	}
 }

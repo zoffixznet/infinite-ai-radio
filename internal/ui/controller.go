@@ -316,13 +316,17 @@ func statusText(st player.Status) string {
 		fmt.Fprintf(&b, "version:  %s\n", st.Build)
 	}
 	if _, _, text, ok := bufferGauge(st); ok {
-		fmt.Fprintf(&b, "buffer:   %s, generating: %v\n", text, st.Generating)
+		fmt.Fprintf(&b, "buffer:   %s\n", text)
 	}
-	for _, row := range telemetryRows(st.Telemetry) {
-		fmt.Fprintf(&b, "%-9s %s\n", row.Label+":", row.Text)
-	}
+	// What is being made right now, in the same words as the
+	// full-screen row, then the running tally.
+	gen, _ := genText(st)
 	if st.GenCount > 0 {
-		fmt.Fprintf(&b, "gen:      %d tracks, last took %s\n", st.GenCount, st.LastGenTime.Round(time.Second))
+		gen += fmt.Sprintf(" · %d tracks so far, last took %s", st.GenCount, st.LastGenTime.Round(time.Second))
+	}
+	fmt.Fprintf(&b, "gen:      %s\n", gen)
+	for _, row := range telemetryRows(st) {
+		fmt.Fprintf(&b, "%-9s %s\n", row.Label+":", row.Text)
 	}
 	if st.FailStreak > 0 {
 		fmt.Fprintf(&b, "trouble:  %d generation failure(s) in a row; last: %s\n", st.FailStreak, st.LastFailure)

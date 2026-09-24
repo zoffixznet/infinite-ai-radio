@@ -42,12 +42,14 @@ type Sample struct {
 	SwapTotal    uint64
 	SwapUsed     uint64
 
-	// RAMSelf is the resident memory of the radio's own process tree:
-	// this process plus the engine daemon and everything it spawned.
-	// The RAM row colors this share separately, so "how much of that
-	// is us" has an answer at a glance. CPUSelf is the same idea for
-	// the processor: the tree's share of the machine over the last
-	// sampling interval, 0-100; -1 until two samples exist.
+	// RAMSelf is the resident memory of everything working for the
+	// radio: this process, the engine daemon and everything it spawned,
+	// and - while the lyric writer is writing for the radio - the
+	// writer's processes too. The RAM row colors this share separately,
+	// so "how much of that is us" has an answer at a glance. CPUSelf is
+	// the same idea for the processor: those processes' share of the
+	// machine over the last sampling interval, 0-100; -1 until two
+	// samples exist.
 	RAMSelf uint64
 	CPUSelf int
 
@@ -73,24 +75,49 @@ type Sample struct {
 	Procs []GPUProc
 
 	// Models lists the engine models currently resident on the card,
-	// newest load last. Empty while the engine is hibernated.
+	// newest load last. Empty while the engine is stopped.
 	Models []Model
 
-	// EnginePID is the engine daemon this radio owns (0 when it is
-	// hibernated), and EngineVRAM is what it and its children hold.
+	// EnginePID is the engine daemon this radio owns (0 while it is
+	// stopped), and EngineVRAM is what it and its children hold.
 	EnginePID  int
 	EngineVRAM uint64
+
+	// WriterBusy reports the lyric writer is at work for the radio:
+	// one of the radio's requests is in flight to it, or finished
+	// moments ago. The writer is a service of its own rather than a
+	// child of anything here, so it is found by name; while it works
+	// for the radio its processes count as the radio's. WriterName is
+	// the process holding its card memory (or its runner, or the daemon
+	// itself, when nothing of it is on the card; empty when none was
+	// found on this machine), WriterVRAM what those processes hold on
+	// the card and WriterRAM their resident memory - both already
+	// folded into the radio's figures, and zero while the writer is
+	// not working.
+	WriterBusy bool
+	WriterName string
+	WriterVRAM uint64
+	WriterRAM  uint64
 }
+
+// RadioVRAM is the graphics memory held for the radio right now: the
+// engine's, plus the writer's while it writes for the radio.
+func (s Sample) RadioVRAM() uint64 { return s.EngineVRAM + s.WriterVRAM }
 
 // GPUProc is one process holding graphics memory.
 type GPUProc struct {
 	PID  int
 	Name string
 	VRAM uint64
-	// Engine marks this radio's own engine process, as opposed to
+	// Engine marks this radio's own engine process, and Writer the
+	// lyric writer's while it works for the radio, as opposed to
 	// whatever else shares the card.
 	Engine bool
+	Writer bool
 }
+
+// Radio reports whether the process is working for the radio.
+func (p GPUProc) Radio() bool { return p.Engine || p.Writer }
 
 // Model is one engine model resident on the card.
 type Model struct {
@@ -107,28 +134,38 @@ type Model struct {
 
 // Sampler measures on a timer and hands out the last measurement.
 type Sampler struct {
-	enginePID func() int
-	models    *modelTracker
+	enginePID  func() int
+	writerBusy func() bool
+	models     *modelTracker
 
 	mu  sync.Mutex
 	cur Sample
 	// prevIdle/prevTotal are the last /proc/stat readings, so CPU use
 	// can be computed as a delta between samples; prevSelfJiffies is
-	// the radio tree's own accumulated CPU time at the last sample.
+	// the radio tree's own accumulated CPU time at the last sample,
+	// and prevWriterJiffies the writer's - kept apart, so the writer
+	// joining the radio's figure adds the work it did since the last
+	// sample rather than everything it has ever done.
 	prevIdle, prevTotal uint64
 	prevSelfJiffies     uint64
+	prevWriterJiffies   uint64
 	lastTotalDelta      int64
 }
 
 // New returns an unstarted sampler. daemonLog is the engine daemon's
 // output file, read for model load and offload events; enginePID
-// reports the daemon's process id, or 0 while it is hibernated (nil is
-// allowed, and gives up on attributing graphics memory to this radio).
-func New(daemonLog string, enginePID func() int) *Sampler {
+// reports the daemon's process id, or 0 while it is stopped (nil is
+// allowed, and gives up on attributing graphics memory to this radio);
+// writerBusy reports whether the lyric writer is working for the radio
+// right now (nil never counts it).
+func New(daemonLog string, enginePID func() int, writerBusy func() bool) *Sampler {
 	if enginePID == nil {
 		enginePID = func() int { return 0 }
 	}
-	return &Sampler{enginePID: enginePID, models: newModelTracker(daemonLog)}
+	if writerBusy == nil {
+		writerBusy = func() bool { return false }
+	}
+	return &Sampler{enginePID: enginePID, writerBusy: writerBusy, models: newModelTracker(daemonLog)}
 }
 
 // Start begins sampling until ctx ends. The first sample is taken
@@ -163,10 +200,25 @@ func (s *Sampler) refresh() {
 	next.Taken = time.Now()
 	readMeminfo(&next)
 	s.readCPU(&next)
-	next.RAMSelf, next.CPUSelf = s.selfTree(pidOrSelf(s.enginePID), &next)
+	// One pass over /proc serves every question about processes this
+	// sample asks: the engine's tree, the writer's, and whose the
+	// card's holders are.
+	table := readProcTable()
 	pid := s.enginePID()
 	next.EnginePID = pid
-	readGPU(&next, pid)
+	radio := []int{os.Getpid()}
+	if pid > 0 {
+		radio = append(radio, table.descendants(pid)...)
+	}
+	writer := table.writerTree()
+	next.WriterBusy = s.writerBusy()
+	next.RAMSelf, next.CPUSelf = s.selfTree(radio, writer, &next)
+	readGPU(&next, pid, table, writer)
+	if next.WriterBusy && next.WriterName == "" {
+		// Nothing of the writer on the card (it is working from system
+		// memory): name it by its runner, or by the daemon itself.
+		next.WriterName = table.writerName(writer)
+	}
 	// The daemon's own log says which models it moved onto the card,
 	// but a daemon that has died since takes everything with it - so
 	// the log is only trusted while the process still holds memory.
@@ -240,86 +292,158 @@ func (s *Sampler) readCPU(out *Sample) {
 	out.CPUUtil = int(busy*100 + 0.5)
 }
 
-// pidOrSelf guards a nil engine-pid source.
-func pidOrSelf(f func() int) int {
-	if f == nil {
-		return 0
+// selfTree sums the resident memory and CPU share of the radio's
+// processes - this one plus, when the engine daemon is running, its
+// whole tree, the daemon and the Python engine it launches - and, while
+// the writer works for the radio, the writer's tree too. The CPU share
+// is the jiffies delta against the machine's, using the totals readCPU
+// measured for this sample. The writer's own counters are read every
+// sample whether or not it is folded in, so the moment it joins the
+// figure its delta is the work of one interval, not of its lifetime.
+func (s *Sampler) selfTree(radio, writer []int, out *Sample) (rss uint64, cpu int) {
+	rss, jiffies := treeStats(radio)
+	writerRSS, writerJiffies := treeStats(writer)
+	prev, prevWriter := s.prevSelfJiffies, s.prevWriterJiffies
+	s.prevSelfJiffies, s.prevWriterJiffies = jiffies, writerJiffies
+	if out.WriterBusy {
+		out.WriterRAM = writerRSS
+		rss += writerRSS
 	}
-	return f()
+	cpu = -1
+	// A shrinking tree (the engine died) drops the sum below the
+	// previous reading; that sample simply has no self figure.
+	if prev > 0 && jiffies >= prev && out.CPUUtil >= 0 && s.lastTotalDelta > 0 {
+		delta := jiffies - prev
+		if out.WriterBusy && prevWriter > 0 && writerJiffies >= prevWriter {
+			delta += writerJiffies - prevWriter
+		}
+		cpu = cpuShare(delta, s.lastTotalDelta)
+	}
+	return rss, cpu
 }
 
-// selfTree sums the resident memory and CPU share of this process
-// plus, when the engine daemon is running, its whole process tree -
-// the daemon and the Python engine it launches. The CPU share is the
-// tree's jiffies delta against the machine's, using the totals readCPU
-// measured for this sample.
-func (s *Sampler) selfTree(enginePID int, out *Sample) (rss uint64, cpu int) {
-	pids := []int{os.Getpid()}
-	if enginePID > 0 {
-		pids = append(pids, descendants(enginePID)...)
+// cpuShare turns a tree's jiffies over an interval into its percent
+// share of the machine's, clamped to 0-100.
+func cpuShare(delta uint64, totalDelta int64) int {
+	if totalDelta <= 0 {
+		return -1
 	}
-	var jiffies uint64
+	frac := float64(delta) / float64(totalDelta)
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	return int(frac*100 + 0.5)
+}
+
+// treeStats sums resident memory and accumulated CPU time over a set
+// of processes.
+func treeStats(pids []int) (rss, jiffies uint64) {
 	for _, pid := range pids {
 		r, j := statsOf(pid)
 		rss += r
 		jiffies += j
 	}
-	prev := s.prevSelfJiffies
-	s.prevSelfJiffies = jiffies
-	cpu = -1
-	// A shrinking tree (the engine died) drops the sum below the
-	// previous reading; that sample simply has no self figure.
-	if prev > 0 && jiffies >= prev && out.CPUUtil >= 0 && s.lastTotalDelta > 0 {
-		frac := float64(jiffies-prev) / float64(s.lastTotalDelta)
-		if frac < 0 {
-			frac = 0
-		}
-		if frac > 1 {
-			frac = 1
-		}
-		cpu = int(frac*100 + 0.5)
-	}
-	return rss, cpu
+	return rss, jiffies
 }
 
-// descendants returns pid and every transitive child, from one pass
-// over /proc.
-func descendants(pid int) []int {
-	children := map[int][]int{}
+// procTable is one snapshot of the process table - every process's
+// parent, children and short name - from a single pass over /proc.
+type procTable struct {
+	parent   map[int]int
+	children map[int][]int
+	comm     map[int]string
+}
+
+// newProcTable builds a table from parent links and names; the
+// children index follows from them.
+func newProcTable(parent map[int]int, comm map[int]string) procTable {
+	t := procTable{parent: parent, children: map[int][]int{}, comm: comm}
+	for p, pp := range parent {
+		t.children[pp] = append(t.children[pp], p)
+	}
+	return t
+}
+
+// readProcTable takes the snapshot.
+func readProcTable() procTable {
+	parent, comm := map[int]int{}, map[int]string{}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return []int{pid}
+		return newProcTable(parent, comm)
 	}
 	for _, e := range entries {
-		p, err := strconv.Atoi(e.Name())
+		pid, err := strconv.Atoi(e.Name())
 		if err != nil {
 			continue
 		}
-		raw, err := os.ReadFile("/proc/" + e.Name() + "/stat")
-		if err != nil {
-			continue
+		if c, ppid, ok := readStat(pid); ok {
+			parent[pid] = ppid
+			comm[pid] = c
 		}
-		// Field 4 is the parent pid; the comm field can hold spaces
-		// but is parenthesised, so parse after the closing paren.
-		i := strings.LastIndexByte(string(raw), ')')
-		if i < 0 {
-			continue
-		}
-		f := strings.Fields(string(raw[i+1:]))
-		if len(f) < 2 {
-			continue
-		}
-		ppid, err := strconv.Atoi(f[1])
-		if err != nil {
-			continue
-		}
-		children[ppid] = append(children[ppid], p)
 	}
+	return newProcTable(parent, comm)
+}
+
+// descendants returns pid and every transitive child, parents before
+// children.
+func (t procTable) descendants(pid int) []int {
 	out := []int{pid}
 	for i := 0; i < len(out); i++ {
-		out = append(out, children[out[i]]...)
+		out = append(out, t.children[out[i]]...)
 	}
 	return out
+}
+
+// writerTree finds the lyric writer on this machine: every process
+// named for the writer's daemon, with everything it spawned. Empty
+// when the writer runs elsewhere, or not at all.
+func (t procTable) writerTree() []int {
+	var out []int
+	seen := map[int]bool{}
+	for pid, comm := range t.comm {
+		if comm != writerDaemon {
+			continue
+		}
+		for _, p := range t.descendants(pid) {
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// writerName names a writer tree for the readout: the runner it has
+// spawned, or the daemon itself when it has none. Empty for an empty
+// tree.
+func (t procTable) writerName(writer []int) string {
+	name := ""
+	for _, p := range writer {
+		comm := t.comm[p]
+		if comm == "" {
+			continue
+		}
+		if comm != writerDaemon {
+			return comm
+		}
+		name = comm
+	}
+	return name
+}
+
+// writerDaemon is the short name of the lyric writer's daemon.
+const writerDaemon = "ollama"
+
+// writerRunner recognises the process the writer's daemon runs a model
+// in: llama-server in current releases, a second "ollama" (the runner
+// subcommand) in older ones. The daemon's own name is truncated to
+// fifteen characters by the kernel, which is why prefixes are matched.
+func writerRunner(name string) bool {
+	return strings.HasPrefix(name, "llama-server") || strings.HasPrefix(name, "ollama")
 }
 
 // statsOf reads one process's resident memory in bytes and its
@@ -395,8 +519,9 @@ func readMeminfo(out *Sample) {
 }
 
 // readGPU fills in the graphics figures via nvidia-smi, attributing
-// what it can to the engine daemon named by pid.
-func readGPU(out *Sample, pid int) {
+// what it can to the engine daemon named by pid and, while the writer
+// is working for the radio, to the writer's processes.
+func readGPU(out *Sample, pid int, table procTable, writer []int) {
 	line, err := nvidiaSMI("--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu")
 	if err != nil {
 		// No card, or no driver: not an error worth shouting about,
@@ -428,10 +553,7 @@ func readGPU(out *Sample, pid int) {
 	if err != nil {
 		return
 	}
-	// A process can only be recognised as ours through its ancestry:
-	// the daemon is a Go process and the memory is held by the Python
-	// server it supervises.
-	parents := parentMap()
+	var held []GPUProc
 	for _, r := range splitRows(apps) {
 		if len(r) < 2 {
 			continue
@@ -440,10 +562,36 @@ func readGPU(out *Sample, pid int) {
 		if p == 0 {
 			continue
 		}
-		proc := GPUProc{PID: p, Name: processName(p), VRAM: mib(r[1])}
-		proc.Engine = pid > 0 && descendsFrom(parents, p, pid)
+		held = append(held, GPUProc{PID: p, Name: processName(p), VRAM: mib(r[1])})
+	}
+	attribute(out, held, table.parent, pid, writer)
+}
+
+// attribute decides whose each card-holding process is and sums the
+// radio's share. The engine can only be recognised through ancestry:
+// the daemon is a Go process and the memory is held by the Python
+// server it supervises. The writer's processes are the ones found by
+// name, and any holder named like the writer's runner - and they count
+// as the radio's only while the writer is working for it.
+func attribute(out *Sample, held []GPUProc, parents map[int]int, enginePID int, writer []int) {
+	isWriter := map[int]bool{}
+	for _, p := range writer {
+		isWriter[p] = true
+	}
+	// The writer is named after whichever of its processes holds the
+	// most card memory.
+	var named uint64
+	for _, proc := range held {
+		proc.Engine = enginePID > 0 && descendsFrom(parents, proc.PID, enginePID)
 		if proc.Engine {
 			out.EngineVRAM += proc.VRAM
+		} else if out.WriterBusy && (isWriter[proc.PID] || writerRunner(proc.Name)) {
+			proc.Writer = true
+			out.WriterVRAM += proc.VRAM
+			if proc.VRAM > named {
+				named = proc.VRAM
+				out.WriterName = proc.Name
+			}
 		}
 		out.Procs = append(out.Procs, proc)
 	}
@@ -547,47 +695,32 @@ func scriptArg(pid int) string {
 	return ""
 }
 
-// parentMap reads every process's parent, for ancestry walks.
-func parentMap() map[int]int {
-	out := map[int]int{}
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return out
-	}
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		if ppid, ok := readPPID(pid); ok {
-			out[pid] = ppid
-		}
-	}
-	return out
-}
-
-// readPPID reads one process's parent from /proc/<pid>/stat. The
-// comm field can contain spaces and parentheses, so the fields after
-// the last ')' are the ones that can be split safely.
-func readPPID(pid int) (int, bool) {
+// readStat reads one process's short name and parent from
+// /proc/<pid>/stat. The comm field can contain spaces and parentheses,
+// so it is cut between the first '(' and the last ')', and the fields
+// after that are the ones that can be split safely.
+func readStat(pid int) (comm string, ppid int, ok bool) {
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
-		return 0, false
+		return "", 0, false
 	}
-	idx := strings.LastIndex(string(raw), ")")
-	if idx < 0 {
-		return 0, false
+	s := string(raw)
+	open := strings.IndexByte(s, '(')
+	idx := strings.LastIndexByte(s, ')')
+	if open < 0 || idx < open {
+		return "", 0, false
 	}
-	fields := strings.Fields(string(raw)[idx+1:])
+	comm = s[open+1 : idx]
+	fields := strings.Fields(s[idx+1:])
 	// fields[0] is state, fields[1] is ppid.
 	if len(fields) < 2 {
-		return 0, false
+		return "", 0, false
 	}
-	ppid, err := strconv.Atoi(fields[1])
+	ppid, err = strconv.Atoi(fields[1])
 	if err != nil {
-		return 0, false
+		return "", 0, false
 	}
-	return ppid, true
+	return comm, ppid, true
 }
 
 // descendsFrom reports whether pid is want, or any descendant of it.

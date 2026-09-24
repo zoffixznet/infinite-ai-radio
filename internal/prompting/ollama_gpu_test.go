@@ -158,3 +158,54 @@ func TestAwaitHelperFollowsTheProbe(t *testing.T) {
 		t.Fatal("nil-ollama AwaitHelper waited instead of answering")
 	}
 }
+
+// The resource readout counts the writer's processes as the radio's
+// while the writer is working for it: a request in flight, or one that
+// finished moments ago (a batch's sheets go out back to back, and a
+// figure that flipped between them would flicker).
+func TestWorkingFollowsTheRadiosRequests(t *testing.T) {
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{{"name": "m"}}})
+	})
+	mux.HandleFunc("/api/chat", func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"role": "assistant", "content": "OK"}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var nobody *Ollama
+	if nobody.Working() {
+		t.Fatal("no writer at all is not a working writer")
+	}
+	o := NewOllama(srv.URL, "m", 0)
+	if o.Working() {
+		t.Fatal("a writer never asked anything is not working")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := o.ChatWith(context.Background(), "sys", "user", ChatOpts{})
+		done <- err
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for o.inFlight.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !o.Working() {
+		t.Fatal("a request in flight is the writer working")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if o.inFlight.Load() != 0 || !o.Working() {
+		t.Fatalf("just after a request: in flight %d, working %v; want 0 and still working", o.inFlight.Load(), o.Working())
+	}
+	// Half a minute on, the writer has gone quiet.
+	o.lastDone.Store(time.Now().Add(-workingLinger - time.Second).UnixNano())
+	if o.Working() {
+		t.Fatal("a writer quiet for longer than the linger is not working")
+	}
+}

@@ -71,6 +71,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the way the machine's own readout says it. "~189 min banked" is
   arithmetic nobody should have to do to answer "how long can I drive
   on this"; it reads "~3h09m" now.
+- Writing the words is the engine working. While a batch's words are
+  being written the `gen` row reads "writing song words (4 of 10)",
+  the status line and the phone read "writing song words" instead of
+  "starting engine", and the `cpu`, `ram` and `vram` figures marked
+  `radio` count the writer's processes along with the engine's - the
+  card's memory is no longer listed as "shared" while the radio's own
+  writer holds it. The `models` row names what is on the card for the
+  radio, the writer or the engine's models, and says "engine asleep"
+  only when nothing is being made at all, with the reason: the store
+  is full, or the next batch is not due yet. The log reads "render
+  model unloaded while the words are written" when the engine hands
+  the card to the writer, and "engine asleep" only when it really is.
 
 ### Removed
 

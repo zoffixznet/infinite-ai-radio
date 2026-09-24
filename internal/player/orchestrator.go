@@ -102,7 +102,7 @@ type Status struct {
 	StoreTarget int
 	NextBatchIn time.Duration
 	// WordsmithWant/WordsmithWrote report a wordsmith round in
-	// progress: the writer holding the freed card, writing the coming
+	// progress: the writer holding the card, writing the coming
 	// batch's words. Zero when no round is running.
 	WordsmithWant  int
 	WordsmithWrote int
@@ -847,6 +847,8 @@ func (o *Orchestrator) currentPhase() string {
 	genCount := o.genCount
 	queued := len(o.queue)
 	last := o.lastGood
+	writing := o.wordsmithWantNow > 0
+	vocal := o.sess.Vocal
 	o.mu.Unlock()
 	if o.eng == nil {
 		return "engine unavailable"
@@ -859,9 +861,16 @@ func (o *Orchestrator) currentPhase() string {
 			case "":
 				return "starting engine"
 			case "hibernated":
-				// Phased mode sleeps the engine on purpose while music
-				// plays from the buffer; that is normal operation, not
-				// a stuck startup.
+				// The render daemon is down. While the writer is at
+				// work the radio is making songs - the words come
+				// first - and the phase says so rather than claiming a
+				// startup that has not begun.
+				if writing || o.builder.WriterWorking() {
+					return writingPhase(vocal)
+				}
+				// Otherwise phased mode sleeps the engine on purpose
+				// while music plays from the buffer; that is normal
+				// operation, not a stuck startup.
 				if queued > 0 || last != nil || genCount > 0 {
 					return "playing"
 				}
@@ -876,6 +885,15 @@ func (o *Orchestrator) currentPhase() string {
 		return "generating first track"
 	}
 	return "playing"
+}
+
+// writingPhase is the phase shown while the writer works: words for
+// a singing session, descriptions for an instrumental one.
+func writingPhase(vocal bool) string {
+	if vocal {
+		return "writing song words"
+	}
+	return "writing song descriptions"
 }
 
 // PhaseInfo reports the current phase with elapsed and expected durations

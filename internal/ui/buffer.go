@@ -39,14 +39,60 @@ func nowLine(st player.Status) string {
 	return st.TrackTitle + " · " + st.TrackSubtitle
 }
 
-// genIdle is what the generation row says when nothing is in flight.
-// The row is drawn either way: it flips several times a minute as the
-// cycle moves between plan and render jobs, and a row that comes and
-// goes drags every line under it up and down the screen.
+// genText is the generation row: what the radio is making right now,
+// and whether the row's bar should pulse. To the listener there is one
+// engine and it makes songs - writing the words is as much the engine
+// working as rendering is - so the row reads as work throughout a
+// batch, and as idle only when nothing is being made at all. It is
+// drawn either way: it flips several times a minute as the cycle moves
+// between jobs, and a row that comes and goes drags every line under
+// it up and down the screen.
+func genText(st player.Status) (text string, busy bool) {
+	switch {
+	case st.Generating:
+		return "generating next track", true
+	case writing(st):
+		return writingText(st), true
+	}
+	return genIdle(st), false
+}
+
+// writing reports whether the radio is writing song words right now:
+// a wordsmith round is in progress, or the writer is answering the
+// radio while the engine is off the card.
+func writing(st player.Status) bool {
+	if st.WordsmithWant > 0 {
+		return true
+	}
+	t := st.Telemetry
+	return t != nil && t.WriterBusy && t.EnginePID == 0
+}
+
+// writingText is the generation row while the words are written. An
+// instrumental batch is described rather than worded, and the line
+// says which, because "writing song words" over a session with no
+// singing in it is just wrong. The count is the wordsmith round's;
+// a background write outside a round has none.
+func writingText(st player.Status) string {
+	work := "song words"
+	if !st.Vocal {
+		work = "song descriptions"
+	}
+	if st.WordsmithWant > 0 {
+		return fmt.Sprintf("writing %s (%d of %d)", work, st.WordsmithWrote, st.WordsmithWant)
+	}
+	return "writing " + work
+}
+
+// genIdle is what the generation row says when nothing is being made.
 func genIdle(st player.Status) string {
 	switch {
 	case st.Exporting != "":
 		return "idle · the engine is busy with an export"
+	case writing(st):
+		// Not idle at all; genText says so before ever asking here,
+		// and a direct caller gets the same answer.
+		return writingText(st)
 	case st.EngineName != "" && !st.EngineReady:
 		// The engine sleeps on purpose once the store is deep enough;
 		// that is the pipeline working.

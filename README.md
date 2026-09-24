@@ -193,6 +193,15 @@ full, nothing more is made until somebody takes a song. A relaunch with
 songs in the store plays immediately without touching the graphics card
 at all.
 
+`--telemetry` adds a readout of the processor, memory and graphics
+card. The share marked `radio` is everything working for the radio at
+that moment - writing a batch's words is the engine working as much as
+rendering is, so the writer counts while the words are being written -
+and the `models` row names what is on the card for the radio, or says
+the engine is asleep and why: the store is full, or the next batch is
+not due yet. The `gen` row says what is being made right now, and
+`shared` names whatever else is on the card.
+
 ## Steering the music
 
 While music plays, type what you want and press Enter:
@@ -335,7 +344,7 @@ for the phones exactly as before. `play` switches it back on, from the
 song it was on. That is all the switch does - the radio itself never
 sleeps on a command. It sleeps on its own: once the store holds
 `buffer.songs` songs nobody has taken, no batch is due and the engine
-hibernates until somebody takes a song, so a machine left running
+sleeps until somebody takes a song, so a machine left running
 overnight with nobody listening makes nothing overnight. `--remote`
 starts with the player off, because a machine started as the station
 should not play the first song into whatever room it sits in.
@@ -938,18 +947,18 @@ the writer's own words straight after it, then batches of 20, 40 and
 the generator waits as long as that rung's music runs before making
 the next, less whatever listeners skipped meanwhile (every device
 reports the seconds it skipped with Next, and skipping is faster
-consumption). A cycle renders everything it plans and hibernates; it
-runs at all only while the store holds fewer than `songs` untaken
-songs, and a batch never makes more than the room left, so a full
-store is the off switch - the engine sleeps until somebody takes a
-song. A steer drops every stored plan and song and restarts the
-ladder, so trying prompts never wastes deep work - but a restart of
-the player does not: the store carries a context and a build stamp,
-continues across restarts of the same binary, and is cleared when a
-different build of the player takes over, so songs rendered by older
-code never linger into an upgrade. `restart` empties it and puts the
-ladder back on its first rung without touching the session, and `iar
-buffer clear` does the same to a stopped radio.
+consumption). A cycle renders everything it plans, and between cycles
+the engine sleeps; a cycle runs at all only while the store holds
+fewer than `songs` untaken songs, and a batch never makes more than
+the room left, so a full store is the off switch - the engine sleeps
+until somebody takes a song. A steer drops every stored plan and song
+and restarts the ladder, so trying prompts never wastes deep work -
+but a restart of the player does not: the store carries a context and
+a build stamp, continues across restarts of the same binary, and is
+cleared when a different build of the player takes over, so songs
+rendered by older code never linger into an upgrade. `restart` empties
+it and puts the ladder back on its first rung without touching the
+session, and `iar buffer clear` does the same to a stopped radio.
 
 Playing a song does not delete it from the store. The player takes
 it, which marks it as consumed and leaves it on disk for a player that
@@ -985,9 +994,10 @@ they are never trimmed. A steer or `restart` drops the lot.
   card. The default 0 follows the music engine: while a generation
   cycle holds the card the helper stays entirely on the CPU - a helper
   load grabbing leftover memory mid-generation is exactly what pushes
-  the card into out-of-memory - and the moment the engine hibernates,
-  the Ollama daemon places the model on the freed card, where lyric
-  and naming calls take seconds instead of minutes. Set -1 to always
+  the card into out-of-memory - and the moment the music engine gives
+  the card up for the writer's turn, the Ollama daemon places the
+  model there, where lyric and naming calls take seconds instead of
+  minutes. Set -1 to always
   let the daemon place the model (sensible on a machine with video
   memory to spare), or a positive number to always put that many
   layers on the card.

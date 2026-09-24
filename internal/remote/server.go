@@ -596,7 +596,12 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 	out.Switching = st.Switching
 	if st.Phase != "" && st.Phase != "playing" {
 		out.Phase = st.Phase
-		out.PhaseInfo = st.PhaseElapsed.Round(time.Second).String() + " of ~" + st.PhaseExpected.Round(time.Second).String()
+		out.PhaseInfo = st.PhaseElapsed.Round(time.Second).String()
+		if st.PhaseExpected > 0 {
+			// Only a phase with a recorded expectation says how long
+			// it usually takes; "of ~0s" is not information.
+			out.PhaseInfo += " of ~" + st.PhaseExpected.Round(time.Second).String()
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

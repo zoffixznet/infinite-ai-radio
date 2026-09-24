@@ -92,13 +92,16 @@ func runPlay(pf playFlags) error {
 	if pf.telemetry {
 		// Phased generation's whole point is an empty card between
 		// cycles; this is the window onto whether it is actually so.
+		// The writer is a service of its own, so the sampler is told
+		// when it is working for the radio and counts it as the
+		// radio's while it is.
 		orch.Telemetry = telemetry.New(a.daemonLogFile(), func() int {
 			st, ok := a.stateD.ReadEngineState()
 			if !ok || !state.PIDAlive(st.PID) {
 				return 0
 			}
 			return st.PID
-		})
+		}, builder.WriterWorking)
 	}
 	orch.SnippetsDir = a.snippetsDir()
 	// What the radio has made, by hash: a song's record outlives its

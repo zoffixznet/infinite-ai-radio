@@ -917,6 +917,17 @@ func (b *Builder) SetEngineBusy(busy bool) {
 	}
 }
 
+// WriterWorking reports whether the lyric writer is at work for the
+// radio right now: a request of the radio's is in flight to it, or one
+// finished moments ago (see Ollama.Working). The resource readout folds
+// the writer's processes into the radio's own figures while it is.
+func (b *Builder) WriterWorking() bool {
+	if b == nil {
+		return false
+	}
+	return b.ollama.Working()
+}
+
 // SpecUpdate is a helper-proposed structured update to the steering
 // spec, produced as schema-constrained JSON so it can be validated and
 // merged mechanically.

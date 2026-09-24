@@ -161,7 +161,7 @@ func TestReadMeminfoReportsThisMachine(t *testing.T) {
 func TestSamplerPublishesASnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "engine-daemon.log")
 	writeLog(t, path, "")
-	s := New(path, nil)
+	s := New(path, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.Start(ctx)
@@ -175,6 +175,213 @@ func TestSamplerPublishesASnapshot(t *testing.T) {
 	// With no engine pid there is nothing to attribute to this radio.
 	if got.EnginePID != 0 || got.EngineVRAM != 0 {
 		t.Errorf("unexpected engine attribution: pid %d, %d bytes", got.EnginePID, got.EngineVRAM)
+	}
+	// And with nobody saying the writer is at work, nothing of it is
+	// the radio's either.
+	if got.WriterBusy || got.WriterVRAM != 0 || got.WriterRAM != 0 || got.WriterName != "" {
+		t.Errorf("unexpected writer attribution: %+v", got)
+	}
+}
+
+// A fake process table in the shape of this machine's: the radio, its
+// engine daemon supervising a Python server, the writer's daemon
+// running a model in a runner it spawned, and somebody else's Python
+// holding the card too.
+func fakeProcTable() procTable {
+	return newProcTable(
+		map[int]int{
+			100: 1, 200: 100, // iar, and the engine daemon it started
+			210:  200,           // the Python engine the daemon supervises
+			2084: 1, 3001: 2084, // ollama serve, and its llama-server
+			42: 1, // an unrelated program
+		},
+		map[int]string{
+			100: "iar", 200: "iar", 210: "python",
+			2084: "ollama", 3001: "llama-server",
+			42: "python",
+		})
+}
+
+// The writer runs as a service of its own, never as a child of
+// anything here, so it is found by name: the daemon and whatever it
+// spawned, and nothing else.
+func TestWriterTreeIsTheDaemonAndWhatItSpawned(t *testing.T) {
+	table := fakeProcTable()
+	got := table.writerTree()
+	want := map[int]bool{2084: true, 3001: true}
+	if len(got) != len(want) {
+		t.Fatalf("writer tree = %v, want the daemon and its runner", got)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("writer tree claims pid %d", p)
+		}
+	}
+	if name := table.writerName(got); name != "llama-server" {
+		t.Errorf("writer named %q, want its runner", name)
+	}
+	// A daemon with no runner is named after itself; no daemon, no name.
+	if name := table.writerName([]int{2084}); name != "ollama" {
+		t.Errorf("a lone daemon is named %q", name)
+	}
+	if name := table.writerName(nil); name != "" {
+		t.Errorf("an empty tree is named %q", name)
+	}
+	// The engine's own tree is still the daemon and its children.
+	if eng := table.descendants(200); len(eng) != 2 || eng[0] != 200 || eng[1] != 210 {
+		t.Errorf("engine tree = %v", eng)
+	}
+}
+
+// Whose the card's holders are: the engine's through its ancestry, the
+// writer's by name while - and only while - the writer is working for
+// the radio. The rest is shared, and the radio's card figure is the
+// engine plus the writer.
+func TestAttributeCountsTheWriterOnlyWhileItWorksForTheRadio(t *testing.T) {
+	table := fakeProcTable()
+	held := func() []GPUProc {
+		return []GPUProc{
+			{PID: 210, Name: "python (acestep-api)", VRAM: 2 << 30},
+			{PID: 3001, Name: "llama-server", VRAM: 5 << 30},
+			{PID: 42, Name: "python", VRAM: 3 << 30},
+		}
+	}
+
+	busy := Sample{WriterBusy: true}
+	attribute(&busy, held(), table.parent, 200, table.writerTree())
+	if busy.EngineVRAM != 2<<30 {
+		t.Errorf("engine holds %d, want 2 GiB", busy.EngineVRAM)
+	}
+	if busy.WriterVRAM != 5<<30 || busy.WriterName != "llama-server" {
+		t.Errorf("writer attributed as %q %d bytes, want llama-server 5 GiB", busy.WriterName, busy.WriterVRAM)
+	}
+	if busy.RadioVRAM() != 7<<30 {
+		t.Errorf("radio holds %d, want engine plus writer (7 GiB)", busy.RadioVRAM())
+	}
+	// Largest first, and each holder marked for whoever it is.
+	if len(busy.Procs) != 3 || busy.Procs[0].PID != 3001 {
+		t.Fatalf("procs = %+v", busy.Procs)
+	}
+	for _, p := range busy.Procs {
+		switch p.PID {
+		case 210:
+			if !p.Engine || p.Writer {
+				t.Errorf("engine process marked %+v", p)
+			}
+		case 3001:
+			if !p.Writer || p.Engine || !p.Radio() {
+				t.Errorf("writer process marked %+v", p)
+			}
+		case 42:
+			if p.Radio() {
+				t.Errorf("somebody else's process claimed for the radio: %+v", p)
+			}
+		}
+	}
+
+	// The same holders while the writer is not working for the radio:
+	// it is somebody else's, and the shared row gets it.
+	idle := Sample{}
+	attribute(&idle, held(), table.parent, 200, table.writerTree())
+	if idle.WriterVRAM != 0 || idle.WriterName != "" {
+		t.Errorf("an idle writer was attributed to the radio: %q %d", idle.WriterName, idle.WriterVRAM)
+	}
+	if idle.RadioVRAM() != 2<<30 {
+		t.Errorf("radio holds %d, want the engine alone (2 GiB)", idle.RadioVRAM())
+	}
+	for _, p := range idle.Procs {
+		if p.PID == 3001 && p.Radio() {
+			t.Errorf("idle writer marked as the radio's: %+v", p)
+		}
+	}
+}
+
+// A runner the tree walk did not catch (reparented, or a daemon that
+// was renamed) is still the writer's when its name says so - and only
+// while the writer is working. A writer on another machine leaves no
+// process here and contributes nothing.
+func TestAttributeRecognisesTheRunnerByName(t *testing.T) {
+	held := []GPUProc{{PID: 777, Name: "llama-server", VRAM: 4 << 30}}
+	busy := Sample{WriterBusy: true}
+	attribute(&busy, held, map[int]int{777: 1}, 0, nil)
+	if busy.WriterVRAM != 4<<30 || busy.WriterName != "llama-server" || !busy.Procs[0].Writer {
+		t.Errorf("a runner found by name was not the writer's: %+v", busy)
+	}
+	elsewhere := Sample{WriterBusy: true}
+	attribute(&elsewhere, nil, map[int]int{}, 0, nil)
+	if elsewhere.WriterVRAM != 0 || elsewhere.WriterName != "" || len(elsewhere.Procs) != 0 {
+		t.Errorf("a writer with no process here contributed: %+v", elsewhere)
+	}
+	// An older daemon ran its model in a second "ollama" process.
+	old := Sample{WriterBusy: true}
+	attribute(&old, []GPUProc{{PID: 778, Name: "ollama", VRAM: 1 << 30}}, map[int]int{}, 0, nil)
+	if old.WriterVRAM != 1<<30 {
+		t.Errorf("an older runner was not recognised: %+v", old)
+	}
+}
+
+// The radio's processor share adds the writer's work only over the
+// interval it was measured across: the moment the writer joins the
+// figure, its lifetime of accumulated time must not land in one sample
+// and read as a machine pegged at 100%.
+func TestSelfTreeFoldsTheWriterInByTheInterval(t *testing.T) {
+	self := os.Getpid()
+	s := &Sampler{lastTotalDelta: 1 << 40}
+	// Prime the radio's own counter; the writer's is still unknown.
+	first := Sample{CPUUtil: 10}
+	s.selfTree([]int{self}, nil, &first)
+	if s.prevSelfJiffies == 0 {
+		t.Skip("no /proc on this platform")
+	}
+	// The writer appears and is at work: its memory counts from this
+	// sample, its processor time only from the next.
+	second := Sample{CPUUtil: 10, WriterBusy: true}
+	rss, cpu := s.selfTree([]int{self}, []int{self}, &second)
+	if second.WriterRAM == 0 || rss < second.WriterRAM*3/2 {
+		t.Errorf("writer memory not folded in: self %d, writer %d", rss, second.WriterRAM)
+	}
+	if cpu < 0 {
+		t.Errorf("a measured radio tree should have a share, got %d", cpu)
+	}
+	if s.prevWriterJiffies == 0 {
+		t.Error("the writer's counter should be primed for the next sample")
+	}
+	// Not at work: measured still (so the next join is by interval),
+	// but nothing of it counted.
+	third := Sample{CPUUtil: 10}
+	rss3, _ := s.selfTree([]int{self}, []int{self}, &third)
+	if third.WriterRAM != 0 || rss3 > rss {
+		t.Errorf("an idle writer was folded in: rss %d (was %d), writer %d", rss3, rss, third.WriterRAM)
+	}
+}
+
+func TestCPUShareClamps(t *testing.T) {
+	for _, tc := range []struct {
+		delta uint64
+		total int64
+		want  int
+	}{
+		{0, 100, 0},
+		{25, 100, 25},
+		{100, 100, 100},
+		{250, 100, 100}, // a torn read never exceeds the machine
+		{5, 0, -1},      // no interval yet
+	} {
+		if got := cpuShare(tc.delta, tc.total); got != tc.want {
+			t.Errorf("cpuShare(%d, %d) = %d, want %d", tc.delta, tc.total, got, tc.want)
+		}
+	}
+}
+
+// The process table reads the short name and parent out of one stat
+// line, including a name with spaces and parentheses in it.
+func TestReadStatOfThisProcess(t *testing.T) {
+	comm, ppid, ok := readStat(os.Getpid())
+	if !ok {
+		t.Skip("no /proc on this platform")
+	}
+	if comm == "" || ppid != os.Getppid() {
+		t.Errorf("readStat = %q, %d; want this process's name and parent %d", comm, ppid, os.Getppid())
 	}
 }
 
