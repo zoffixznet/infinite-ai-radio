@@ -17,6 +17,7 @@ import (
 	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
+	"iar/internal/songbook"
 	"iar/internal/state"
 	"iar/internal/telemetry"
 	"iar/internal/trackbuffer"
@@ -220,6 +221,10 @@ type Orchestrator struct {
 	BuildStamp string
 	// SnippetsDir is where the save command writes captured tracks.
 	SnippetsDir string
+	// Songbook remembers every song rendered - its hash, name, words
+	// and where it was saved - past the life of its audio here. New
+	// gives a memory-only book; set a file-backed one before Start.
+	Songbook *songbook.Book
 	// Tap, when set before Start, receives the mastered stream at the
 	// single pump chokepoint: every PCM chunk the mixer produces, at
 	// full level. It sits before pause and volume, which control the
@@ -356,12 +361,6 @@ type Orchestrator struct {
 	// curTrackNum is the playing track's number.
 	playCount   int
 	curTrackNum int
-	// saved maps the track ids saved as snippets this run to where they
-	// landed on disk (bounded by savedOrder), so save buttons can grey
-	// out, a repeat save is a no-op, and renaming a song that is
-	// already on disk can rename the files too.
-	saved      map[string]string
-	savedOrder []string
 	// saveLanguages persists an edited vocal-language catalogue - the
 	// machine's list of what can be offered. Which of them a session
 	// sings in belongs to the session, not here. Nil means an edited
@@ -393,6 +392,7 @@ func New(cfg config.Config, eng engine.Engine, builder *prompting.Builder, store
 		events:   make(chan Event, 16),
 		wake:     make(chan struct{}, 1),
 		bankRefs: map[string]bankRef{},
+		Songbook: songbook.Open("", log),
 		// A session that has played before was heard before: resuming
 		// one and changing it straight away must still keep what it
 		// sounded like. A session made moments ago has nothing behind

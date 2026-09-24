@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,9 @@ type queueTrackJSON struct {
 	Lyrics    string  `json:"lyrics,omitempty"`
 	// URL is the authenticated, range-capable MP3 route for the track.
 	URL string `json:"url"`
+	// Hash is the SHA-256 of the MP3 the URL serves, when the radio
+	// recorded one; the page sends it back to save from its own copy.
+	Hash string `json:"hash,omitempty"`
 }
 
 // queueJSON is the upcoming-tracks listing a prefetching client polls.
@@ -38,21 +42,34 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 		out.Tracks = append(out.Tracks, queueTrackJSON{
 			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
 			DurationS: t.Seconds, Kind: t.Kind, Lyrics: t.Lyrics,
-			URL: "/queue/" + url.PathEscape(t.ID) + ".mp3",
+			URL: "/queue/" + url.PathEscape(t.ID) + ".mp3", Hash: t.Hash,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // handleQueueTrack serves one queued or library track as MP3 with Range
-// support. Encoding happens in the request handler (never on the
-// playback path) and results are cached so several phones prefetching
-// the same track encode it once.
+// support. A song still on disk goes out as the file itself, byte for
+// byte, so the hash the radio recorded for it is the hash of what the
+// phone holds. One that is only in memory is encoded in the request
+// handler (never on the playback path), and cached so several phones
+// prefetching the same track encode it once.
 func (s *Server) handleQueueTrack(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	id, ok := strings.CutSuffix(r.PathValue("file"), ".mp3")
 	if !ok || id == "" {
 		http.NotFound(w, r)
 		return
+	}
+	if path, ok := s.ctl.TrackFile(id); ok {
+		// Opened before anything else: feeding the song deletes the
+		// file, and the open descriptor is what keeps the bytes.
+		if f, err := os.Open(path); err == nil {
+			defer f.Close()
+			w.Header().Set("Content-Type", "audio/mpeg")
+			w.Header().Set("Cache-Control", "no-store")
+			http.ServeContent(w, r, id+".mp3", time.Time{}, f)
+			return
+		}
 	}
 	data, err := s.trackMP3.get(id, func() ([]byte, error) {
 		track, found := s.ctl.TrackData(id)

@@ -28,6 +28,10 @@ type QueueTrack struct {
 	// Kind is "queue" for freshly generated upcoming tracks and
 	// "library" for same-vibe banked filler.
 	Kind string
+	// Hash is the SHA-256 of the track's MP3 as served, when the radio
+	// recorded one at render; a client sends it back to save the song
+	// from its own copy.
+	Hash string
 }
 
 // libFillerPrefix marks track ids that resolve to the on-disk library.
@@ -147,7 +151,29 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 			Seconds: e.Seconds, Kind: "library", Lyrics: e.Lyrics,
 		})
 	}
+	for i := range out {
+		if s, ok := o.Songbook.ByID(out[i].ID); ok {
+			out[i].Hash = s.Hash
+		}
+	}
 	return epoch, out
+}
+
+// TrackFile returns the MP3 of a song still waiting on disk, to be
+// served exactly as written. ok is false for a song that is anywhere
+// else in its life - in memory or banked - or unknown.
+func (o *Orchestrator) TrackFile(id string) (string, bool) {
+	if o.Buffer == nil || !o.cfg.Buffer.Phased {
+		return "", false
+	}
+	base, ok := o.bufferedBase(id)
+	if !ok {
+		return "", false
+	}
+	o.mu.Lock()
+	epoch := o.epoch
+	o.mu.Unlock()
+	return o.Buffer.TrackPath(epoch, base)
 }
 
 // enabledLanguageNamesLocked is the set of language names a vocal

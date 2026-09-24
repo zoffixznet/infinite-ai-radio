@@ -71,7 +71,7 @@ func TestRenamingASongStillOnDisk(t *testing.T) {
 
 	lyrics := "[Verse]\nsteel in the water"
 	track := &engine.Track{Prompt: "nu-metal, aggressive", Lyrics: lyrics, Samples: make([]int16, 9600)}
-	if err := o.Buffer.PutTrack(context.Background(), 0, 3, track); err != nil {
+	if _, err := o.Buffer.PutTrack(context.Background(), 0, 3, track); err != nil {
 		t.Fatal(err)
 	}
 	base := o.Buffer.List(0)[0].Base

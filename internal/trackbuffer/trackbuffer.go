@@ -10,9 +10,11 @@ package trackbuffer
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -321,6 +323,10 @@ type trackMeta struct {
 	// knows what it is called.
 	Title    string `json:"title,omitempty"`
 	Subtitle string `json:"subtitle,omitempty"`
+	// Hash is the SHA-256 (hex) of the MP3 as written. The file goes
+	// out byte for byte and is never rewritten, so a copy of it hashes
+	// to this wherever it turns up.
+	Hash string `json:"hash,omitempty"`
 }
 
 // PutPlan stores one plan under epoch/seq.
@@ -366,13 +372,13 @@ func (s *Store) DropPlan(epoch, seq int) {
 	os.Remove(filepath.Join(s.plansDir(), name(epoch, seq)+".json"))
 }
 
-// PutTrack encodes a rendered track to MP3 with a metadata sidecar. The
-// song's name is part of that sidecar: it was decided when the words
-// were written, so a song on disk is never nameless and nothing has to
-// come back and name it.
-func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) error {
+// PutTrack encodes a rendered track to MP3 with a metadata sidecar,
+// returning the file's hash. The song's name is part of that sidecar:
+// it was decided when the words were written, so a song on disk is
+// never nameless and nothing has to come back and name it.
+func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) (string, error) {
 	if err := os.MkdirAll(s.tracksDir(), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	base := filepath.Join(s.tracksDir(), name(epoch, seq))
 	meta := trackMeta{
@@ -387,24 +393,70 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) e
 		Title:    t.Title,
 		Subtitle: t.Subtitle,
 	}
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		return err
-	}
 	if err := export.EncodeMP3(ctx, t.Samples, base+".mp3", export.MP3Options{
 		Quality: s.quality,
 		Title:   t.Title,
 		Artist:  "Infinite AI Radio",
 		Comment: "buffered track",
 	}); err != nil {
-		return err
+		return "", err
+	}
+	hash, err := fileHash(base + ".mp3")
+	if err != nil {
+		os.Remove(base + ".mp3")
+		return "", err
+	}
+	meta.Hash = hash
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		os.Remove(base + ".mp3")
+		return "", err
 	}
 	tmp := base + ".json.tmp"
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		os.Remove(base + ".mp3")
-		return err
+		return "", err
 	}
-	return os.Rename(tmp, base+".json")
+	if err := os.Rename(tmp, base+".json"); err != nil {
+		os.Remove(tmp)
+		os.Remove(base + ".mp3")
+		return "", err
+	}
+	return hash, nil
+}
+
+// fileHash is the SHA-256 of a file's bytes, hex-encoded.
+func fileHash(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// TrackPath returns the MP3 of a rendered song still on disk, for
+// serving byte for byte. The base must parse as this epoch's naming;
+// anything else is refused. The caller opens the file straight away:
+// feeding the song deletes it, and an open descriptor is the only thing
+// that keeps the bytes readable past that.
+func (s *Store) TrackPath(epoch int, base string) (string, bool) {
+	ep, _, ok := parseName(base)
+	if !ok || ep != epoch {
+		return "", false
+	}
+	mp3 := filepath.Join(s.tracksDir(), base+".mp3")
+	if _, err := os.Stat(filepath.Join(s.tracksDir(), base+".json")); err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(mp3); err != nil {
+		return "", false
+	}
+	return mp3, true
 }
 
 // NextTrack decodes and removes the oldest rendered song of the epoch,
@@ -673,6 +725,8 @@ type Entry struct {
 	Spec     engine.Spec
 	Title    string
 	Subtitle string
+	// Hash is the SHA-256 of the MP3 on disk (see trackMeta.Hash).
+	Hash string
 }
 
 // List returns the epoch's rendered songs in play order, metadata only.
@@ -696,6 +750,7 @@ func (s *Store) List(epoch int) []Entry {
 			Spec:     m.Spec,
 			Title:    m.Title,
 			Subtitle: m.Subtitle,
+			Hash:     m.Hash,
 		})
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Base < out[j].Base })

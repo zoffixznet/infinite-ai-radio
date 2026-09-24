@@ -47,7 +47,7 @@ func TestASongCarriesItsNameFromItsWordsToTheListener(t *testing.T) {
 
 	// It goes to disk with the audio, so the listing has it and a
 	// restart still has it.
-	if err := o.Buffer.PutTrack(context.Background(), 0, 1, track); err != nil {
+	if _, err := o.Buffer.PutTrack(context.Background(), 0, 1, track); err != nil {
 		t.Fatal(err)
 	}
 	if got := o.Buffer.List(0); len(got) != 1 || got[0].Title != "Apoy Sa Dibdib" {

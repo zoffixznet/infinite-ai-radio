@@ -38,7 +38,7 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	// the ladder at the top.
 	for seq := 1; seq <= 3; seq++ {
 		track := &engine.Track{Lyrics: fmt.Sprintf("[Verse]\nsong %d", seq), Samples: make([]int16, 9600)}
-		if err := o.Buffer.PutTrack(context.Background(), 0, seq, track); err != nil {
+		if _, err := o.Buffer.PutTrack(context.Background(), 0, seq, track); err != nil {
 			t.Fatal(err)
 		}
 	}

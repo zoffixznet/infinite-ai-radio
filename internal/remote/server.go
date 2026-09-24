@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -47,6 +48,9 @@ type Controls interface {
 	Retitle(which, title string) string
 	DeleteAutoSessions(olderThanDays int) string
 	SaveSnippet(which, tag string) string
+	// SaveUpload saves a song from a copy a client sends back (see
+	// player.Orchestrator.SaveUpload).
+	SaveUpload(hash, tag string, body io.Reader) string
 	NameSession(name string) string
 	LoadByName(name string) string
 	DeleteSession(name string) string
@@ -55,6 +59,9 @@ type Controls interface {
 	Status() player.Status
 	QueueTracks() (int, []player.QueueTrack)
 	TrackData(id string) (*engine.Track, bool)
+	// TrackFile is the stored MP3 of a track still on disk, served
+	// exactly as written; ok is false when the track is anywhere else.
+	TrackFile(id string) (string, bool)
 	Announce(text string)
 }
 
@@ -283,6 +290,7 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /buffer/flush", s.apiPerm("steer", permSteer, s.handleBufferFlush))
 	mux.HandleFunc("POST /new", s.apiPerm("new prompt", permNewPrompt, s.handleNew))
 	mux.HandleFunc("POST /save", s.apiPerm("save", permSave, s.handleSave))
+	mux.HandleFunc("POST /save/upload", s.apiPerm("save", permSave, s.handleSaveUpload))
 	// Renaming what is playing is the same act as renaming it in the
 	// saved list, and answers to the same permission.
 	mux.HandleFunc("POST /retitle", s.apiPerm("rename songs", permSave, s.handleRetitle))
@@ -737,6 +745,9 @@ type actionResponse struct {
 	// Saved answers /save without the page having to read English: the
 	// track is in the snippets, or on its way there.
 	Saved bool `json:"saved,omitempty"`
+	// Upload answers /save for a song the radio no longer holds: the
+	// page has the copy, and /save/upload takes it.
+	Upload bool `json:"upload,omitempty"`
 }
 
 func (s *Server) reply(w http.ResponseWriter, ack string) {
@@ -885,14 +896,32 @@ func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, u accounts.Us
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	ack := s.ctl.SaveSnippet(textField(r, "which"), textField(r, "tag"))
 	s.ctl.Announce("remote save by " + u.Email + ": " + ack)
+	writeJSON(w, http.StatusOK, actionResponse{OK: true, Ack: ack, Saved: savedAck(ack),
+		Upload: ack == player.AckSendCopy})
+}
+
+// handleSaveUpload saves a song from the copy in the request body. The
+// tag and the hash the sender believes the copy has ride in the query
+// string: the body is the MP3 itself, so there is no form to read it
+// from - and no form parsing may touch the body.
+func (s *Server) handleSaveUpload(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	q := r.URL.Query()
+	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	ack := s.ctl.SaveUpload(strings.TrimSpace(q.Get("hash")), strings.TrimSpace(q.Get("tag")), body)
+	s.ctl.Announce("remote save by " + u.Email + ": " + ack)
 	writeJSON(w, http.StatusOK, actionResponse{OK: true, Ack: ack, Saved: savedAck(ack)})
 }
+
+// maxUploadBytes bounds a copy sent back to be saved (see the player's
+// own limit, which this only fronts).
+const maxUploadBytes = 40 << 20
 
 // savedAck reports whether an acknowledgment from SaveSnippet means the
 // track is in the snippets or on its way there, so the page can grey
 // its save control without matching on English.
 func savedAck(ack string) bool {
-	return strings.HasPrefix(ack, "saving this track to ") || strings.HasPrefix(ack, "already saved:")
+	return strings.HasPrefix(ack, "saving this track to ") || strings.HasPrefix(ack, "already saved:") ||
+		strings.HasPrefix(ack, "track saved: ")
 }
 
 // sessionJSON is one row of the web session picker.

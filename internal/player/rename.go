@@ -265,6 +265,9 @@ func (o *Orchestrator) retitleBanked(key, fileID, id, title string) string {
 // there too, because a listener who renames what they are hearing means
 // the copy they kept as well.
 func (o *Orchestrator) renameAck(id, title string) string {
+	// The book keeps the name past the audio: a copy that comes back
+	// from a phone to be saved is saved under the name it was given.
+	o.Songbook.Retitle(id, title)
 	if moved, ok := o.retitleSaved(id, title); ok {
 		return "renamed to " + title + ", saved copy included: " + moved
 	}
@@ -278,9 +281,7 @@ func (o *Orchestrator) retitleSaved(id, title string) (string, bool) {
 	if id == "" || o.SnippetsDir == "" {
 		return "", false
 	}
-	o.mu.Lock()
-	path := o.saved[id]
-	o.mu.Unlock()
+	path := o.Songbook.SavedPath(id)
 	if path == "" {
 		return "", false
 	}
@@ -305,11 +306,7 @@ func (o *Orchestrator) retitleSaved(id, title string) (string, bool) {
 		return filepath.Join(tag, file), true
 	}
 	newPath := filepath.Join(filepath.Dir(path), newFile)
-	o.mu.Lock()
-	if o.saved[id] == path {
-		o.saved[id] = newPath
-	}
-	o.mu.Unlock()
+	o.Songbook.MarkSaved(id, newPath)
 	o.log.Info("saved copy renamed", "event", "snippet_renamed", "path", newPath)
 	return filepath.Join(tag, newFile), true
 }

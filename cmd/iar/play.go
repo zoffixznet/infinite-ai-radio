@@ -16,6 +16,7 @@ import (
 	"iar/internal/remote"
 	"iar/internal/session"
 	"iar/internal/snippets"
+	"iar/internal/songbook"
 	"iar/internal/state"
 	"iar/internal/telemetry"
 	"iar/internal/trackbuffer"
@@ -126,6 +127,10 @@ func runPlay(pf playFlags) error {
 		})
 	}
 	orch.SnippetsDir = a.snippetsDir()
+	// What the radio has made, by hash: a song's record outlives its
+	// audio here, so a copy a phone still holds can be saved after the
+	// buffer, a steer or a restart has let the file go.
+	orch.Songbook = songbook.Open(filepath.Join(a.paths.DataDir, "songbook.jsonl"), a.log)
 	// The build, beside the paths: a rebuild clears the buffer and
 	// reloads the page, and this is the string to check the phone's
 	// settings against when something looks like it came from the

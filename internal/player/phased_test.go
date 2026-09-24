@@ -165,7 +165,7 @@ func TestRestartAdoptsThePreviousRunsBuffer(t *testing.T) {
 			Lyrics:  fmt.Sprintf("[Verse]\nsong %d", seq),
 			Samples: make([]int16, 9600),
 		}
-		if err := prev.PutTrack(context.Background(), 3, seq, track); err != nil {
+		if _, err := prev.PutTrack(context.Background(), 3, seq, track); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,7 +195,7 @@ func TestAdoptionRefusesAnotherContextsBuffer(t *testing.T) {
 	prev := trackbuffer.New(dir, 0, testLogger())
 	prev.SetContext("some-other-station")
 	track := &engine.Track{Lyrics: "[Verse]\nx", Samples: make([]int16, 9600)}
-	if err := prev.PutTrack(context.Background(), 7, 1, track); err != nil {
+	if _, err := prev.PutTrack(context.Background(), 7, 1, track); err != nil {
 		t.Fatal(err)
 	}
 
@@ -262,7 +262,7 @@ func TestAnotherBuildsBufferIsCleared(t *testing.T) {
 	prev.SetBuild("old-commit")
 	prev.SetContext(library.Key(session.New()))
 	track := &engine.Track{Lyrics: "[Verse]\nx", Samples: make([]int16, 9600)}
-	if err := prev.PutTrack(context.Background(), 0, 1, track); err != nil {
+	if _, err := prev.PutTrack(context.Background(), 0, 1, track); err != nil {
 		t.Fatal(err)
 	}
 
@@ -389,5 +389,18 @@ func TestInstrumentalCycleRendersInsteadOfWakingForNothing(t *testing.T) {
 	}
 	if eng.renders.Load() == 0 {
 		t.Fatal("the cycle woke the engine and rendered nothing")
+	}
+	// The render is in the book, hash and all: a copy of it on a phone
+	// can be saved long after the file here is gone.
+	o.mu.Lock()
+	epoch := o.epoch
+	o.mu.Unlock()
+	made := o.Buffer.List(epoch)
+	if len(made) == 0 {
+		t.Fatal("the render left nothing on disk")
+	}
+	s, ok := o.Songbook.ByID(made[0].ID)
+	if !ok || s.Hash == "" || s.Hash != made[0].Hash {
+		t.Fatalf("the songbook has %+v (ok=%v) for the song on disk %+v", s, ok, made[0])
 	}
 }

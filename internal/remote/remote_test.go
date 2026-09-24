@@ -304,6 +304,15 @@ type fakeCtl struct {
 	named     []string
 	loaded    []string
 	deleted   []string
+	uploads   []upload
+	// storedT1, when set, is a file on disk that t-1 is served from.
+	storedT1 string
+}
+
+// upload is one copy sent back to be saved.
+type upload struct {
+	hash, tag string
+	size      int
 }
 
 func (f *fakeCtl) Steer(text string) string {
@@ -416,6 +425,9 @@ func (f *fakeCtl) SaveSnippet(which, tag string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.saves = append(f.saves, [2]string{which, tag})
+	if which == "t-gone" {
+		return player.AckSendCopy
+	}
 	return "saving this track to " + tag + "/x.mp3"
 }
 
@@ -478,10 +490,31 @@ func (f *fakeCtl) Listing() session.Listing {
 // queueTracks are what QueueTracks serves; tests may replace them.
 func (f *fakeCtl) QueueTracks() (int, []player.QueueTrack) {
 	return 7, []player.QueueTrack{
-		{ID: "t-1", Prompt: "dark techno, driving", Title: "Dark Techno", Subtitle: "driving", Seconds: 2, Kind: "queue"},
+		{ID: "t-1", Prompt: "dark techno, driving", Title: "Dark Techno", Subtitle: "driving", Seconds: 2, Kind: "queue", Hash: "hash-of-t-1"},
 		{ID: "t-2", Prompt: "dark techno, deeper", Title: "Deep Descent", Subtitle: "deeper", Seconds: 2, Kind: "queue"},
 		{ID: "lib:techno/20260823-000000-0001", Prompt: "banked techno", Title: "Banked Techno", Seconds: 2, Kind: "library"},
 	}
+}
+
+func (f *fakeCtl) SaveUpload(hash, tag string, body io.Reader) string {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return "the copy did not arrive whole: " + err.Error()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.uploads = append(f.uploads, upload{hash: hash, tag: tag, size: len(data)})
+	return "track saved: " + tag + "/y.mp3"
+}
+
+// TrackFile serves t-1 from disk when the test planted a file for it.
+func (f *fakeCtl) TrackFile(id string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id == "t-1" && f.storedT1 != "" {
+		return f.storedT1, true
+	}
+	return "", false
 }
 
 func (f *fakeCtl) TrackData(id string) (*engine.Track, bool) {

@@ -14,6 +14,7 @@ import (
 	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
+	"iar/internal/songbook"
 	"iar/internal/trackbuffer"
 )
 
@@ -40,8 +41,9 @@ func idOrchestrator(t *testing.T) (*Orchestrator, *session.Session) {
 }
 
 // renderSong puts a finished song on disk the way a render does: with
-// the id it will keep for the rest of its life.
-func renderSong(t *testing.T, o *Orchestrator, seq int, id string) {
+// the id it will keep for the rest of its life, and a record of it in
+// the songbook. Returns the file's hash.
+func renderSong(t *testing.T, o *Orchestrator, seq int, id string) string {
 	t.Helper()
 	tr := &engine.Track{
 		ID:      id,
@@ -49,9 +51,15 @@ func renderSong(t *testing.T, o *Orchestrator, seq int, id string) {
 		Lyrics:  "[Verse]\nthe words of " + id,
 		Samples: make([]int16, audio.SampleRate*audio.Channels/2),
 	}
-	if err := o.Buffer.PutTrack(context.Background(), 0, seq, tr); err != nil {
+	hash, err := o.Buffer.PutTrack(context.Background(), 0, seq, tr)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := o.Songbook.Record(songbook.Song{ID: id, Hash: hash, Title: tr.Title, Prompt: tr.Prompt,
+		Lyrics: tr.Lyrics, Seconds: tr.Duration().Seconds(), Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	return hash
 }
 
 // listing returns the phone's view of the radio as id -> kind, failing

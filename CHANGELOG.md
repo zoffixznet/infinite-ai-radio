@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- A song goes out to the phone as the very file the radio rendered,
+  byte for byte, instead of being encoded again on the way out; and
+  saving a song still on disk copies that file with fresh tags rather
+  than encoding it a second time, so the saved song is exactly the one
+  the phone played.
+- The radio keeps a book of every song it makes - `songbook.jsonl` in
+  its data directory - with the file's hash, the song's name, words and
+  prompt, and where it was saved. A song's saved mark and a listener's
+  rename now outlive a restart, and a copy of a song the radio no
+  longer holds can be recognised by its hash and saved under the
+  recorded name.
+
 ### Fixed
 
 - A song is one song from the moment it is made. It used to be given a

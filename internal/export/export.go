@@ -58,6 +58,23 @@ type MP3Options struct {
 	Comment  string
 }
 
+// tagArgs is the ffmpeg metadata arguments for the non-empty tags.
+func (opts MP3Options) tagArgs() []string {
+	var args []string
+	for _, tag := range []struct{ name, value string }{
+		{"title", opts.Title},
+		{"artist", opts.Artist},
+		{"album", opts.Album},
+		{"TIT3", opts.Subtitle},
+		{"comment", opts.Comment},
+	} {
+		if tag.value != "" {
+			args = append(args, "-metadata", tag.name+"="+tag.value)
+		}
+	}
+	return args
+}
+
 // Renderer renders exports. Engine may be nil for noise-mode sessions.
 type Renderer struct {
 	// Engine generates music tracks (unused for noise sessions).
@@ -224,17 +241,7 @@ func EncodeMP3(ctx context.Context, samples []int16, outPath string, opts MP3Opt
 		"-i", "-",
 		"-f", "mp3", "-codec:a", "libmp3lame", "-q:a", fmt.Sprint(opts.Quality),
 	}
-	for tag, v := range map[string]string{
-		"title":   opts.Title,
-		"artist":  opts.Artist,
-		"album":   opts.Album,
-		"TIT3":    opts.Subtitle,
-		"comment": opts.Comment,
-	} {
-		if v != "" {
-			args = append(args, "-metadata", tag+"="+v)
-		}
-	}
+	args = append(args, opts.tagArgs()...)
 	args = append(args, "-id3v2_version", "3", tmpPath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = bytes.NewReader(audio.SamplesToBytes(samples))
@@ -263,17 +270,7 @@ func EncodeMP3Bytes(ctx context.Context, samples []int16, opts MP3Options) ([]by
 		"-i", "-",
 		"-f", "mp3", "-codec:a", "libmp3lame", "-q:a", fmt.Sprint(opts.Quality),
 	}
-	for tag, v := range map[string]string{
-		"title":   opts.Title,
-		"artist":  opts.Artist,
-		"album":   opts.Album,
-		"TIT3":    opts.Subtitle,
-		"comment": opts.Comment,
-	} {
-		if v != "" {
-			args = append(args, "-metadata", tag+"="+v)
-		}
-	}
+	args = append(args, opts.tagArgs()...)
 	args = append(args, "-id3v2_version", "3", "-")
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = bytes.NewReader(audio.SamplesToBytes(samples))
@@ -297,6 +294,32 @@ func DefaultPath(dir, sessionName string, minutes, songs int) string {
 		}
 	}
 	return filepath.Join(dir, fmt.Sprintf("%s-%s-%s.mp3", sessionName, size, stamp))
+}
+
+// CopyMP3 writes the audio of one MP3 into another file under a fresh
+// set of tags. The frames are copied, not decoded and encoded again, so
+// the music is exactly what it was; only the tags change. Written under
+// a temporary name and renamed into place.
+func CopyMP3(ctx context.Context, src, dst string, opts MP3Options) error {
+	tmpPath := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".part")
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-i", src, "-map", "0:a", "-map_metadata", "-1", "-codec", "copy",
+	}
+	args = append(args, opts.tagArgs()...)
+	args = append(args, "-id3v2_version", "3", "-f", "mp3", tmpPath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("ffmpeg mp3 copy: %w: %s", err, bytes.TrimSpace(errBuf.Bytes()))
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // RetitleMP3 rewrites an existing MP3's title tag without re-encoding

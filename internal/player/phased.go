@@ -11,6 +11,7 @@ import (
 	"iar/internal/library"
 	"iar/internal/prompting"
 	"iar/internal/session"
+	"iar/internal/songbook"
 	"iar/internal/trackbuffer"
 )
 
@@ -475,7 +476,8 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		// stops, so a phone watching the listing saw one song as two
 		// or three and downloaded every one of them.
 		track.ID = newTrackID()
-		if err := o.Buffer.PutTrack(ctx, epoch, seq, track); err != nil {
+		hash, err := o.Buffer.PutTrack(ctx, epoch, seq, track)
+		if err != nil {
 			storeFails++
 			o.log.Error("rendered track not stored", "event", "buffer_track_failed", "error", err.Error())
 			if storeFails == 1 {
@@ -484,6 +486,16 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 			return storeFails < 3
 		}
 		o.Buffer.DropPlan(epoch, seq)
+		// The record outlives the file: a copy of this song coming back
+		// from a phone months from now is still recognised and saved
+		// under this name and these words.
+		if err := o.Songbook.Record(songbook.Song{
+			ID: track.ID, Hash: hash, Title: track.Title, Subtitle: track.Subtitle,
+			Prompt: track.Prompt, Lyrics: track.Lyrics, Language: track.Spec.VocalLanguage,
+			Seconds: track.Duration().Seconds(), Created: time.Now(),
+		}); err != nil {
+			o.log.Warn("song not recorded in the songbook", "event", "songbook_write_failed", "error", err.Error())
+		}
 		elapsed := time.Since(start)
 		o.mu.Lock()
 		o.genCount++
