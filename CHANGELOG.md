@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-24
+
 ### Changed
 
 - The phone plays only from its own bank now. The radio's store is
@@ -439,7 +441,8 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.2...v2.0.0
 [1.3.2]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.2.0...v1.3.0
