@@ -49,14 +49,9 @@ func TestRenamingThePlayingSongSticks(t *testing.T) {
 	if st := o.Status(); st.TrackTitle != "Harbour Lights" {
 		t.Fatalf("Status shows %q; every interface polls this", st.TrackTitle)
 	}
-
-	// And the listing the phones read agrees.
-	o.mu.Lock()
-	o.queue = append(o.queue, playing)
-	o.mu.Unlock()
-	_, tracks := o.QueueTracks()
-	if len(tracks) == 0 || tracks[0].Title != "Harbour Lights" {
-		t.Fatalf("queue listing: %+v", tracks)
+	// And the song itself, wherever it is read from next.
+	if playing.Title != "Harbour Lights" {
+		t.Fatalf("the playing song was not renamed: %+v", playing)
 	}
 }
 

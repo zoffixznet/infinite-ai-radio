@@ -142,154 +142,13 @@ func TestResolveBindingAdditive(t *testing.T) {
 	}
 }
 
-// --- fan-out ---
-
-func TestFanoutSlowClientResyncsAndStaysSubscribed(t *testing.T) {
-	s := NewStreamer(testLog())
-	_, fast, cancelFast := s.Subscribe()
-	defer cancelFast()
-	_, slow, cancelSlow := s.Subscribe()
-	defer cancelSlow()
-
-	mkChunk := func(i int) []byte {
-		c := make([]byte, 512)
-		c[0] = 0xFF
-		c[1] = 0xFB
-		c[2] = byte(i >> 8)
-		c[3] = byte(i)
-		return c
-	}
-	idx := func(c []byte) int { return int(c[2])<<8 | int(c[3]) }
-	var fastGot int
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for range fast {
-			fastGot++
-		}
-	}()
-	total := clientChanSlots * 2
-	for i := 0; i < total; i++ {
-		s.broadcast(mkChunk(i))
-	}
-	// The slow client is resynced (oldest chunks dropped), never dropped.
-	if got := s.Listeners(); got != 2 {
-		t.Fatalf("slow client was disconnected: %d listeners", got)
-	}
-	cancelFast()
-	<-done
-	if fastGot < clientChanSlots {
-		t.Fatalf("fast client starved: got %d chunks", fastGot)
-	}
-	first := -1
-	last := -1
-	for {
-		select {
-		case c := <-slow:
-			if first < 0 {
-				first = idx(c)
-			}
-			last = idx(c)
-			continue
-		default:
-		}
-		break
-	}
-	if first <= 0 {
-		t.Fatalf("no old chunks were dropped for the slow client (first=%d)", first)
-	}
-	if last != total-1 {
-		t.Fatalf("slow client not at live edge: last=%d want %d", last, total-1)
-	}
-}
-
-func TestFanoutPreBufferAlignsToFrame(t *testing.T) {
-	s := NewStreamer(testLog())
-	s.broadcast([]byte{0x00, 0x11, 0x22})
-	s.broadcast([]byte{0x33, 0xFF, 0xFB, 0x90, 0x00, 0x01})
-	pre, _, cancel := s.Subscribe()
-	defer cancel()
-	if len(pre) == 0 || pre[0] != 0xFF || pre[1]&0xE0 != 0xE0 {
-		t.Fatalf("pre-buffer not frame aligned: % x", pre)
-	}
-}
-
-func TestFanoutDisconnectCleanup(t *testing.T) {
-	s := NewStreamer(testLog())
-	var cancels []func()
-	for i := 0; i < 5; i++ {
-		_, _, c := s.Subscribe()
-		cancels = append(cancels, c)
-	}
-	if s.Listeners() != 5 {
-		t.Fatalf("listeners = %d", s.Listeners())
-	}
-	for _, c := range cancels {
-		c()
-		c()
-	}
-	if s.Listeners() != 0 {
-		t.Fatalf("listeners after cancel = %d", s.Listeners())
-	}
-}
-
-func TestStreamerWriteNeverBlocks(t *testing.T) {
-	s := NewStreamer(testLog())
-	buf := make([]byte, 19200)
-	doneCh := make(chan struct{})
-	go func() {
-		for i := 0; i < feedSlots*3; i++ {
-			s.Write(buf)
-		}
-		close(doneCh)
-	}()
-	select {
-	case <-doneCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Write blocked without an encoder")
-	}
-}
-
-func TestStreamerEncodesRealMP3(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s := NewStreamer(testLog())
-	if err := s.Start(ctx); err != nil {
-		t.Skipf("ffmpeg unavailable: %v", err)
-	}
-	_, ch, cancelSub := s.Subscribe()
-	defer cancelSub()
-	pcm := make([]byte, 192000)
-	for i := 0; i < len(pcm); i += 4 {
-		pcm[i] = byte(i)
-		pcm[i+1] = byte(i >> 6)
-	}
-	for i := 0; i < len(pcm); i += 19200 {
-		s.Write(pcm[i : i+19200])
-	}
-	var got []byte
-	deadline := time.After(5 * time.Second)
-	for len(got) < 8000 {
-		select {
-		case chunk := <-ch:
-			got = append(got, chunk...)
-		case <-deadline:
-			t.Fatalf("only %d MP3 bytes arrived", len(got))
-		}
-	}
-	if idx := strings.Index(string(got), "\xff"); idx < 0 {
-		t.Fatal("no MP3 sync byte in output")
-	}
-}
-
 // --- test harness ---
 
 // fakeCtl records control calls.
 type fakeCtl struct {
 	mu        sync.Mutex
 	steers    []string
-	skips     int
-	loops     int
+	takes     []string
 	flushes   int
 	renames   []string
 	autoWipes []int
@@ -370,20 +229,6 @@ func (f *fakeCtl) languagesSet() []string {
 		return nil
 	}
 	return f.langAll[len(f.langAll)-1]
-}
-
-func (f *fakeCtl) Skip() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.skips++
-	return "skipping to the next track"
-}
-
-func (f *fakeCtl) ToggleLoop() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.loops++
-	return "looping this track until the loop is turned off"
 }
 
 func (f *fakeCtl) RestartGeneration() string {
@@ -483,10 +328,26 @@ func (f *fakeCtl) Listing() session.Listing {
 // queueTracks are what QueueTracks serves; tests may replace them.
 func (f *fakeCtl) QueueTracks() (int, []player.QueueTrack) {
 	return 7, []player.QueueTrack{
-		{ID: "t-1", Prompt: "dark techno, driving", Title: "Dark Techno", Subtitle: "driving", Seconds: 2, Kind: "queue", Hash: "hash-of-t-1"},
-		{ID: "t-2", Prompt: "dark techno, deeper", Title: "Deep Descent", Subtitle: "deeper", Seconds: 2, Kind: "queue"},
-		{ID: "lib:techno/20260823-000000-0001", Prompt: "banked techno", Title: "Banked Techno", Seconds: 2, Kind: "library"},
+		{ID: "t-0", Prompt: "dark techno, opening", Title: "Opening", Subtitle: "opening", Seconds: 2, Taken: true},
+		{ID: "t-1", Prompt: "dark techno, driving", Title: "Dark Techno", Subtitle: "driving", Seconds: 2, Hash: "hash-of-t-1"},
+		{ID: "t-2", Prompt: "dark techno, deeper", Title: "Deep Descent", Subtitle: "deeper", Seconds: 2},
 	}
+}
+
+func (f *fakeCtl) Song(id string) (player.QueueTrack, string, bool) {
+	_, rows := f.QueueTracks()
+	for _, r := range rows {
+		if r.ID == id {
+			return r, "[Verse]\nthe words of " + id, true
+		}
+	}
+	return player.QueueTrack{}, "", false
+}
+
+func (f *fakeCtl) Take(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.takes = append(f.takes, id)
 }
 
 func (f *fakeCtl) ReportSkipped(seconds float64) {
@@ -518,7 +379,7 @@ func (f *fakeCtl) TrackFile(id string) (string, bool) {
 
 func (f *fakeCtl) TrackData(id string) (*engine.Track, bool) {
 	switch id {
-	case "t-1", "t-2", "lib:techno/20260823-000000-0001":
+	case "t-1", "t-2":
 	default:
 		return nil, false
 	}
@@ -578,7 +439,7 @@ func newHarness(t *testing.T, mailer Mailer) *harness {
 	ctl := &fakeCtl{}
 	cfg := Config{Users: users, Sessions: sessions, Mailer: mailer,
 		SnippetsDir: filepath.Join(dir, "snippets"), Version: testVersion}
-	s, err := newServer(cfg, ctl, NewStreamer(testLog()), testLog())
+	s, err := newServer(cfg, ctl, testLog())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +598,7 @@ func (h *harness) activate(linkPath, password string) *client {
 func TestSetupNoticeUntilFirstAccount(t *testing.T) {
 	h := newHarness(t, nil)
 	c := h.client()
-	for _, path := range []string{"/", "/login", "/state", "/stream.mp3"} {
+	for _, path := range []string{"/", "/login", "/state"} {
 		resp, body := c.get(path)
 		if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "iar remote setup") {
 			t.Fatalf("%s before setup: %d %s", path, resp.StatusCode, body)
@@ -771,7 +632,7 @@ func TestLoginFlowAndCookie(t *testing.T) {
 	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/login?next=/account" {
 		t.Fatalf("anonymous /account = %d -> %s", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	for _, p := range []string{"/state", "/me", "/stream.mp3", "/api/chunks", "/chunks/untagged/x.mp3"} {
+	for _, p := range []string{"/state", "/me", "/api/chunks", "/chunks/untagged/x.mp3"} {
 		resp, _ = c.get(p)
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("anonymous %s = %d", p, resp.StatusCode)
@@ -841,7 +702,7 @@ func TestSessionsSurviveRestart(t *testing.T) {
 	// A new server over the same files (a player restart).
 	users := accounts.NewStore(h.users.Path())
 	sessions := accounts.NewSessions(filepath.Join(h.dir, "remote", "sessions.json"), time.Hour)
-	s2, _ := newServer(Config{Users: users, Sessions: sessions, SnippetsDir: h.dir}, h.ctl, NewStreamer(testLog()), testLog())
+	s2, _ := newServer(Config{Users: users, Sessions: sessions, SnippetsDir: h.dir}, h.ctl, testLog())
 	s2.buildAllowedHosts(nil)
 	srv2 := httptest.NewServer(s2.buildHandler())
 	defer srv2.Close()
@@ -911,8 +772,6 @@ func TestPermissionMatrix(t *testing.T) {
 		"/lyrics-gen":           {"POST", "/lyrics-gen", url.Values{"name": {"smoothbrain"}}},
 		"/language":             {"POST", "/language", url.Values{"name": {"English"}, "on": {"1"}}},
 		"/languages":            {"POST", "/languages", url.Values{"names": {"English, Russian"}}},
-		"/next":                 {"POST", "/next", nil},
-		"/loop":                 {"POST", "/loop", nil},
 		"/buffer/flush":         {"POST", "/buffer/flush", nil},
 		"/new":                  {"POST", "/new", url.Values{"prompt": {"dark techno"}}},
 		"/save":                 {"POST", "/save", url.Values{"tag": {"gym"}, "which": {"t-1"}}},
@@ -940,26 +799,26 @@ func TestPermissionMatrix(t *testing.T) {
 		want expect
 	}{
 		"anonymous": {anon, expect{"/": redir, "/me": auth, "/state": auth, "/api/chunks": auth, "/account": redir,
-			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/next": auth, "/loop": auth, "/buffer/flush": auth, "/new": auth, "/save": auth, "/retitle": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
+			"/steer": auth, "/lyrics-gen": auth, "/language": auth, "/languages": auth, "/buffer/flush": auth, "/new": auth, "/save": auth, "/retitle": auth, "/users": redir, "/users/link": redir, "/users/update": redir,
 			"/api/sessions": auth, "/sessions/save": auth, "/sessions/load": auth, "/sessions/delete": auth, "/sessions/delete-auto": auth}},
 		"listener": {listener, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/buffer/flush": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/buffer/flush": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"steerer": {steerer, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/next": ok, "/loop": ok, "/buffer/flush": ok, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": deny, "/buffer/flush": ok, "/new": deny, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"prompter": {prompter, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/buffer/flush": deny, "/new": ok, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/buffer/flush": deny, "/new": ok, "/save": deny, "/retitle": deny, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": ok, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		"saver": {saver, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/next": deny, "/loop": deny, "/buffer/flush": deny, "/new": deny, "/save": ok, "/retitle": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": deny, "/buffer/flush": deny, "/new": deny, "/save": ok, "/retitle": ok, "/users": deny, "/users/link": deny, "/users/update": deny,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": deny, "/sessions/delete": deny, "/sessions/delete-auto": deny}},
 		// Admin alone does not grant steer/new/save.
 		"admin-only": {adminOnly, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/next": deny, "/loop": deny, "/buffer/flush": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": deny, "/lyrics-gen": deny, "/language": deny, "/languages": ok, "/buffer/flush": deny, "/new": deny, "/save": deny, "/retitle": deny, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": deny, "/sessions/load": deny, "/sessions/delete": ok, "/sessions/delete-auto": ok}},
 		"full admin": {admin, expect{"/": ok, "/me": ok, "/state": ok, "/api/chunks": ok, "/account": ok,
-			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/next": ok, "/loop": ok, "/buffer/flush": ok, "/new": ok, "/save": ok, "/retitle": ok, "/users": ok, "/users/link": see, "/users/update": see,
+			"/steer": ok, "/lyrics-gen": ok, "/language": ok, "/languages": ok, "/buffer/flush": ok, "/new": ok, "/save": ok, "/retitle": ok, "/users": ok, "/users/link": see, "/users/update": see,
 			"/api/sessions": ok, "/sessions/save": ok, "/sessions/load": ok, "/sessions/delete": ok, "/sessions/delete-auto": ok}},
 	}
 	for who, row := range matrix {
@@ -982,8 +841,8 @@ func TestPermissionMatrix(t *testing.T) {
 	// Only the permitted calls reached the controller.
 	h.ctl.mu.Lock()
 	defer h.ctl.mu.Unlock()
-	if len(h.ctl.steers) != 2 || h.ctl.skips != 2 || h.ctl.loops != 2 || h.ctl.flushes != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
-		t.Fatalf("controller calls: steers=%v skips=%d loops=%d flushes=%d news=%v saves=%v", h.ctl.steers, h.ctl.skips, h.ctl.loops, h.ctl.flushes, h.ctl.news, h.ctl.saves)
+	if len(h.ctl.steers) != 2 || h.ctl.flushes != 2 || len(h.ctl.news) != 2 || len(h.ctl.saves) != 2 {
+		t.Fatalf("controller calls: steers=%v flushes=%d news=%v saves=%v", h.ctl.steers, h.ctl.flushes, h.ctl.news, h.ctl.saves)
 	}
 	// The lyric-writer switch rides the steer permission (steerer +
 	// full admin).
@@ -1014,7 +873,7 @@ func TestPermissionMatrix(t *testing.T) {
 	if len(h.ctl.autoWipes) != 2 {
 		t.Fatalf("bulk deletes of automatic sessions: %v", h.ctl.autoWipes)
 	}
-	if len(h.ctl.notes) != 28 {
+	if len(h.ctl.notes) != 24 {
 		t.Fatalf("remote actions must be announced to the local UI: %v", h.ctl.notes)
 	}
 }
@@ -1469,11 +1328,11 @@ func TestPlayerPageContainsControls(t *testing.T) {
 		}
 	}
 
-	// The page script is served publicly and drives the stream.
+	// The page script is served publicly and drives the device's bank.
 	resp, script := admin.get("/app.js")
-	if resp.StatusCode != 200 || !strings.Contains(script, "stream.mp3") || !strings.Contains(script, "mediaSession") {
-		t.Fatalf("app.js = %d (stream/mediaSession present: %v/%v)", resp.StatusCode,
-			strings.Contains(script, "stream.mp3"), strings.Contains(script, "mediaSession"))
+	if resp.StatusCode != 200 || !strings.Contains(script, "/api/queue") || !strings.Contains(script, "mediaSession") {
+		t.Fatalf("app.js = %d (queue/mediaSession present: %v/%v)", resp.StatusCode,
+			strings.Contains(script, "/api/queue"), strings.Contains(script, "mediaSession"))
 	}
 	// Non-admins get no Users link.
 	link := h.invite(admin, "plain@example.com", nil)
@@ -1534,23 +1393,7 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 			Interpreted string `json:"interpreted"`
 			Time        string `json:"time"`
 		} `json:"tweaks"`
-		Track *struct {
-			ID        string  `json:"id"`
-			Prompt    string  `json:"prompt"`
-			DurationS float64 `json:"duration_s"`
-			Title     string  `json:"title"`
-			Subtitle  string  `json:"subtitle"`
-			Number    int     `json:"number"`
-			Saved     bool    `json:"saved"`
-			Lang      string  `json:"lang"`
-			Lyrics    string  `json:"lyrics"`
-		} `json:"track"`
-		Switching bool `json:"switching"`
-		Looping   bool `json:"looping"`
-		Prev      *struct {
-			ID    string `json:"id"`
-			Saved bool   `json:"saved"`
-		} `json:"prev"`
+		Switching        bool     `json:"switching"`
 		SavedIDs         []string `json:"saved_ids"`
 		LyricsGenerator  string   `json:"lyrics_generator"`
 		LyricsGenerators []struct {
@@ -1564,29 +1407,12 @@ func TestStateCarriesSharedSteeringContext(t *testing.T) {
 	if st.Epoch != 7 || st.BasePrompt != "dark techno" || !st.Vocals || st.SessionDesc == "" {
 		t.Fatalf("steering context wrong: %+v", st)
 	}
-	// The page needs all three to answer "did my language change land":
-	// what the track is sung in, that a change is still generating, and
-	// that what is playing is a replay rather than something new.
-	if st.Track == nil || st.Track.Lang != "Bisaya (Cebuano)" {
-		t.Fatalf("track language missing: %+v", st.Track)
-	}
-	if st.Track.Lyrics != "[Verse]\nnaay usa ka gabii" {
-		t.Fatalf("track lyrics missing: %q", st.Track.Lyrics)
-	}
-	if !st.Switching || !st.Looping {
-		t.Fatalf("switching/looping missing: switching=%v looping=%v", st.Switching, st.Looping)
+	// The page needs to know that a change is still generating.
+	if !st.Switching {
+		t.Fatal("switching missing")
 	}
 	if len(st.Tweaks) != 2 || st.Tweaks[0].Raw != "less guitars" || st.Tweaks[1].Interpreted != "faster tempo" || st.Tweaks[0].Time == "" {
 		t.Fatalf("tweaks wrong: %+v", st.Tweaks)
-	}
-	if st.Track == nil || st.Track.ID != "t-1" || st.Track.Prompt != "dark techno, driving" || st.Track.DurationS != 150 || st.Track.Saved {
-		t.Fatalf("track wrong: %+v", st.Track)
-	}
-	if st.Track.Title != "Dark Techno" || st.Track.Subtitle != "driving" || st.Track.Number != 3 {
-		t.Fatalf("track display names wrong: %+v", st.Track)
-	}
-	if st.Prev == nil || st.Prev.ID != "t-0" || !st.Prev.Saved {
-		t.Fatalf("prev wrong: %+v", st.Prev)
 	}
 	if len(st.SavedIDs) != 1 || st.SavedIDs[0] != "t-0" {
 		t.Fatalf("saved_ids wrong: %+v", st.SavedIDs)
@@ -1740,7 +1566,7 @@ func TestQueueListingAndTrackServing(t *testing.T) {
 			Title     string  `json:"title"`
 			Subtitle  string  `json:"subtitle"`
 			DurationS float64 `json:"duration_s"`
-			Kind      string  `json:"kind"`
+			Taken     bool    `json:"taken"`
 			URL       string  `json:"url"`
 		} `json:"tracks"`
 	}
@@ -1750,12 +1576,31 @@ func TestQueueListingAndTrackServing(t *testing.T) {
 	if q.Epoch != 7 || len(q.Tracks) != 3 {
 		t.Fatalf("queue = %+v", q)
 	}
-	if q.Tracks[0].Kind != "queue" || q.Tracks[2].Kind != "library" || q.Tracks[0].URL == "" {
+	// The store in the order it was made: the taken song first.
+	if !q.Tracks[0].Taken || q.Tracks[1].Taken || q.Tracks[1].URL == "" {
 		t.Fatalf("queue rows = %+v", q.Tracks)
 	}
-	if q.Tracks[0].Title != "Dark Techno" || q.Tracks[0].Subtitle != "driving" || q.Tracks[2].Title != "Banked Techno" {
+	if q.Tracks[1].Title != "Dark Techno" || q.Tracks[1].Subtitle != "driving" || q.Tracks[0].Title != "Opening" {
 		t.Fatalf("queue rows lack display names: %+v", q.Tracks)
 	}
+	// A song's own route carries its words, which the listing leaves
+	// out to stay small.
+	resp, body = admin.get("/queue/t-1.json")
+	var song struct {
+		ID     string `json:"id"`
+		Lyrics string `json:"lyrics"`
+		Hash   string `json:"hash"`
+	}
+	if err := json.Unmarshal([]byte(body), &song); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("/queue/t-1.json = %d %s (%v)", resp.StatusCode, body, err)
+	}
+	if song.ID != "t-1" || !strings.Contains(song.Lyrics, "the words of t-1") || song.Hash != "hash-of-t-1" {
+		t.Fatalf("song json = %+v", song)
+	}
+	if resp, _ = admin.get("/queue/gone.json"); resp.StatusCode != 404 {
+		t.Fatalf("unknown song json = %d", resp.StatusCode)
+	}
+	q.Tracks = q.Tracks[1:]
 
 	// A queued track serves as a valid MP3.
 	resp, body = admin.get(q.Tracks[0].URL)
@@ -1789,39 +1634,6 @@ func TestQueueListingAndTrackServing(t *testing.T) {
 		t.Fatalf("malformed name = %d", resp.StatusCode)
 	}
 
-	// Library-kind ids contain a slash ("lib:<vibe>/<stamp>"): the
-	// listing must hand out the escaped form, and only that form is
-	// served. Dead-zone prefetching depends on this exact route.
-	lib := q.Tracks[2]
-	if lib.Kind != "library" || lib.ID != "lib:techno/20260823-000000-0001" {
-		t.Fatalf("library row = %+v", lib)
-	}
-	if want := "/queue/" + url.PathEscape(lib.ID) + ".mp3"; lib.URL != want || strings.Contains(lib.URL, "/20260823") {
-		t.Fatalf("library url not escaped: %q (want %q)", lib.URL, want)
-	}
-	resp, body = admin.get(lib.URL)
-	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "audio/mpeg" {
-		t.Fatalf("library track fetch = %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
-	}
-	if len(body) < 4000 || !strings.Contains(body[:4096], "\xff") {
-		t.Fatalf("library track bytes do not look like MP3 (%d bytes)", len(body))
-	}
-	req, _ = http.NewRequest("GET", admin.h.srv.URL+lib.URL, nil)
-	req.Header.Set("Range", "bytes=500-999")
-	rangeResp, err = admin.http.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rangeBody, _ = io.ReadAll(rangeResp.Body)
-	rangeResp.Body.Close()
-	if rangeResp.StatusCode != http.StatusPartialContent || len(rangeBody) != 500 {
-		t.Fatalf("library range = %d, %d bytes", rangeResp.StatusCode, len(rangeBody))
-	}
-	// The raw-slash form is a different path entirely and must not
-	// resolve to the track.
-	if resp, _ = admin.get("/queue/" + lib.ID + ".mp3"); resp.StatusCode != 404 {
-		t.Fatalf("raw-slash library path = %d, want 404", resp.StatusCode)
-	}
 }
 
 func TestMP3CacheSingleFlight(t *testing.T) {

@@ -9,26 +9,21 @@ import (
 	"iar/internal/trackbuffer"
 )
 
-// QueueTrack describes one track a remote client may prefetch.
+// QueueTrack describes one song in the store, as a client sees it.
 type QueueTrack struct {
-	// ID resolves the track's audio via TrackData.
+	// ID resolves the song's audio via TrackData and TrackFile.
 	ID string
-	// Prompt describes the track.
+	// Prompt describes the song.
 	Prompt string
 	// Title and Subtitle are the short display names.
 	Title    string
 	Subtitle string
-	// Seconds is the track's play time.
+	// Seconds is the song's play time.
 	Seconds float64
-	// Lyrics is what the track sings, empty for instrumentals. A client
-	// playing its own downloaded copy has no other way to show the
-	// words in step with what it is hearing.
-	Lyrics string
-	// Kind is "queue" for the songs ahead - this machine's prefetch and
-	// the songs in the store nobody has taken - and "library" for the
-	// taken songs the store keeps as spares.
-	Kind string
-	// Hash is the SHA-256 of the track's MP3 as served, when the radio
+	// Taken reports that some player has taken the song already: it is
+	// kept for the players that have not caught up.
+	Taken bool
+	// Hash is the SHA-256 of the song's MP3 as served, when the radio
 	// recorded one at render; a client sends it back to save the song
 	// from its own copy.
 	Hash string
@@ -38,84 +33,103 @@ type QueueTrack struct {
 // buffer rather than the in-memory queue.
 const bufTrackPrefix = "buf:"
 
-// maxSpares bounds how many kept songs pad the queue listing.
-const maxSpares = 6
+// storeRow is the listing row for one song in the store.
+func storeRow(e trackbuffer.Entry) QueueTrack {
+	// The name was written with the song's words and stored beside
+	// its audio; only a song the engine worded itself needs the
+	// deterministic stand-in.
+	title, subtitle := e.Title, e.Subtitle
+	if title == "" {
+		title, subtitle = prompting.TrackTitle(e.Prompt)
+	}
+	id := e.ID
+	if id == "" {
+		// Rendered before songs carried their own id.
+		id = bufTrackPrefix + e.Base
+	}
+	return QueueTrack{
+		ID: id, Prompt: e.Prompt, Title: title, Subtitle: subtitle,
+		Seconds: e.Seconds, Taken: e.Taken, Hash: e.Hash,
+	}
+}
 
-// QueueTracks returns the steering epoch and the tracks a remote client
-// may prefetch: this machine's in-memory prefetch first, then the songs
-// in the store nobody has taken, then a few of the taken songs the
-// store keeps as spares. Reading the queue never touches the audio
-// path.
+// QueueTracks returns the steering epoch and every song in the store,
+// in the order they were made: the taken ones first, since they are
+// older, then the ones nobody has taken. A client takes what it lacks,
+// and a client filling up meets the taken songs first. Reading the
+// listing never touches the audio path.
 func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	o.mu.Lock()
 	epoch := o.epoch
-	out := make([]QueueTrack, 0, len(o.queue)+maxSpares)
-	for _, t := range o.queue {
-		out = append(out, QueueTrack{
-			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
-			Seconds: t.Duration().Seconds(), Kind: "queue", Lyrics: trackLyrics(t),
-		})
-	}
 	buffered := o.Buffer != nil && o.cfg.Buffer.Phased
 	o.mu.Unlock()
-	if buffered {
-		// The deep queue lives on disk. Remote listeners prefetch the
-		// songs nobody has taken exactly like the in-memory queue; the
-		// feeder consumes them in the same order.
-		row := func(e trackbuffer.Entry, kind string) QueueTrack {
-			// The name was written with the song's words and stored
-			// beside its audio; only a song the engine worded itself
-			// needs the deterministic stand-in.
-			title, subtitle := e.Title, e.Subtitle
-			if title == "" {
-				title, subtitle = prompting.TrackTitle(e.Prompt)
-			}
-			lyr := e.Lyrics
-			if lyr == engine.InstrumentalLyrics {
-				lyr = ""
-			}
-			id := e.ID
-			if id == "" {
-				// Rendered before songs carried their own id.
-				id = bufTrackPrefix + e.Base
-			}
-			return QueueTrack{
-				ID: id, Prompt: e.Prompt, Title: title, Subtitle: subtitle,
-				Seconds: e.Seconds, Kind: kind, Lyrics: lyr,
-			}
-		}
-		var kept []trackbuffer.Entry
-		for _, e := range o.Buffer.List(epoch) {
-			if e.Taken {
-				kept = append(kept, e)
-				continue
-			}
-			out = append(out, row(e, "queue"))
-		}
-		// Taken songs stay in the store for players that have not
-		// caught up. To a phone they are songs the radio has moved past,
-		// worth holding as spares. The newest few, the ones in the
-		// in-memory queue excepted - those are listed above.
-		queued := make(map[string]bool, len(out))
-		for _, r := range out {
-			queued[r.ID] = true
-		}
-		spares := 0
-		for i := len(kept) - 1; i >= 0 && spares < maxSpares; i-- {
-			r := row(kept[i], "library")
-			if queued[r.ID] {
-				continue
-			}
-			out = append(out, r)
-			spares++
-		}
+	if !buffered {
+		return epoch, nil
 	}
-	for i := range out {
-		if s, ok := o.Songbook.ByID(out[i].ID); ok {
-			out[i].Hash = s.Hash
-		}
+	entries := o.Buffer.List(epoch)
+	out := make([]QueueTrack, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, storeRow(e))
 	}
 	return epoch, out
+}
+
+// Song describes one song a client holds or is offered, with its
+// lyrics: from the store while the song is there, from the songbook
+// once it has gone. ok is false for a song the radio never made.
+func (o *Orchestrator) Song(id string) (row QueueTrack, lyrics string, ok bool) {
+	if base, found := o.bufferedBase(id); found {
+		o.mu.Lock()
+		epoch := o.epoch
+		o.mu.Unlock()
+		for _, e := range o.Buffer.List(epoch) {
+			if e.Base == base {
+				lyr := e.Lyrics
+				if lyr == engine.InstrumentalLyrics {
+					lyr = ""
+				}
+				return storeRow(e), lyr, true
+			}
+		}
+	}
+	rec, known := o.Songbook.ByID(id)
+	if !known || rec.Hash == "" {
+		return QueueTrack{}, "", false
+	}
+	title, subtitle := rec.Title, rec.Subtitle
+	if title == "" {
+		title, subtitle = prompting.TrackTitle(rec.Prompt)
+	}
+	lyr := rec.Lyrics
+	if lyr == engine.InstrumentalLyrics {
+		lyr = ""
+	}
+	return QueueTrack{
+		ID: rec.ID, Prompt: rec.Prompt, Title: title, Subtitle: subtitle,
+		Seconds: rec.Seconds, Taken: true, Hash: rec.Hash,
+	}, lyr, true
+}
+
+// Take marks a song as taken by a client that has downloaded it: the
+// level drops, and the generator may have a rung due. Taking a song
+// nobody holds any more is nothing.
+func (o *Orchestrator) Take(id string) {
+	if o.Buffer == nil {
+		return
+	}
+	base, ok := o.bufferedBase(id)
+	if !ok {
+		return
+	}
+	o.mu.Lock()
+	epoch := o.epoch
+	o.mu.Unlock()
+	if o.Buffer.Take(epoch, base) {
+		if dropped := o.Buffer.Trim(epoch, o.cfg.Buffer.Songs); dropped > 0 {
+			o.log.Info("oldest taken songs trimmed from the store", "event", "buffer_trimmed", "songs", dropped)
+		}
+		o.kickGen()
+	}
 }
 
 // TrackFile returns the MP3 of a song in the store, to be served

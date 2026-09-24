@@ -54,6 +54,13 @@ func TestAStoredSongIsServedByteForByte(t *testing.T) {
 	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("Cache-Control = %q", cc)
 	}
+	// Downloading is taking.
+	h.ctl.mu.Lock()
+	takes := append([]string(nil), h.ctl.takes...)
+	h.ctl.mu.Unlock()
+	if len(takes) != 1 || takes[0] != "t-1" {
+		t.Fatalf("takes after a download = %v, want t-1", takes)
+	}
 
 	req, _ := http.NewRequest("GET", h.srv.URL+"/queue/t-1.mp3", nil)
 	req.Header.Set("Range", "bytes=10-19")
@@ -91,7 +98,13 @@ func TestSavingFromTheDevicesCopy(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &q); err != nil {
 		t.Fatal(err)
 	}
-	if len(q.Tracks) == 0 || q.Tracks[0].ID != "t-1" || q.Tracks[0].Hash != "hash-of-t-1" {
+	hashed := false
+	for _, row := range q.Tracks {
+		if row.ID == "t-1" && row.Hash == "hash-of-t-1" {
+			hashed = true
+		}
+	}
+	if !hashed {
 		t.Fatalf("listing rows = %+v, want t-1 with its hash", q.Tracks)
 	}
 

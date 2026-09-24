@@ -60,17 +60,21 @@ func renderSong(t *testing.T, o *Orchestrator, seq int, id string) string {
 	return hash
 }
 
-// listing returns the phone's view of the radio as id -> kind, failing
-// the test if any song is offered under two rows.
+// listing returns the phone's view of the radio as id -> "taken" or
+// "free", failing the test if any song is offered under two rows.
 func listing(t *testing.T, o *Orchestrator) map[string]string {
 	t.Helper()
 	_, rows := o.QueueTracks()
 	seen := map[string]string{}
 	for _, r := range rows {
-		if prev, dup := seen[r.ID]; dup {
-			t.Fatalf("%s is listed twice (as %s and as %s)", r.ID, prev, r.Kind)
+		kind := "free"
+		if r.Taken {
+			kind = "taken"
 		}
-		seen[r.ID] = r.Kind
+		if prev, dup := seen[r.ID]; dup {
+			t.Fatalf("%s is listed twice (as %s and as %s)", r.ID, prev, kind)
+		}
+		seen[r.ID] = kind
 	}
 	return seen
 }
@@ -88,8 +92,8 @@ func TestASongIsListedOnceUnderOneIDFromTheStoreToPlayed(t *testing.T) {
 
 	inStore := listing(t, o)
 	for _, id := range ids {
-		if inStore[id] == "" {
-			t.Fatalf("%s is not listed under its own id while it waits in the store: %v", id, inStore)
+		if inStore[id] != "free" {
+			t.Fatalf("%s is not listed as free for the taking while it waits in the store: %v", id, inStore)
 		}
 	}
 
@@ -117,23 +121,26 @@ func TestASongIsListedOnceUnderOneIDFromTheStoreToPlayed(t *testing.T) {
 	if len(fed) != len(ids) {
 		t.Fatalf("two songs are offered as %d rows: %v", len(fed), fed)
 	}
-	for id := range fed {
+	for id, kind := range fed {
 		if strings.HasPrefix(id, bufTrackPrefix) {
 			t.Fatalf("a song went out under a name that belongs to one stop of its life: %v", fed)
+		}
+		if kind != "taken" {
+			t.Fatalf("%s was fed but is listed as %s: %v", id, kind, fed)
 		}
 	}
 
 	// The speakers play them, the way the mixer does: out of the queue.
-	// Taken, they are now offered as spares - under the ids they had all
-	// along, which a phone that downloaded them already holds.
+	// Taken, they are still listed - under the ids they had all along,
+	// which a phone that downloaded them already holds.
 	o.mu.Lock()
 	o.prevTrack, o.curTrack = o.queue[0], o.queue[1]
 	o.queue = nil
 	o.mu.Unlock()
 	played := listing(t, o)
 	for _, id := range ids {
-		if played[id] != "library" {
-			t.Fatalf("%s, played and kept, is not offered as a spare under its own id: %v", id, played)
+		if played[id] != "taken" {
+			t.Fatalf("%s, played and kept, is not listed under its own id: %v", id, played)
 		}
 	}
 }
@@ -152,8 +159,8 @@ func TestRenamingATakenSongAfterARestart(t *testing.T) {
 	again := New(o.cfg, enginetest.NewMock(), prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	again.Buffer = trackbuffer.New(o.Buffer.Dir(), 9, testLogger())
-	if rows := listing(t, again); rows[id] != "library" {
-		t.Fatalf("the taken song is not offered as a spare under its own id: %v", rows)
+	if rows := listing(t, again); rows[id] != "taken" {
+		t.Fatalf("the taken song is not listed under its own id: %v", rows)
 	}
 	if ack := again.Retitle(id, "Harbour Lights"); !strings.Contains(ack, "Harbour Lights") {
 		t.Fatalf("rename ack = %q", ack)

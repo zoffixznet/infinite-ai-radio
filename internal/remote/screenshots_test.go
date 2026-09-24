@@ -172,8 +172,7 @@ func TestScreenshots(t *testing.T) {
 	// the picture should show: the device's own bank of songs, the
 	// Flush chip that empties it, and a seek bar that works because
 	// the song is a whole file sitting on the phone.
-	w.exec(`document.getElementById('buffered').click();
-		var sel = document.getElementById('buflevel');
+	w.exec(`var sel = document.getElementById('buflevel');
 		sel.value = 'steady';
 		sel.dispatchEvent(new Event('change'));
 		return true;`, nil)

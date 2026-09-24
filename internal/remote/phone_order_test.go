@@ -55,15 +55,13 @@ func jsFunction(t *testing.T, src, name string) string {
 	return ""
 }
 
-// The radio lists the stream's own songs first - the play queue, then the
-// songs waiting on disk - and spares from its library after them. A
-// banked song goes out under its own id, so the song a phone is playing
-// can turn up among the spares: the radio's playing and previous songs
-// land there the moment the speakers start them. A phone that read its
-// place off that row decided it was at the end of the stream, stopped
-// fetching fresh songs, and walked backwards through ones the radio had
-// already played. It must read its place off the stream's order alone.
-func TestPhoneKeepsItsPlaceInTheStreamNotAmongTheSpares(t *testing.T) {
+// The radio lists its whole store in the order the songs were made,
+// the ones other listeners have already taken first. A phone reads its
+// place off that order: it plays the songs it holds in listing order,
+// downloads the first one after the playing song that it lacks, and
+// starts a fresh bank from the top - the oldest kept song - so it
+// meets what the others have heard before it takes anything new.
+func TestPhoneKeepsItsPlaceInTheStore(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not installed")
@@ -74,18 +72,13 @@ func TestPhoneKeepsItsPlaceInTheStreamNotAmongTheSpares(t *testing.T) {
 	}
 	src := string(raw)
 	var fns []string
-	for _, name := range []string{"pfTossed", "pfPlayable", "pfOrdered", "pfOrderedId",
-		"pfListedPlaying", "pfAhead", "pfSpares", "pfNextDownload", "pfNextId"} {
+	for _, name := range []string{"pfTossed", "pfPlayable", "pfListed", "pfAhead", "pfNextDownload", "pfNextId"} {
 		fns = append(fns, jsFunction(t, src, name))
 	}
 	harness := `
 var pf;
-// rows("C D | B A"): stream rows before the bar, spares after it.
 function rows(spec) {
-  var parts = spec.split("|"), out = [];
-  (parts[0] || "").trim().split(/\s+/).filter(Boolean).forEach(function (id) { out.push({id: id, kind: "queue"}); });
-  (parts[1] || "").trim().split(/\s+/).filter(Boolean).forEach(function (id) { out.push({id: id, kind: "library"}); });
-  return out;
+  return spec.trim().split(/\s+/).filter(Boolean).map(function (id) { return {id: id}; });
 }
 function set(list) { var o = {}; list.split(/\s+/).filter(Boolean).forEach(function (id) { o[id] = {title: ""}; }); return o; }
 function state(r, have, playing, seen) {
@@ -95,23 +88,23 @@ function state(r, have, playing, seen) {
 function id(row) { return row ? row.id : null; }
 ` + strings.Join(fns, "\n") + `
 var out = {};
-// Ahead of the speakers, holding B C D and an A it took earlier; the
-// radio has just started B, so B and A are now spares at the end.
-state("C D E F | B A Z Y", "B C D A", "B", "B");
-out.ahead = {listed: pfListedPlaying(), ahead: pfAhead(), next: pfNextId("B"),
-  fetch3: id(pfNextDownload(3, false)), fetch2: id(pfNextDownload(2, false))};
-// Steered while playing P: the new sound is the stream, P a spare.
-state("N2 N3 | N1 M2 M1 P Q", "P", "P", "P");
-out.steer = {fetch: id(pfNextDownload(3, false))};
+// In step with the store: playing B, holding C, D free to take.
+state("A B C D E", "B C", "B", "A B");
+out.inStep = {listed: pfListed("B"), next: pfNextId("B"), ahead: pfAhead(),
+  fetch2: id(pfNextDownload(2, false)), fetch1: id(pfNextDownload(1, false))};
+// A fresh bank: nothing playing, nothing held; it starts from the top.
+state("A B C D", "", null, "");
+out.fresh = {fetch: id(pfNextDownload(3, false))};
+// The radio let the playing song go: every listed song is ahead.
+state("C D E", "B C D", "B", "B");
+out.letGo = {listed: pfListed("B"), ahead: pfAhead(), next: pfNextId("B"), fetch3: id(pfNextDownload(3, false))};
 // Off the network, cycling its own store: no listing to read a place off.
 state("", "X Y Z", "Y", "X Y Z");
 out.offline = {next: pfNextId("Y")};
-// The ordinary case, in step with the stream.
-state("B C D | Q", "B C", "B", "B");
-out.inStep = {next: pfNextId("B"), ahead: pfAhead(), fetch2: id(pfNextDownload(2, false)), fetch1: id(pfNextDownload(1, false))};
-// Economical level with a spare already held: spares only pad up to depth.
-state("B | X Y", "B X", "B", "B");
-out.eco = {fetch1: id(pfNextDownload(1, false)), fetch2: id(pfNextDownload(2, false))};
+// A skipped song is never fetched again.
+state("A B C", "A", "A", "A");
+pf.tossed["B"] = {title: ""};
+out.tossed = {fetch: id(pfNextDownload(3, false))};
 console.log(JSON.stringify(out));
 `
 	cmd := exec.Command(node, "-e", harness)
@@ -120,25 +113,22 @@ console.log(JSON.stringify(out));
 		t.Fatalf("node: %v\n%s", err, outRaw)
 	}
 	var got struct {
-		Ahead struct {
+		InStep struct {
 			Listed bool    `json:"listed"`
-			Ahead  int     `json:"ahead"`
-			Next   *string `json:"next"`
-			Fetch3 *string `json:"fetch3"`
-			Fetch2 *string `json:"fetch2"`
-		} `json:"ahead"`
-		Steer   struct{ Fetch *string } `json:"steer"`
-		Offline struct{ Next *string }  `json:"offline"`
-		InStep  struct {
 			Next   *string `json:"next"`
 			Ahead  int     `json:"ahead"`
 			Fetch2 *string `json:"fetch2"`
 			Fetch1 *string `json:"fetch1"`
 		} `json:"inStep"`
-		Eco struct {
-			Fetch1 *string `json:"fetch1"`
-			Fetch2 *string `json:"fetch2"`
-		} `json:"eco"`
+		Fresh struct{ Fetch *string } `json:"fresh"`
+		LetGo struct {
+			Listed bool    `json:"listed"`
+			Ahead  int     `json:"ahead"`
+			Next   *string `json:"next"`
+			Fetch3 *string `json:"fetch3"`
+		} `json:"letGo"`
+		Offline struct{ Next *string }  `json:"offline"`
+		Tossed  struct{ Fetch *string } `json:"tossed"`
 	}
 	if err := json.Unmarshal(outRaw, &got); err != nil {
 		t.Fatalf("harness output %q: %v", outRaw, err)
@@ -149,37 +139,24 @@ console.log(JSON.stringify(out));
 		}
 		return *p
 	}
-
-	if got.Ahead.Listed {
-		t.Error("the playing song, listed only as a spare, was read as a place in the stream")
-	}
-	if n := str(got.Ahead.Next); n != "C" {
-		t.Errorf("after B the phone plays %s, want C - the head of the stream, not a song the radio played", n)
-	}
-	if got.Ahead.Ahead != 2 {
-		t.Errorf("ahead = %d, want 2 (C and D): spares it has already played are not ahead of it", got.Ahead.Ahead)
-	}
-	if f := str(got.Ahead.Fetch3); f != "E" {
-		t.Errorf("with room for three it fetches %s, want E - a fresh song, not an old spare", f)
-	}
-	if f := str(got.Ahead.Fetch2); f != "<none>" {
-		t.Errorf("with two fresh songs held and room for two it fetches %s, want nothing", f)
-	}
-	if f := str(got.Steer.Fetch); f != "N2" {
-		t.Errorf("after a steer it fetches %s, want N2 - the new sound, not the old one", f)
-	}
-	if n := str(got.Offline.Next); n != "Z" {
-		t.Errorf("offline it goes from Y to %s, want Z: the store still cycles in its own order", n)
-	}
-	if n := str(got.InStep.Next); n != "C" || got.InStep.Ahead != 1 {
-		t.Errorf("in step: next %s ahead %d, want C and 1", n, got.InStep.Ahead)
+	if !got.InStep.Listed || str(got.InStep.Next) != "C" || got.InStep.Ahead != 1 {
+		t.Errorf("in step: listed %v, next %s, ahead %d; want listed, C and 1", got.InStep.Listed, str(got.InStep.Next), got.InStep.Ahead)
 	}
 	if str(got.InStep.Fetch2) != "D" || str(got.InStep.Fetch1) != "<none>" {
 		t.Errorf("in step: fetch at depth 2 = %s, at depth 1 = %s; want D and nothing",
 			str(got.InStep.Fetch2), str(got.InStep.Fetch1))
 	}
-	if str(got.Eco.Fetch1) != "<none>" || str(got.Eco.Fetch2) != "Y" {
-		t.Errorf("spares: fetch at depth 1 = %s, at depth 2 = %s; want nothing and Y",
-			str(got.Eco.Fetch1), str(got.Eco.Fetch2))
+	if f := str(got.Fresh.Fetch); f != "A" {
+		t.Errorf("a fresh bank fetches %s first, want A - the oldest song the radio keeps", f)
+	}
+	if got.LetGo.Listed || got.LetGo.Ahead != 2 || str(got.LetGo.Next) != "C" || str(got.LetGo.Fetch3) != "E" {
+		t.Errorf("after the radio let the playing song go: listed %v, ahead %d, next %s, fetch %s; want unlisted, 2, C, E",
+			got.LetGo.Listed, got.LetGo.Ahead, str(got.LetGo.Next), str(got.LetGo.Fetch3))
+	}
+	if n := str(got.Offline.Next); n != "Z" {
+		t.Errorf("offline it goes from Y to %s, want Z: the store still cycles in its own order", n)
+	}
+	if f := str(got.Tossed.Fetch); f != "C" {
+		t.Errorf("with B skipped it fetches %s, want C", f)
 	}
 }

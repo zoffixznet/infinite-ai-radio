@@ -8,6 +8,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The phone plays only from its own bank now. The radio's store is
+  listed to it whole, in the order the songs were made and with the
+  ones other listeners have taken marked as such; the phone takes the
+  songs it lacks in that order - a fresh phone starts with what the
+  others have already heard - and taking a song is what tells the
+  radio to make more. Each song's words come from the song's own route
+  rather than riding on every listing. Next reports the music skipped
+  to the radio, which brings its next batch forward, and the list of
+  skipped songs is tied to the sound rather than to a clock: a steer
+  empties it. A skipped-past song the radio has let go is saved from
+  the phone's own copy, which the radio checks against the record it
+  kept before keeping it.
 - `play` and `stop` switch this machine's own player on and off:
   stopped, nothing comes out of its speakers and it takes nothing from
   the store, which goes on filling for the phones as before; `play`
@@ -53,6 +65,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- The live stream and the phone's direct mode: `/stream.mp3`, the
+  "Buffered playback" switch (there is nothing else now), the
+  reconnecting logic that went with the stream, and the radio-wide
+  Next and Loop the phone drove in direct mode (`/next`, `/loop`).
+  Next and Loop are the phone's own, as they were in buffered mode;
+  the terminal keeps `skip` and `loop` for the machine's own player.
+  `/state` no longer describes what the machine is playing.
 - Standby: the power button and banner on the phone, the `standby`
   command and its hold across restarts. A full store is the off
   switch now - the engine sleeps on its own once nobody is taking

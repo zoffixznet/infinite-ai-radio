@@ -132,18 +132,11 @@ func runPlay(pf playFlags) error {
 		fmt.Fprintf(os.Stderr, "iar: moved %d saved track(s) into %s\n", moved, filepath.Join(orch.SnippetsDir, snippets.Untagged))
 	}
 
-	// The phone remote taps the mastered PCM, so it must be wired
-	// before the stream starts.
-	var streamer *remote.Streamer
-	if pf.remote || a.cfg.Remote.Enabled {
-		streamer = remote.NewStreamer(a.log)
-		orch.Tap = streamer
-	}
 	orch.Start(ctx)
 	defer orch.Close()
 
-	if streamer != nil {
-		rs, err := remote.Start(ctx, a.remoteConfig(orch.SnippetsDir), orch, streamer, a.log)
+	if pf.remote || a.cfg.Remote.Enabled {
+		rs, err := remote.Start(ctx, a.remoteConfig(orch.SnippetsDir), orch, a.log)
 		switch {
 		case err != nil:
 			fmt.Fprintln(os.Stderr, "iar: remote could not start:", err)

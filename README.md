@@ -2,7 +2,7 @@
 
 Endless AI-generated music, made on your own machine. Start it and music
 plays. Type plain English while it plays - "calmer", "add vocals about
-winning", "switch to piano" - and the stream follows. No cloud, no API
+winning", "switch to piano" - and the music follows. No cloud, no API
 keys, no subscriptions, nothing leaves the machine.
 
 It is one Go binary that manages everything else: it installs the music
@@ -11,7 +11,7 @@ crossfades, and keeps audio flowing when the generator hiccups. There is
 a terminal interface and a phone-first web remote, so the machine can
 sit in a cupboard and the radio can live in your pocket.
 
-[![the live stream](assets/thumbs/remote-player.png)](assets/remote-player.png) [![the saved songs player](assets/thumbs/remote-saved.png)](assets/remote-saved.png) [![the words of the playing song](assets/thumbs/remote-lyrics.png)](assets/remote-lyrics.png)
+[![the radio playing on the phone](assets/thumbs/remote-player.png)](assets/remote-player.png) [![the saved songs player](assets/thumbs/remote-saved.png)](assets/remote-saved.png) [![the words of the playing song](assets/thumbs/remote-lyrics.png)](assets/remote-lyrics.png)
 
 [![settings](assets/thumbs/remote-settings.png)](assets/remote-settings.png) [![listener accounts](assets/thumbs/remote-users.png)](assets/remote-users.png) [![the login page](assets/thumbs/remote-login.png)](assets/remote-login.png)
 
@@ -405,8 +405,8 @@ tags become folders (`snippets/gym/`). Saving never interrupts playback,
 and saving the same track twice is a friendly no-op.
 
 `mp3 20` renders a mix of the current vibe in the background,
-generating only while the playback buffer is full, so the stream never
-stutters. Exports are made of whole songs, never cut mid-song - a
+generating only while no batch of the radio's own is due, so the music
+never stutters. Exports are made of whole songs, never cut mid-song - a
 vocal song runs as long as its words call for, an instrumental for
 `track_seconds` - so a 20-minute ask may run up to one song longer. The same thing works
 headless, where `--songs` renders an exact count instead and
@@ -426,9 +426,10 @@ minutes or 40 songs per run.
 
 ## Listening from your phone
 
-The web remote is a phone-first page with the live stream, the
-now-playing song and its words, the shared steering context, a station
-picker, save buttons, and a player for the songs you have saved.
+The web remote is a phone-first page that plays the radio's songs from
+the phone's own bank, with the playing song and its words, the shared
+steering context, a station picker, save buttons, and a player for the
+songs you have saved.
 Everything needs a login, and the first account is created in the
 terminal:
 
@@ -438,11 +439,9 @@ terminal:
 ```
 
 With `--remote` the machine is the station, not the listening room -
-type `play` in its terminal to also hear it locally. The player
-prints the URL to open; the stream is MP3 at ~192 kbps. Like everything
-else it sits behind the login, so a non-browser player needs the session
-cookie passed along to read `/stream.mp3`. The page can be installed as
-an app from the browser menu ("Add to Home screen").
+type `play` in its terminal to also hear it locally. The player prints
+the URL to open. Everything sits behind the login. The page can be
+installed as an app from the browser menu ("Add to Home screen").
 
 For safety the remote binds only to localhost and, when the machine has
 one, its Tailscale address - never your LAN or the internet unless you
@@ -480,14 +479,22 @@ Security, plainly:
 
 ### On the phone
 
-The page defaults to **buffered playback**: it downloads whole upcoming
-tracks and plays them back-to-back, so the music keeps going through
-minutes of dead signal. How much is buffered is a per-device choice
-under Settings, from one track ahead on metered connections to about 45
+The phone plays from its own bank: it takes whole songs from the
+radio's store ahead of time and plays them back-to-back at its own
+pace, so the music keeps going through minutes of dead signal, and
+nothing is streamed. How much it keeps is a per-device choice under
+Settings, from one song ahead on metered connections to about 45
 minutes - or, on the Ultra setting, about three hours for a flight or
 a long dead zone (a phone that runs out of room says so rather than
 failing quietly). That one choice governs your saved songs as well, so
 *Maximum* means the same depth in both modes.
+
+The radio's store lists every song it holds in the order they were
+made, the ones other listeners have already taken first. A phone takes
+the songs it lacks, in that order: a fresh one starts with what the
+others have already heard and works forward, so it only makes the
+radio generate once it has caught up. Taking a song is what tells the
+radio to make more.
 
 Play starts from the songs that are already there. The device makes
 sound out of its own bank first and asks the radio what is coming next
@@ -498,35 +505,30 @@ stay playable, and reopening the page keeps them; steering the radio
 somewhere new retires them, because that is the moment you have said
 you want something else.
 
-In buffered mode the Next button skips only on that device; other
-listeners and the machine keep their own position. Next also means *not
-this one*: the skipped song is deleted from the device and never
-downloaded or played again, so a device with nothing else ready sounds
-the trouble beeps and waits for the radio rather than starting the song
-you have just rejected over from the top. A Settings switch selects the
-direct live stream instead - the one `/stream.mp3` serves - whose Next
-skips for everyone. The Loop button works the same way: when a track is
-a keeper, tap it and the song
-repeats until you tap again - on this device alone in buffered mode,
-for the whole radio (speakers, stream and all) on the direct stream.
+The Next button skips only on that device; other listeners and the
+machine keep their own place. Next also means *not this one*: the
+skipped song is deleted from the device and never downloaded or played
+again, so a device with nothing else ready sounds the trouble beeps and
+waits for the radio rather than starting the song you have just
+rejected over from the top. Skipping is faster listening, and the phone
+tells the radio how much it skipped, so the next batch of songs comes
+sooner. The Loop button works the same way: when a track is a keeper,
+tap it and the song repeats until you tap again, on this device alone.
 Skipping, steering or changing the session turns the loop off, since
 each of those means "move on".
 
 A seek bar sits on the player bar, above the buttons, so it is under
-your thumb wherever the page is scrolled to: buffered songs are whole
-files on the device, so you can jump anywhere in them; the direct
-stream, like any live stream, has no rewind and shows just the clock.
-Below it the page counts what is banked on this device, and the *Flush*
-button next to that count dumps the bank and rejoins the live stream at
-its edge. If the stream drops or stalls, the page reconnects on its own
-and picks up the moment the stream is reachable again; only an expired
-login stops it. The Saved screen's player has a bar of its own, and a
-saved song always rewinds.
+your thumb wherever the page is scrolled to: the songs are whole files
+on the device, so you can jump anywhere in them. Below it the page
+counts what is banked on this device, and the *Flush* button next to
+that count dumps the bank and takes fresh songs from the radio. The
+Saved screen's player has a bar of its own, and a saved song always
+rewinds.
 
 **Preload songs for the inactive mode** is off by default. Switched on,
-the device keeps a few saved songs ready while you are on the live
-stream, and a few live songs ready while you are on the saved ones, so
-moving between the two away from a good signal plays straight away
+the device keeps a few saved songs ready while you are on the radio,
+and a few of the radio's songs ready while you are on the saved ones,
+so moving between the two away from a good signal plays straight away
 instead of waiting. It is deliberately shallow - a handful either way,
 not a second full bank - because it spends data on music you may not
 listen to.
@@ -537,9 +539,12 @@ music stops arriving and the same song comes round again, the sound
 ducks for six soft beeps and comes back. It repeats at most every few
 minutes, and switching it off in Settings is one tap.
 
-Saving from the phone captures what *you* are hearing - in buffered mode
-that is this device's track, which may trail the machine's speakers. The
-song's own name carries the answer: **Saving:** in front of it from the
+Saving from the phone captures what *you* are hearing - this device's
+song, which may trail the machine's speakers by hours. The radio saves
+it from its own store if it still has it, and otherwise asks the phone
+for its copy, checks the bytes against the record it kept of the song,
+and saves them under the name and words it recorded. The song's own
+name carries the answer: **Saving:** in front of it from the
 moment you ask until the radio has the song, then **Saved:** for as long
 as that song plays - on the page and on the car screen alike, rather
 than a confirmation you had to be looking at the right second to catch.
@@ -582,7 +587,7 @@ how it works.
 
 Two car conveniences live under Settings, remembered per device:
 
-- **The previous-track button saves the track.** An endless stream has
+- **The previous-track button saves the track.** An endless radio has
   no meaningful "previous", so that button - on the steering wheel,
   headset or car screen - doubles as save-what-I-am-hearing, confirmed
   by the "Saved:" marker in front of the song's name, which stays there
@@ -598,7 +603,7 @@ Two car conveniences live under Settings, remembered per device:
 ### Saved songs
 
 The remote's **Saved** mode plays your saved songs entirely on the
-phone; the live stream and the machine's speakers are untouched. It
+phone; the radio and the machine's speakers are untouched. It
 leads with the song playing, laid out the way the live page lays out
 its own: the name at the top of the screen with its genre, language and
 tag on the line under it, and the position row down on the player bar
@@ -621,8 +626,8 @@ the row opens the song's panel: full lyrics, details, and buttons to
 download, rename, move or delete it. Renaming here works the same way
 as the pencil on the live page: the file and its title tag both change.
 
-Saved songs are banked on the device exactly like the live stream's, to
-the same buffering level under Settings, so a song starts on the tap
+Saved songs are banked on the device exactly like the radio's, to the
+same buffering level under Settings, so a song starts on the tap
 rather than loading first and the next one is ready before it is
 needed. With *Maximum* chosen and a handful of songs saved, that is all
 of them. The line under the player counts what is ready, and songs you
@@ -763,11 +768,11 @@ everything else keeps its default. The complete set, with defaults:
   (about 28 MB per 150-second track). With phased generation (the default) the queue ahead of
   playback lives on disk instead (see the `buffer` section) and phone
   listeners prefetch straight from it, so this setting is not used.
-- `volume` (0-100): initial output volume. Remote listeners always get
-  the full-level stream regardless (it is tapped before the volume
-  control). A machine started with `--remote` has its own player off
-  until `play` is typed; enabling the remote through the config file
-  alone changes nothing.
+- `volume` (0-100): initial output volume for this machine's own
+  speakers; phones play from their own banks and are not affected. A
+  machine started with `--remote` has its own player off until `play`
+  is typed; enabling the remote through the config file alone changes
+  nothing.
 - `pipe_latency_ms` (20-2000): how much buffering the system audio
   player is asked for. Larger values ride out heavy system load at the
   cost of a slightly slower response to volume/pause.
@@ -822,7 +827,7 @@ everything else keeps its default. The complete set, with defaults:
 
 ### remote
 
-The phone remote (page + live MP3 stream + saved-songs player); see [Listening from your phone](#listening-from-your-phone) for the
+The phone remote (page + the radio's songs served to the phone's bank + saved-songs player); see [Listening from your phone](#listening-from-your-phone) for the
 full flow. Every
 request needs a logged-in account (`iar remote setup` creates the first
 admin; the Users page does the rest).
@@ -1101,7 +1106,7 @@ log, which has the full story including the engine's own output.
   (in the header and in `iar doctor`) stays at zero, the audio stream
   itself is clean and the noise is electrical interference induced
   after the digital output.
-- **Generation failures** - the stream degrades gracefully (the store,
+- **Generation failures** - playback degrades gracefully (the store,
   then looping the last track, then silence) and the engine restarts
   itself; expect at most a couple of minutes of looped music.
   The interface and `iar doctor` show the failure streak and the last

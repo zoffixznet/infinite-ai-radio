@@ -41,8 +41,6 @@ type Controls interface {
 	SetLanguage(name string, on bool) string
 	SetLanguages(names []string) string
 	NewSession(prompt string) string
-	Skip() string
-	ToggleLoop() string
 	RestartGeneration() string
 	Retitle(which, title string) string
 	DeleteAutoSessions(olderThanDays int) string
@@ -57,6 +55,12 @@ type Controls interface {
 	CurrentName() string
 	Status() player.Status
 	QueueTracks() (int, []player.QueueTrack)
+	// Song describes one song, with its lyrics, from the store or the
+	// songbook (see player.Orchestrator.Song).
+	Song(id string) (player.QueueTrack, string, bool)
+	// Take marks a song a client has downloaded as taken (see
+	// player.Orchestrator.Take).
+	Take(id string)
 	// ReportSkipped credits the generator's ladder with seconds of
 	// music a listener skipped (see player.Orchestrator.ReportSkipped).
 	ReportSkipped(seconds float64)
@@ -93,10 +97,9 @@ type Config struct {
 
 // Server is the running remote.
 type Server struct {
-	cfg      Config
-	ctl      Controls
-	streamer *Streamer
-	log      *slog.Logger
+	cfg Config
+	ctl Controls
+	log *slog.Logger
 	// allowedHosts is the lowercase hostname allowlist for the Host
 	// header and Origin checks (DNS-rebinding defense).
 	allowedHosts map[string]bool
@@ -146,7 +149,7 @@ const (
 )
 
 // newServer wires a server without listening (tests use it directly).
-func newServer(cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (*Server, error) {
+func newServer(cfg Config, ctl Controls, log *slog.Logger) (*Server, error) {
 	if cfg.Users == nil || cfg.Sessions == nil {
 		return nil, fmt.Errorf("remote: account stores are required")
 	}
@@ -160,7 +163,6 @@ func newServer(cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (
 	return &Server{
 		cfg:       cfg,
 		ctl:       ctl,
-		streamer:  streamer,
 		log:       log,
 		users:     cfg.Users,
 		sessions:  cfg.Sessions,
@@ -174,10 +176,10 @@ func newServer(cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (
 	}, nil
 }
 
-// Start resolves bind addresses, starts the shared encoder and serves on
-// every address. It returns after the listeners are accepting.
-func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, log *slog.Logger) (*Server, error) {
-	s, err := newServer(cfg, ctl, streamer, log)
+// Start resolves bind addresses and serves on every address. It returns
+// after the listeners are accepting.
+func Start(ctx context.Context, cfg Config, ctl Controls, log *slog.Logger) (*Server, error) {
+	s, err := newServer(cfg, ctl, log)
 	if err != nil {
 		return nil, err
 	}
@@ -185,10 +187,6 @@ func Start(ctx context.Context, cfg Config, ctl Controls, streamer *Streamer, lo
 	s.TailnetIP = binding.TailnetIP
 	s.buildAllowedHosts(binding.ExtraHosts)
 	handler := s.buildHandler()
-
-	if err := streamer.Start(ctx); err != nil {
-		return nil, err
-	}
 
 	var listeners []net.Listener
 	for _, addr := range binding.Addrs {
@@ -263,7 +261,6 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("POST /logout", s.page(s.handleLogout))
 	mux.HandleFunc("GET /me", s.api(s.handleMe))
 	mux.HandleFunc("GET /state", s.api(s.handleState))
-	mux.HandleFunc("GET /stream.mp3", s.api(s.handleStream))
 	mux.HandleFunc("GET /api/chunks", s.api(s.handleChunks))
 	mux.HandleFunc("GET /api/queue", s.api(s.handleQueueList))
 	mux.HandleFunc("GET /queue/{file}", s.api(s.handleQueueTrack))
@@ -282,10 +279,6 @@ func (s *Server) buildHandler() http.Handler {
 	// the configured list writes the machine's config file.
 	mux.HandleFunc("POST /language", s.apiPerm("steer", permSteer, s.handleLanguage))
 	mux.HandleFunc("POST /languages", s.apiPerm("languages", permAdmin, s.handleLanguages))
-	mux.HandleFunc("POST /next", s.apiPerm("steer", permSteer, s.handleNext))
-	mux.HandleFunc("POST /loop", s.apiPerm("steer", permSteer, s.handleLoop))
-	// Holding the whole radio is a steering-level act: it decides what
-	// everyone hears, or stops hearing.
 	// Emptying the buffer decides what everyone hears next, the same
 	// as a steer does, and answers to the same permission.
 	mux.HandleFunc("POST /buffer/flush", s.apiPerm("steer", permSteer, s.handleBufferFlush))
@@ -492,63 +485,19 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, u accounts.Use
 	})
 }
 
-// handleStream serves the shared MP3 stream to one client.
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u accounts.User) {
-	pre, ch, cancel := s.streamer.Subscribe()
-	defer cancel()
-	s.log.Info("stream client connected", "event", "remote_stream_open", "user", u.Email, "from", r.RemoteAddr, "listeners", s.streamer.Listeners())
-	defer s.log.Info("stream client left", "event", "remote_stream_close", "user", u.Email, "from", r.RemoteAddr)
-
-	w.Header().Set("Content-Type", "audio/mpeg")
-	w.Header().Set("Cache-Control", "no-store")
-	flusher, _ := w.(http.Flusher)
-	if len(pre) > 0 {
-		if _, err := w.Write(pre); err != nil {
-			return
-		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case chunk, ok := <-ch:
-			if !ok {
-				return
-			}
-			if _, err := w.Write(chunk); err != nil {
-				return
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-	}
-}
-
-// stateJSON is the shared now-playing and steering payload the page
-// polls: every client and every reload renders the same state.
+// stateJSON is the shared steering and store payload the page polls:
+// every client and every reload renders the same state. What is
+// playing is each device's own business and is not in it.
 type stateJSON struct {
-	State     string `json:"state"`
-	Source    string `json:"source"`
 	Session   string `json:"session"`
 	Phase     string `json:"phase"`
 	PhaseInfo string `json:"phase_info"`
-	Elapsed   string `json:"elapsed"`
-	Duration  string `json:"duration"`
 	Queued    int    `json:"queued"`
-	// Ready is how much music is actually secured, in the listener's
-	// words ("11 songs, 37m"). Queued counts only what is decoded in
-	// memory, which under phased generation is a fixed two and says
-	// nothing about whether the radio is keeping up.
+	// Ready is how much music is made ahead, in the listener's words
+	// ("11 ready · 37m"). Queued counts only what this machine's own
+	// player has decoded in memory.
 	Ready      string `json:"ready"`
 	Generating bool   `json:"generating"`
-	Paused     bool   `json:"paused"`
-	Volume     int    `json:"volume"`
-	Underruns  int64  `json:"underruns"`
-	Listeners  int    `json:"listeners"`
 	// Epoch identifies the steering context; it bumps whenever steering
 	// changes what will be generated next.
 	Epoch       int         `json:"epoch"`
@@ -560,23 +509,12 @@ type stateJSON struct {
 	// LyricsGenerators lists the ones that can be switched to.
 	LyricsGenerator  string    `json:"lyrics_generator"`
 	LyricsGenerators []genJSON `json:"lyrics_generators"`
-	// Track is the playing generated track (absent for stopgap audio);
-	// Prev is the one before it.
-	Track *trackJSON `json:"track,omitempty"`
-	Prev  *trackJSON `json:"prev,omitempty"`
-	// SavedIDs lists track ids already saved as snippets this run, so
-	// clients grey their save buttons for whatever THEY are playing.
+	// SavedIDs lists track ids saved as snippets lately, so clients
+	// grey their save buttons for whatever THEY are playing.
 	SavedIDs []string `json:"saved_ids"`
 	// Languages lists the configured vocal languages and which of them
 	// the session sings in; empty means the engine chooses.
 	Languages []langJSON `json:"languages"`
-	// Looping reports the playing track is being replayed for want of
-	// anything newer, so the page can say so instead of presenting it
-	// as a fresh track.
-	Looping bool `json:"looping,omitempty"`
-	// LoopOn reports a listener asked the radio to repeat the playing
-	// track, so every client's loop button shows the same state.
-	LoopOn bool `json:"loop_on,omitempty"`
 	// Switching reports a steering or language change whose first fresh
 	// track is still generating.
 	Switching bool `json:"switching,omitempty"`
@@ -609,25 +547,6 @@ type tweakJSON struct {
 	Time        string `json:"time"`
 }
 
-// trackJSON identifies one playable track.
-type trackJSON struct {
-	ID        string  `json:"id"`
-	Prompt    string  `json:"prompt"`
-	DurationS float64 `json:"duration_s"`
-	// Title and Subtitle are the short display names; Number is the
-	// per-process play number ("Track N").
-	Title    string `json:"title,omitempty"`
-	Subtitle string `json:"subtitle,omitempty"`
-	Number   int    `json:"number,omitempty"`
-	// Saved reports the track is already saved as a snippet.
-	Saved bool `json:"saved"`
-	// Lang names the language the track is sung in, in the listener's
-	// own wording; empty when the music engine chose for itself.
-	Lang string `json:"lang,omitempty"`
-	// Lyrics is what the track is singing, absent for instrumentals.
-	Lyrics string `json:"lyrics,omitempty"`
-}
-
 // readySummary says how much music is secured, in one short phrase.
 // Phased generation buffers to disk, so the honest number is songs and
 // minutes there, not the size of the in-memory prefetch.
@@ -648,16 +567,10 @@ func readySummary(st player.Status) string {
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	st := s.ctl.Status()
 	out := stateJSON{
-		State:           st.State,
-		Source:          st.Source,
 		Session:         st.Session,
 		Queued:          st.Queued,
 		Ready:           readySummary(st),
 		Generating:      st.Generating,
-		Paused:          st.Paused,
-		Volume:          st.Volume,
-		Underruns:       st.Underruns,
-		Listeners:       s.streamer.Listeners(),
 		Epoch:           st.Epoch,
 		SessionDesc:     st.SessionDesc,
 		BasePrompt:      st.BasePrompt,
@@ -673,16 +586,6 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 			Raw: tw.Raw, Interpreted: tw.Interpreted, Time: tw.Time.Format(time.RFC3339),
 		})
 	}
-	if st.TrackID != "" {
-		out.Track = &trackJSON{
-			ID: st.TrackID, Prompt: st.TrackPrompt, DurationS: st.Duration.Seconds(),
-			Title: st.TrackTitle, Subtitle: st.TrackSubtitle, Number: st.TrackNum,
-			Saved: st.TrackSaved, Lang: st.TrackLanguage, Lyrics: st.TrackLyrics,
-		}
-	}
-	if st.PrevTrackID != "" {
-		out.Prev = &trackJSON{ID: st.PrevTrackID, Prompt: st.PrevTrackPrompt, Title: st.PrevTrackTitle, Saved: st.PrevTrackSaved}
-	}
 	out.SavedIDs = st.SavedTrackIDs
 	if out.SavedIDs == nil {
 		out.SavedIDs = []string{}
@@ -693,16 +596,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, u accounts.
 			Name: l.Name, Engine: l.Engine, On: l.On, Configured: l.Configured,
 		})
 	}
-	out.Looping = st.Looping
-	out.LoopOn = st.LoopOn
 	out.Switching = st.Switching
 	if st.Phase != "" && st.Phase != "playing" {
 		out.Phase = st.Phase
 		out.PhaseInfo = st.PhaseElapsed.Round(time.Second).String() + " of ~" + st.PhaseExpected.Round(time.Second).String()
-	}
-	if st.Duration > 0 {
-		out.Elapsed = fmtClock(st.Elapsed)
-		out.Duration = fmtClock(st.Duration)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -828,18 +725,6 @@ func (s *Server) handleLanguages(w http.ResponseWriter, r *http.Request, u accou
 	}
 	ack := s.ctl.SetLanguages(names)
 	s.ctl.Announce("remote languages by " + u.Email + ": " + ack)
-	s.reply(w, ack)
-}
-
-func (s *Server) handleNext(w http.ResponseWriter, r *http.Request, u accounts.User) {
-	ack := s.ctl.Skip()
-	s.ctl.Announce("remote skip by " + u.Email + ": " + ack)
-	s.reply(w, ack)
-}
-
-func (s *Server) handleLoop(w http.ResponseWriter, r *http.Request, u accounts.User) {
-	ack := s.ctl.ToggleLoop()
-	s.ctl.Announce("remote loop by " + u.Email + ": " + ack)
 	s.reply(w, ack)
 }
 

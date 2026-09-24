@@ -26,7 +26,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -580,6 +579,26 @@ func assertPlays(t *testing.T, w *webDriver, elementID string, minAdvance float6
 	return last
 }
 
+// bufferedPlays waits until one of the device's two audio elements is
+// making sound and the status line says so, and returns its progress.
+func bufferedPlays(t *testing.T, w *webDriver, budget time.Duration) audioProgress {
+	t.Helper()
+	var last audioProgress
+	waitFor(t, budget, "the device to play from its bank", func() bool {
+		var p *audioProgress
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var pill=document.getElementById('streamstate');
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused && a[i].currentTime>0) return {t:a[i].currentTime, r:a[i].readyState, pill: pill ? pill.textContent : ''}; }
+			return null;`, &p)
+		if p == nil {
+			return false
+		}
+		last = *p
+		return p.Time > 1 && strings.HasPrefix(p.Pill, "playing")
+	})
+	return last
+}
+
 var linkRe = regexp.MustCompile(`^https?://[^/]+/set-password/[A-Za-z0-9_-]+$`)
 
 func TestRealBrowser(t *testing.T) {
@@ -607,7 +626,7 @@ func TestRealBrowser(t *testing.T) {
 	w.click("button[type=submit]")
 	waitFor(t, 10*time.Second, "player page", func() bool { return strings.TrimSuffix(w.url(), "/") == sb.base })
 
-	// --- live stream plays (audio to the null sink) ---
+	// --- the device plays the radio's songs (audio to the null sink) ---
 	waitFor(t, 10*time.Second, "permissions applied", func() bool {
 		var hidden bool
 		w.exec(`return document.getElementById('savecard').hidden;`, &hidden)
@@ -628,25 +647,20 @@ func TestRealBrowser(t *testing.T) {
 		};
 		return true;`, nil)
 	w.click("#play")
-	live := assertPlays(t, w, "liveaudio", 3, 30*time.Second)
-	if !strings.HasPrefix(live.Pill, "playing") {
-		t.Fatalf("stream pill says %q while audio advances", live.Pill)
-	}
-	t.Logf("live stream: currentTime %.1fs readyState %d pill %q", live.Time, live.Ready, live.Pill)
-	// The live row and the saved one are painted by the same code now.
-	// The direct stream has no rewind, so its row stays grayed with the
-	// slider parked - the half of that shared code the saved screen
-	// never exercises.
-	var liveRow struct {
-		Class string `json:"class"`
-		Value string `json:"value"`
-	}
-	waitFor(t, 10*time.Second, "the live position row grayed on the direct stream", func() bool {
+	live := bufferedPlays(t, w, 60*time.Second)
+	t.Logf("device playback: currentTime %.1fs readyState %d pill %q", live.Time, live.Ready, live.Pill)
+	// The position row follows the device's own song: a whole file on
+	// the device is seekable, so the row is live and its clock moves.
+	waitFor(t, 10*time.Second, "the position row following the device's song", func() bool {
+		var row struct {
+			Class string `json:"class"`
+			Now   string `json:"now"`
+		}
 		w.exec(`return {class: document.getElementById('seekrow').className,
-			value: document.getElementById('seek').value};`, &liveRow)
-		return strings.Contains(liveRow.Class, "disabled") && liveRow.Value == "0"
+			now: document.getElementById('seeknow').textContent};`, &row)
+		return !strings.Contains(row.Class, "disabled") && row.Now != "0:00"
 	})
-	waitFor(t, 10*time.Second, "firefox stream on the null sink", func() bool {
+	waitFor(t, 10*time.Second, "firefox audio on the null sink", func() bool {
 		got, ok := firefoxSinkIndex()
 		return ok && got == sinkIndex
 	})
@@ -660,10 +674,11 @@ func TestRealBrowser(t *testing.T) {
 		w.exec(`return document.querySelectorAll('#chunks .chunk').length;`, &n)
 		return n == 1
 	})
-	var liveGone bool
-	w.exec(`return document.getElementById('liveaudio') === null;`, &liveGone)
-	if !liveGone {
-		t.Fatal("switching to saved mode must stop the live stream element")
+	var stillPlaying bool
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		return a.some(function (x) { return x && !x.paused; });`, &stillPlaying)
+	if stillPlaying {
+		t.Fatal("switching to saved mode must stop the device's own playback")
 	}
 	// The song playing on this device is the top of the screen, the way
 	// it is on the live page: name and facts above the tag switches and
@@ -1095,7 +1110,7 @@ func TestRealBrowser(t *testing.T) {
 	}
 	// Listening still works for them.
 	w.click("#play")
-	assertPlays(t, w, "liveaudio", 2, 30*time.Second)
+	bufferedPlays(t, w, 60*time.Second)
 	// The invite link is dead now.
 	w.navigate(link)
 	var invalid bool
@@ -1109,7 +1124,7 @@ func TestRealBrowser(t *testing.T) {
 	if bytes.Contains(logData, []byte(`"event":"underrun"`)) {
 		t.Fatal("underruns logged during the browser session")
 	}
-	for _, ev := range []string{"remote_login", "remote_link_issued", "remote_link_redeemed", "remote_denied", "remote_stream_open"} {
+	for _, ev := range []string{"remote_login", "remote_link_issued", "remote_link_redeemed", "remote_denied"} {
 		if !bytes.Contains(logData, []byte(`"event":"`+ev+`"`)) {
 			t.Errorf("log lacks event %s", ev)
 		}
@@ -1404,6 +1419,11 @@ func TestRealBrowserResilience(t *testing.T) {
 	if !lyricsOpen {
 		t.Error("the lyrics panel started closed")
 	}
+	// The words follow the song THIS device is playing, so it has to be
+	// playing one: the reload resumed nothing, since a page that has
+	// seen no tap may make no sound.
+	w.click("#play")
+	bufferedPlays(t, w, 60*time.Second)
 	// The words the engine sang reach the page, section markers and all.
 	waitFor(t, 20*time.Second, "lyrics on the page", func() bool {
 		var lyr string
@@ -1454,55 +1474,17 @@ func TestRealBrowserResilience(t *testing.T) {
 		t.Fatalf("negated instrument still in the prompt: %q", fe.lastPrompt())
 	}
 
-	// --- direct stream + Next ---
-	w.click("#play")
-	assertPlays(t, w, "liveaudio", 2, 30*time.Second)
-
-	// --- the live loop button asks the radio itself ---
-	// A generated track is playing (the lyrics assertions above proved
-	// it), so the toggle must arm, light the button from /state, and
-	// release on the second tap. The earlier steer must have fully
-	// landed first: mid-switch the toggle honestly refuses, so wait
-	// for /state to stop reporting the switch.
-	waitFor(t, 30*time.Second, "a generated track in the now-playing line", func() bool {
-		var meta string
-		w.exec(`return document.getElementById('meta').textContent;`, &meta)
-		return strings.Contains(meta, "Track ")
-	})
-	waitFor(t, 30*time.Second, "the steer's switch to land", func() bool {
-		var st struct {
-			Switching bool `json:"switching"`
-		}
-		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/state').then(function(r){return r.json()}).then(cb);`, &st)
-		return !st.Switching
-	})
-	w.click("#loop")
-	waitFor(t, 10*time.Second, "loop-on ack", func() bool {
-		var ack string
-		w.exec(`return document.getElementById('steerstatus').textContent;`, &ack)
-		return strings.Contains(ack, "looping")
-	})
-	waitFor(t, 10*time.Second, "loop button lit from /state", func() bool {
-		var on bool
-		w.exec(`return document.getElementById('loop').classList.contains('on');`, &on)
-		return on
-	})
-	w.click("#loop")
-	waitFor(t, 10*time.Second, "loop-off ack", func() bool {
-		var ack string
-		w.exec(`return document.getElementById('steerstatus').textContent;`, &ack)
-		return strings.Contains(ack, "loop off")
-	})
+	// --- Next moves the device on by itself ---
+	bufferedPlays(t, w, 60*time.Second)
 
 	// After a steer the new sound's opener plays alone while its first
 	// batch is planned in full and then rendered; the skip has somewhere
-	// to go only once a second song is in the queue.
-	waitFor(t, 90*time.Second, "a song queued behind the opener", func() bool {
-		var st struct {
-			Queued int `json:"queued"`
-		}
-		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/state').then(function(r){return r.json()}).then(cb);`, &st)
-		return st.Queued >= 1
+	// to go only once the device holds a second song.
+	waitFor(t, 120*time.Second, "a song banked behind the playing one", func() bool {
+		var pill string
+		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
+		m := regexp.MustCompile(`(\d+) ahead`).FindStringSubmatch(pill)
+		return m != nil && m[1] != "0"
 	})
 	// A marionette click occasionally evaporates mid-repaint (the
 	// element is present, unobscured and enabled - verified with
@@ -1516,73 +1498,18 @@ func TestRealBrowserResilience(t *testing.T) {
 		settle := time.Now().Add(2 * time.Second)
 		for time.Now().Before(settle) {
 			w.exec(`return document.getElementById('steerstatus').textContent;`, &status)
-			if strings.Contains(status, "skipping") {
+			if strings.Contains(status, "skipped") {
 				break
 			}
 			time.Sleep(300 * time.Millisecond)
 		}
-		if strings.Contains(status, "skipping") {
+		if strings.Contains(status, "skipped") {
 			break
 		}
 		if time.Now().After(skipDeadline) {
 			t.Fatalf("skip never acknowledged; steerstatus: %q", status)
 		}
 	}
-
-	// --- the server dies: the stream recovers with no interaction ---
-	sb.killPlayer()
-	waitFor(t, 30*time.Second, "reconnecting state", func() bool {
-		var pill string
-		w.exec(`return document.getElementById('streamstate').textContent;`, &pill)
-		return strings.Contains(pill, "reconnecting")
-	})
-	sb.startPlayer(t)
-	sb.waitListening(t)
-	waitFor(t, 60*time.Second, "stream self-recovers", func() bool {
-		p, ok := w.audioState("liveaudio")
-		return ok && strings.HasPrefix(p.Pill, "playing")
-	})
-
-	// --- a connectivity event during a stall reconnects immediately ---
-	// Freezing the server keeps the TCP connection open with no data:
-	// the element stalls without erroring. A connectivity signal must
-	// then tear it down and reconnect at once, not wait for the
-	// watchdog.
-	exec.Command("kill", "-STOP", fmt.Sprint(sb.player.Process.Pid)).Run()
-	// Wait until playback has made no progress for a sustained stretch
-	// (the element keeps playing buffered audio for a while first).
-	var lastCT float64 = -1
-	var stableSince time.Time
-	waitFor(t, 40*time.Second, "playback stalled for several seconds", func() bool {
-		p, ok := w.audioState("liveaudio")
-		if !ok {
-			return false
-		}
-		if p.Time != lastCT {
-			lastCT = p.Time
-			stableSince = time.Now()
-			return false
-		}
-		// The page's own progress bookkeeping ticks every 2s, so the
-		// stall must comfortably exceed threshold + tick granularity.
-		return !stableSince.IsZero() && time.Since(stableSince) > 6*time.Second
-	})
-	// Mark the stalled element, fire the connectivity event, and expect
-	// a NEW element (the old one torn down) well before the watchdog
-	// would have acted.
-	w.exec(`var a=document.getElementById('liveaudio'); if (a) a.setAttribute('data-stalled','1');
-		window.dispatchEvent(new Event('online')); return true;`, nil)
-	waitFor(t, 3*time.Second, "immediate reconnect on the connectivity event", func() bool {
-		var fresh bool
-		w.exec(`var a=document.getElementById('liveaudio');
-			return !!a && !a.hasAttribute('data-stalled');`, &fresh)
-		return fresh
-	})
-	exec.Command("kill", "-CONT", fmt.Sprint(sb.player.Process.Pid)).Run()
-	waitFor(t, 60*time.Second, "stream recovers after the stall", func() bool {
-		p, ok := w.audioState("liveaudio")
-		return ok && strings.HasPrefix(p.Pill, "playing")
-	})
 
 	// --- an expired login is terminal: no reconnect loop ---
 	w.deleteCookies()
@@ -1606,9 +1533,8 @@ func TestRealBrowserResilience(t *testing.T) {
 		t.Fatalf("expired session did not stay terminal: %q", pill)
 	}
 
-	// --- buffered playback survives the server disappearing ---
+	// --- playback survives the server disappearing ---
 	loginAdmin(t, w, sb.base)
-	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
 	w.click("#play")
 	waitFor(t, 60*time.Second, "buffered playback starts", func() bool {
 		var st struct {
@@ -1684,14 +1610,30 @@ func TestRealBrowserResilience(t *testing.T) {
 	// buffered mode must save the DEVICE's playing track and mark it
 	// "Saved:" on the car metadata for as long as that song plays.
 	// Wait for the early part of a track so the played track cannot
-	// change under the assertions below.
-	waitFor(t, 30*time.Second, "early in a buffered track", func() bool {
-		var ct float64
+	// change under the assertions below. The device may be deep into a
+	// long song by now: jump it to the end, and the next one starts.
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		for (var i=0;i<2;i++) { if (a[i] && !a[i].paused && isFinite(a[i].duration) && a[i].currentTime > 3) { a[i].currentTime = a[i].duration - 0.5; break; } }
+		return true;`, nil)
+	var lastSeen string
+	early := func() bool {
+		var v struct {
+			Time float64 `json:"t"`
+			Pill string  `json:"pill"`
+		}
 		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
-			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].currentTime; }
-			return -1;`, &ct)
-		return ct > 0.2 && ct < 3
-	})
+			var t=-1; for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) t=a[i].currentTime; }
+			return {t: t, pill: (document.getElementById('streamstate')||{}).textContent||""};`, &v)
+		lastSeen = fmt.Sprintf("currentTime %.1f, status %q", v.Time, v.Pill)
+		return v.Time > 0.2 && v.Time < 3
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for !early() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the early part of a track; last seen: %s", lastSeen)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "previoustrack"})); return true;`, nil)
 	waitFor(t, 15*time.Second, "car save acknowledged", func() bool {
 		var ack string
@@ -1765,30 +1707,22 @@ func TestRealBrowserResilience(t *testing.T) {
 	if after, _ := filepath.Glob(filepath.Join(sb.dir, "data", "snippets", "untagged", "*.mp3")); len(after) > len(before)+1 {
 		t.Fatalf("car-button spam produced %d new files", len(after)-len(before))
 	}
-	// At maximum depth the prefetcher reaches the spares: the songs the
-	// radio has already played, which the store keeps under the ids they
-	// had all along. One landing in IndexedDB proves the phone banks
-	// them the way it banks the songs ahead.
-	var spare string
-	waitFor(t, 60*time.Second, "a played song offered as a spare", func() bool {
+	// The store keeps the songs the listeners have already taken, under
+	// the ids they had all along. The radio's own player runs ahead of
+	// this device, so songs further down the listing are taken by the
+	// time the device reaches them; at maximum depth it banks those all
+	// the same, which proves a kept song is banked the way the songs
+	// ahead are.
+	w.exec(`var sel=document.getElementById('buflevel'); sel.value='max';
+		sel.dispatchEvent(new Event('change')); return true;`, nil)
+	waitFor(t, 90*time.Second, "a taken song banked on the device", func() bool {
 		var q struct {
 			Tracks []struct {
-				ID   string `json:"id"`
-				Kind string `json:"kind"`
+				ID    string `json:"id"`
+				Taken bool   `json:"taken"`
 			} `json:"tracks"`
 		}
 		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/api/queue').then(function(r){return r.json()}).then(cb);`, &q)
-		for _, row := range q.Tracks {
-			if row.Kind == "library" {
-				spare = row.ID
-				return true
-			}
-		}
-		return false
-	})
-	w.exec(`var sel=document.getElementById('buflevel'); sel.value='max';
-		sel.dispatchEvent(new Event('change')); return true;`, nil)
-	waitFor(t, 60*time.Second, "a spare banked on the device", func() bool {
 		var keys []string
 		w.execAsync(`var cb=arguments[arguments.length-1];
 			var req=indexedDB.open("iar-radio");
@@ -1799,7 +1733,12 @@ func TestRealBrowserResilience(t *testing.T) {
 					tx.objectStore("tracks").getAllKeys().onsuccess=function(e){cb(e.target.result)};
 				} catch (err) { cb([]); }
 			};`, &keys)
-		return slices.Contains(keys, spare)
+		for _, row := range q.Tracks {
+			if row.Taken && slices.Contains(keys, row.ID) {
+				return true
+			}
+		}
+		return false
 	})
 	var srcBefore string
 	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
@@ -1876,7 +1815,6 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 	w := newWebDriver(t, driver)
 	loginAdmin(t, w, sb.base)
 
-	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
 	w.click("#play")
 
 	type bufState struct {
@@ -1916,83 +1854,67 @@ func TestRealBrowserBufferedNextExclusive(t *testing.T) {
 	})
 	before := readState()
 
-	// The page must follow the song THIS device is playing. Skipping the
-	// MACHINE moves it on without touching the phone's bank, which is
-	// exactly the state that renamed the song under a listener who was
-	// only looping one: two different songs, one headline. The lock
-	// screen has always followed the device, so they must agree - and
-	// the words on screen must be this device's song's, not the ones
-	// the speakers are singing. (Songs here share a name, because the
-	// sandbox has no helper model to write per-song ones; the ids and
-	// the lyrics are what tell them apart.)
-	w.execAsync(`var cb = arguments[arguments.length - 1];
-		fetch('/next', {method: 'POST', headers: {'X-IAR-Remote': '1'}}).then(function () { cb(true) });`, nil)
-	waitFor(t, 25*time.Second, "the page to follow this device's song, not the machine's", func() bool {
+	// The page follows the song THIS device is playing: the headline,
+	// the lock screen and the words on screen all name the same song,
+	// which is the one in the device's own audio element - the radio's
+	// own player is on another song entirely and has no say here.
+	// (Songs here share a name, because the sandbox has no helper model
+	// to write per-song ones; the ids and the lyrics are what tell them
+	// apart.)
+	waitFor(t, 25*time.Second, "the page to follow this device's song", func() bool {
 		var v struct {
 			Now    string `json:"now"`
 			Card   string `json:"card"`
-			Server string `json:"server"`
-			SrvLyr string `json:"srvlyr"`
 			Lyrics string `json:"lyrics"`
 		}
-		w.execAsync(`var cb = arguments[arguments.length - 1];
-			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
-				var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
-				var words = ((st.track && st.track.lyrics) || "").split("\n");
-				cb({now: (document.getElementById('now')||{}).textContent||"",
-				    card: m ? m.title : "",
-				    server: (st.track && (st.track.title || st.track.prompt)) || "",
-				    srvlyr: words.length > 1 ? words[1] : "",
-				    lyrics: (document.getElementById('lyrics')||{}).textContent||""});
-			});`, &v)
-		if v.Card == "" || v.Server == "" || v.Card == v.Server {
-			return false // not yet on different songs
+		w.exec(`var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
+			return {now: (document.getElementById('now')||{}).textContent||"",
+			        card: m ? m.title : "",
+			        lyrics: (document.getElementById('lyrics')||{}).textContent||""};`, &v)
+		if v.Now == "" || v.Card == "" || v.Now == "…" {
+			return false
 		}
 		if v.Now != v.Card {
-			t.Fatalf("the headline named the machine's song, not this device's: headline %q, device %q, machine %q",
-				v.Now, v.Card, v.Server)
+			t.Fatalf("the headline and the lock screen name different songs: headline %q, card %q", v.Now, v.Card)
 		}
-		// The words follow the device too - they are what the listener
-		// is actually hearing.
-		if v.SrvLyr == "" || strings.Contains(v.Lyrics, v.SrvLyr) {
-			t.Fatalf("the words on screen are the machine's, not this device's: %q in %q", v.SrvLyr, v.Lyrics)
-		}
-		return true
+		return strings.Contains(v.Lyrics, "the words for task-")
 	})
 
 	// The pencil beside the headline renames THAT song - the one this
-	// device is playing - and leaves the machine's alone. Renaming from
-	// the saved list would mean leaving the live page, which stops the
-	// radio; this is the whole point of the control.
-	var machineBefore string
-	w.execAsync(`var cb = arguments[arguments.length - 1];
-		fetch('/state').then(function (r) { return r.json() }).then(function (st) {
-			cb((st.track && st.track.title) || "");
-		});`, &machineBefore)
+	// device is playing - here and in the radio's store, and no other.
+	// Renaming from the saved list would mean leaving the live page,
+	// which stops the device; this is the whole point of the control.
 	w.click("#rename")
 	w.typeIntoAlert("Harbour Lights")
 	w.acceptAlert()
 	waitFor(t, 25*time.Second, "this device's song to take the new name", func() bool {
 		var v struct {
-			Now    string `json:"now"`
-			Card   string `json:"card"`
-			Server string `json:"server"`
+			Now  string `json:"now"`
+			Card string `json:"card"`
 		}
-		w.execAsync(`var cb = arguments[arguments.length - 1];
-			fetch('/state').then(function (r) { return r.json() }).then(function (st) {
-				var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
-				cb({now: (document.getElementById('now')||{}).textContent||"",
-				    card: m ? m.title : "",
-				    server: (st.track && st.track.title) || ""});
-			});`, &v)
-		if v.Server == "Harbour Lights" {
-			t.Fatalf("renaming this device's song renamed the machine's instead: %q", v.Server)
-		}
+		w.exec(`var m = ('mediaSession' in navigator) && navigator.mediaSession.metadata;
+			return {now: (document.getElementById('now')||{}).textContent||"",
+			        card: m ? m.title : ""};`, &v)
 		return v.Now == "Harbour Lights" && v.Card == "Harbour Lights"
 	})
-	if machineBefore == "Harbour Lights" {
-		t.Fatal("the machine was already playing a song by that name")
-	}
+	waitFor(t, 25*time.Second, "exactly one song in the store renamed", func() bool {
+		var q struct {
+			Tracks []struct {
+				Title string `json:"title"`
+			} `json:"tracks"`
+		}
+		w.execAsync(`var cb=arguments[arguments.length-1]; fetch('/api/queue').then(function(r){return r.json()}).then(cb);`, &q)
+		renamed := 0
+		for _, row := range q.Tracks {
+			if row.Title == "Harbour Lights" {
+				renamed++
+			}
+		}
+		if renamed > 1 {
+			t.Fatalf("renaming this device's song renamed %d songs in the store", renamed)
+		}
+		return renamed == 1
+	})
 
 	w.click("#next")
 
@@ -2077,7 +1999,6 @@ func TestRealBrowserSkippedSongNeverComesBack(t *testing.T) {
 	w := newWebDriver(t, driver)
 	loginAdmin(t, w, sb.base)
 
-	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
 	w.click("#play")
 	waitFor(t, 60*time.Second, "playing with a song banked ahead", func() bool {
 		var pill string
@@ -2210,7 +2131,6 @@ func TestRealBrowserSilentSongIsNotReportedAsPlaying(t *testing.T) {
 	w.exec(`HTMLMediaElement.prototype.play = function () {
 			return Promise.reject(new DOMException("no decoder", "NotSupportedError"));
 		};
-		document.getElementById('buffered').click();
 		return true;`, nil)
 	w.click("#play")
 
@@ -2225,7 +2145,7 @@ func TestRealBrowserSilentSongIsNotReportedAsPlaying(t *testing.T) {
 			var on=false; for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) on=true; }
 			return {pill: (document.getElementById('streamstate')||{}).textContent||"",
 				playing: on};`, &v)
-		if !v.Playing && strings.Contains(v.Pill, "playing (buffered)") {
+		if !v.Playing && strings.HasPrefix(v.Pill, "playing") {
 			t.Fatalf("the page reports %q with no sound coming out of it", v.Pill)
 		}
 		for _, honestly := range []string{"would not start", "will not play", "waiting for the radio"} {
@@ -2261,13 +2181,15 @@ func TestRealBrowserAutoResume(t *testing.T) {
 		return s
 	}
 
-	// --- direct mode ---
+	// --- the device's own playback ---
 	w.click("#play")
-	assertPlays(t, w, "liveaudio", 2, 30*time.Second)
+	bufferedPlays(t, w, 60*time.Second)
 
 	// A pause we did not initiate is a system pause: honest status,
 	// paused media session, element kept.
-	w.exec(`document.getElementById('liveaudio').pause(); return true;`, nil)
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) { a[i].pause(); break; } }
+		return true;`, nil)
 	waitFor(t, 10*time.Second, "system-pause status", func() bool {
 		return strings.Contains(pill(), "audio output disconnected")
 	})
@@ -2276,12 +2198,13 @@ func TestRealBrowserAutoResume(t *testing.T) {
 	if msState != "paused" {
 		t.Fatalf("media session playbackState = %q", msState)
 	}
-	// The watchdog and connectivity nudges must leave the paused
-	// element alone (no teardown, no loudspeaker restart).
+	// The connectivity nudge must leave the paused element alone (no
+	// teardown, no loudspeaker restart).
 	w.exec(`window.dispatchEvent(new Event('online')); return true;`, nil)
-	time.Sleep(9 * time.Second)
+	time.Sleep(4 * time.Second)
 	var kept bool
-	w.exec(`var a=document.getElementById('liveaudio'); return !!a && a.paused;`, &kept)
+	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+		return a.some(function (x) { return x && x.paused && x.currentTime > 0; });`, &kept)
 	if !kept {
 		t.Fatal("paused element was torn down or restarted")
 	}
@@ -2289,41 +2212,26 @@ func TestRealBrowserAutoResume(t *testing.T) {
 		t.Fatalf("paused status lost: %q", pill())
 	}
 
-	// The car's play command resumes the SAME element in place.
-	var before float64
-	w.exec(`return document.getElementById('liveaudio').currentTime;`, &before)
-	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "play"})); return true;`, nil)
-	waitFor(t, 15*time.Second, "resume after the play action", func() bool {
-		var st struct {
-			Time   float64 `json:"t"`
-			Paused bool    `json:"p"`
-		}
-		w.exec(`var a=document.getElementById('liveaudio'); return a ? {t:a.currentTime, p:a.paused} : {t:0,p:true};`, &st)
-		return !st.Paused && st.Time > before+0.5
-	})
-
-	// The play button resumes a pending pause too (it must not stop).
-	w.exec(`document.getElementById('liveaudio').pause(); return true;`, nil)
-	waitFor(t, 10*time.Second, "second system pause", func() bool {
-		return strings.Contains(pill(), "audio output disconnected")
-	})
+	// The play button resumes a pending pause (it must not stop).
 	w.click("#play")
 	waitFor(t, 15*time.Second, "resume after tapping play", func() bool {
-		var paused bool
-		w.exec(`var a=document.getElementById('liveaudio'); return a ? a.paused : true;`, &paused)
-		return !paused
+		var on bool
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			return a.some(function (x) { return x && !x.paused; });`, &on)
+		return on
 	})
 
 	// --- cold start: a reload while listening resumes by itself ---
 	w.navigate(sb.base + "/")
-	waitFor(t, 30*time.Second, "playback after a reload", func() bool {
+	waitFor(t, 60*time.Second, "playback after a reload", func() bool {
 		var t2 float64
-		w.exec(`var a=document.getElementById('liveaudio'); return a ? a.currentTime : -1;`, &t2)
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			for (var i=0;i<2;i++) { if (a[i] && !a[i].paused) return a[i].currentTime; }
+			return -1;`, &t2)
 		return t2 > 0.5
 	})
 
-	// --- buffered mode ---
-	w.exec(`document.getElementById('buffered').click(); return true;`, nil)
+	// --- the car's play command resumes the same element in place ---	// --- buffered mode ---
 	waitFor(t, 60*time.Second, "buffered playback", func() bool {
 		var ct float64
 		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
@@ -2441,118 +2349,6 @@ func TestRealBrowserSavedLoopFollowsTheSongPlaying(t *testing.T) {
 	}
 }
 
-// TestRealBrowserLiveSaveFollowsTheRadio guards the car's save button on
-// a phone whose screen has been off for a while. On the live stream the
-// page's idea of the playing track is only as fresh as its last /state
-// poll, and a backgrounded page stops polling - so a save that named the
-// id this page happens to be holding asked the radio for a song it had
-// already moved past ("that track is no longer available to save") while
-// the song the listener could hear sat there perfectly saveable. The
-// radio resolves "the one playing" for itself, which is never stale.
-//
-// The frozen /state below is what a locked phone has - a page still on
-// screen, still able to reach the radio, holding a snapshot from
-// minutes ago - with the id replaced by one the radio has never heard
-// of. That is the same thing an old enough snapshot amounts to, without
-// the test having to sit through three songs to get there.
-func TestRealBrowserLiveSaveFollowsTheRadio(t *testing.T) {
-	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
-	sinkName, _ := nullSink(t)
-	sb, fe := startMusicSandbox(t)
-	driver := startGeckodriver(t, sinkName)
-	w := newWebDriver(t, driver)
-	loginAdmin(t, w, sb.base)
-	waitFor(t, 60*time.Second, "tracks generating", func() bool { return fe.generated() >= 2 })
-
-	// Live mode, not buffered: this is the path that asks the radio
-	// what is playing rather than playing out of the device's own bank.
-	var buffered bool
-	w.exec(`return document.getElementById('buffered').checked;`, &buffered)
-	if buffered {
-		t.Fatal("this test needs direct live playback, but buffered is on by default")
-	}
-
-	// The page keeps talking to the radio; only its own /state poll is
-	// frozen, which is what a screen-off phone does to it.
-	w.exec(`(function () {
-		var real = window.fetch.bind(window);
-		window.__realFetch = real;
-		window.__saveBodies = [];
-		window.__frozen = null;
-		window.fetch = function (url, opts) {
-			var u = String(url);
-			if (u.indexOf('/save') > -1 && opts && opts.body) window.__saveBodies.push(String(opts.body));
-			if (window.__frozen !== null && u.indexOf('/state') > -1) {
-				return Promise.resolve(new Response(window.__frozen,
-					{status: 200, headers: {'Content-Type': 'application/json'}}));
-			}
-			return real(url, opts);
-		};
-	})(); return true;`, nil)
-
-	const goneID = "t-the-radio-has-moved-past-this"
-	var froze bool
-	waitFor(t, 90*time.Second, "a generated track to go stale on", func() bool {
-		w.execAsync(`var cb = arguments[arguments.length - 1];
-			window.__realFetch('/state').then(function (r) { return r.json(); }).then(function (s) {
-				if (!s.track || !s.track.id) { cb(false); return; }
-				s.track.id = `+strconv.Quote(goneID)+`;
-				if (s.prev) s.prev.id = `+strconv.Quote(goneID)+` + '-prev';
-				s.saved_ids = [];
-				window.__frozen = JSON.stringify(s);
-				cb(true);
-			}, function () { cb(false); });`, &froze)
-		return froze
-	})
-	// Two /state polls, so the page has taken the frozen snapshot as its
-	// own truth before the car button asks it to save anything.
-	time.Sleep(5 * time.Second)
-
-	// The car's previous-track button, dispatched exactly as Chrome
-	// would from the lock screen.
-	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "previoustrack"})); return true;`, nil)
-	var ack string
-	waitFor(t, 30*time.Second, "the radio to answer the car save", func() bool {
-		w.exec(`return document.getElementById('savestatus').textContent;`, &ack)
-		return strings.Contains(ack, "saving this track to ") ||
-			strings.Contains(ack, "already saved:") ||
-			strings.Contains(ack, "no longer available") ||
-			strings.Contains(ack, "nothing to save")
-	})
-	if !strings.Contains(ack, "saving this track to ") && !strings.Contains(ack, "already saved:") {
-		t.Fatalf("a stale page could not save the song the radio was playing: %q", ack)
-	}
-	t.Logf("car save on a stale page: %q", ack)
-
-	// The request must not have named a track at all: on the live
-	// stream the radio is the only one that knows what is playing.
-	var bodies []string
-	w.exec(`return window.__saveBodies;`, &bodies)
-	if len(bodies) != 1 {
-		t.Fatalf("the car save sent %d requests: %q", len(bodies), bodies)
-	}
-	if strings.Contains(bodies[0], "which=") {
-		t.Fatalf("the live-stream save named a track of its own: %q", bodies[0])
-	}
-
-	// And what landed in the snippets is a real track of the radio's,
-	// never the id the frozen page was holding.
-	var saved struct {
-		IDs []string `json:"ids"`
-	}
-	waitFor(t, 30*time.Second, "the radio to list the saved track", func() bool {
-		w.execAsync(`var cb = arguments[arguments.length - 1];
-			window.__realFetch('/state').then(function (r) { return r.json(); }).then(function (s) {
-				cb({ids: s.saved_ids || []});
-			}, function () { cb({ids: []}); });`, &saved)
-		return len(saved.IDs) > 0
-	})
-	if slices.Contains(saved.IDs, goneID) {
-		t.Fatalf("the radio saved the frozen page's stale id (saved: %q)", saved.IDs)
-	}
-	t.Logf("saved %q while the frozen page held %q", saved.IDs, goneID)
-}
-
 // TestRealBrowserBankPlaysBeforeTheRadioAnswers is the hibernate-and-wake
 // report, in a test: a phone holding banked songs must make sound out of
 // its own store on the tap, before it knows anything about the radio's
@@ -2610,8 +2406,7 @@ func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 		return at
 	}
 
-	w.exec(`document.getElementById('buffered').click();
-		var s=document.getElementById('buflevel');
+	w.exec(`var s=document.getElementById('buflevel');
 		s.value='max'; s.dispatchEvent(new Event('change'));
 		return true;`, nil)
 	w.click("#play")
@@ -2682,7 +2477,7 @@ func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 	// The refill resumes by itself once a listing can land again.
 	w.exec(`window.__holdQueue = false; return true;`, nil)
 	waitFor(t, 90*time.Second, "the refill to resume behind the music", func() bool {
-		return strings.Contains(pill(), "playing (buffered)")
+		return strings.HasPrefix(pill(), "playing")
 	})
 
 	// --- the link that answers, slowly ---

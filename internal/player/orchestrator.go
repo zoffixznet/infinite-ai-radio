@@ -224,12 +224,6 @@ type Orchestrator struct {
 	// and where it was saved - past the life of its audio here. New
 	// gives a memory-only book; set a file-backed one before Start.
 	Songbook *songbook.Book
-	// Tap, when set before Start, receives the mastered stream at the
-	// single pump chokepoint: every PCM chunk the mixer produces, at
-	// full level. It sits before pause and volume, which control the
-	// speakers in the room rather than the station. Its Write must
-	// never block.
-	Tap interface{ Write(p []byte) (int, error) }
 	// Retention is how long auto-named sessions are kept after they last
 	// played before the periodic sweep removes them; zero disables the
 	// sweep, which is the default: sessions branch on every change to
@@ -870,13 +864,7 @@ func isDeviceFault(reason string) bool {
 // backpressure; the ring's non-blocking reads make silence the floor.
 //
 // The ring is drained on every pass, pause included. Holding the reads
-// back stalls the mixer against a two-second buffer within seconds, and
-// a stalled mixer stops the queue draining, which stops generation and
-// leaves anyone listening on the phone circling the same few tracks.
-// Pause and volume are controls for the speakers in this room, so they
-// are applied after the stream has been handed to the tap: a listener
-// on the phone is not in that room, and muting a laptop is no reason to
-// broadcast dead air to them.
+// back stalls the mixer against a two-second buffer within seconds.
 func (o *Orchestrator) pumpLoop(ctx context.Context) {
 	const chunkFrames = audio.SampleRate / 10 // 100 ms
 	buf := make([]byte, audio.FramesToBytes(chunkFrames))
@@ -892,11 +880,6 @@ func (o *Orchestrator) pumpLoop(ctx context.Context) {
 		if u := o.ring.Underruns(); u != lastUnderruns {
 			o.log.Warn("output underrun", "event", "underrun", "total", u)
 			lastUnderruns = u
-		}
-		// BytesToSamples allocates, so buf is never mutated behind the
-		// tap's back.
-		if o.Tap != nil {
-			o.Tap.Write(buf)
 		}
 		out := buf
 		if paused {

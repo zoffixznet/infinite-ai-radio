@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,20 +45,55 @@ func TestAFedSongStaysInTheStoreForOtherPlayers(t *testing.T) {
 		t.Fatal("a fed song has no file to serve")
 	}
 
-	// Listed once each: the two in memory as the stream, the third as
-	// the stream from disk, none of them twice as a spare.
+	// Listed once each, the two fed ones as taken, the third as free.
 	rows := listing(t, o)
-	if len(rows) != 3 || rows[ids[0]] != "queue" || rows[ids[2]] != "queue" {
+	if len(rows) != 3 || rows[ids[0]] != "taken" || rows[ids[1]] != "taken" || rows[ids[2]] != "free" {
 		t.Fatalf("listing while fed = %v", rows)
 	}
 
-	// Played and gone from memory: the taken songs are the spares now.
+	// Played and gone from memory: the listing is the store, unchanged.
 	o.mu.Lock()
 	o.queue = nil
 	o.mu.Unlock()
 	rows = listing(t, o)
-	if len(rows) != 3 || rows[ids[0]] != "library" || rows[ids[1]] != "library" || rows[ids[2]] != "queue" {
+	if len(rows) != 3 || rows[ids[0]] != "taken" || rows[ids[1]] != "taken" || rows[ids[2]] != "free" {
 		t.Fatalf("listing after play = %v", rows)
+	}
+}
+
+// A phone's download takes the song: the level drops, the song stays
+// listed as taken, and its words come from its own route rather than
+// the listing.
+func TestAPhonesDownloadTakesTheSong(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	o, _ := idOrchestrator(t)
+	o.cfg.Buffer.Songs = 72
+	const id = "t-1790000000000-0071"
+	renderSong(t, o, 1, id)
+	row, lyrics, ok := o.Song(id)
+	if !ok || row.ID != id || row.Taken || !strings.Contains(lyrics, "the words of "+id) || row.Hash == "" {
+		t.Fatalf("Song(%s) = %+v, %q, %v", id, row, lyrics, ok)
+	}
+	if n, _ := o.Buffer.Level(0); n != 1 {
+		t.Fatalf("level before the download = %d", n)
+	}
+	o.Take(id)
+	if n, _ := o.Buffer.Level(0); n != 0 {
+		t.Fatalf("level after the download = %d, want 0", n)
+	}
+	if row, _, _ := o.Song(id); !row.Taken {
+		t.Fatal("the downloaded song is not listed as taken")
+	}
+	// Taking it again is nothing; an unknown song is nothing.
+	o.Take(id)
+	o.Take("t-nothing")
+	if _, _, ok := o.Song("t-nothing"); ok {
+		t.Fatal("a song the radio never made has details")
+	}
+	// Gone from the store, the book still answers for it.
+	o.Buffer.DropAll()
+	if row, lyrics, ok := o.Song(id); !ok || row.ID != id || !row.Taken || lyrics == "" {
+		t.Fatalf("after the store let it go, Song(%s) = %+v, %q, %v", id, row, lyrics, ok)
 	}
 }
 

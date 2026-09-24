@@ -128,25 +128,6 @@
     cueUntil = now + total;
     return total;
   }
-  // duckThrough silences whatever is playing for the cue, then brings
-  // it back, so the beeps land in a hole rather than under the music.
-  function duckThrough(el, ms) {
-    if (!el || !ms) return;
-    var was = el.volume;
-    try { el.volume = 0; } catch (e) { return; }
-    setTimeout(function () { try { el.volume = was; } catch (e) {} }, ms);
-  }
-
-  // clockSeconds parses the server's "m:ss" clock; -1 when it is not
-  // one.
-  function clockSeconds(text) {
-    var m = /^(\d+):(\d\d)$/.exec(String(text || ""));
-    if (!m) return -1;
-    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
-  }
-  // loopClock is the last elapsed reading while the stream was
-  // repeating itself, so a restart can be told from a steady advance.
-  var loopClock = -1;
 
   // say announces a transition to a screen reader. The visible status
   // line updates every couple of seconds with an elapsed count, which
@@ -204,7 +185,7 @@
   function loggedOut() {
     $("conn").textContent = "logged out";
     if (pf.active) stopBuffered("logged out - reload this page to log in again", "bad");
-    else stopStream("logged out - reload this page to log in again", "bad");
+    else streamState("logged out - reload this page to log in again", "bad");
   }
   fetch("/me").then(function (r) {
     if (r.status === 401) { loggedOut(); return null; }
@@ -313,7 +294,7 @@
     $("scroll").scrollTop = 0;
     if (live) {
       savedAudio.pause();
-      // Keeping saved songs ready behind the stream needs their
+      // Keeping saved songs ready behind the radio's needs their
       // listing, which only the saved screen used to ask for.
       if (preloadOther) loadChunks();
     } else {
@@ -328,25 +309,12 @@
   $("mode-live").addEventListener("click", function () { setMode("live"); });
   $("mode-saved").addEventListener("click", function () { setMode("saved"); });
 
-  // ---- live stream with automatic recovery -------------------------
-  // wantStream is the user's intent. While it holds, every non-auth
-  // failure (element error, clean end from a server-side drop, a stall,
-  // a rejected play) reconnects itself with exponential backoff,
-  // forever; connectivity changes retry immediately. Only an expired
-  // login stops the stream for good.
-  var audio = null;
-  var wantStream = false;
-  var watchdog = null;
-  var retryTimer = null;
-  var retryDelay = 500; // ms, doubles up to 12s
-  var attempts = 0;
-  var lastTime = -1;
-  var lastAdvance = 0;
+  // ---- the transport bar's status line ------------------------------
   var playBtn = $("play");
   var stateEl = $("streamstate");
 
   // An acknowledgement owns the status line for a few seconds; the
-  // stream's own running commentary waits its turn. A failure never
+  // player's own running commentary waits its turn. A failure never
   // waits.
   var ackUntil = 0;
   function toast(text, cls) {
@@ -372,17 +340,17 @@
     var on = "";
     if (cls === "good" || cls === "ok") on = "live";
     else if (cls === "bad" || cls === "err") on = "bad";
-    else if (wantStream || pf.active) on = "warn";
+    else if (pf.active) on = "warn";
     dot.className = "signal" + (on ? " " + on : "");
   }
-  // setPlayButton renders intent, not readiness: while a reconnect is
-  // running the button already says Stop, because that is what tapping
-  // it does. The status line carries the honest connection state.
+  // setPlayButton renders intent, not readiness: while the device is
+  // still opening its store the button already says Stop, because that
+  // is what tapping it does. The status line carries the honest state.
   function setPlayButton(on) {
     playBtn.classList.toggle("playing", !!on);
     $("playglyph").innerHTML = on ? icon.stop : icon.play;
     $("playlabel").textContent = on ? "Stop" : "Play";
-    playBtn.setAttribute("aria-label", on ? "Stop listening" : "Play the live stream");
+    playBtn.setAttribute("aria-label", on ? "Stop listening" : "Play");
   }
   // The saved player's main button carries an aria-label, which wins
   // over the caption inside it - so the name a screen reader announces
@@ -414,9 +382,7 @@
     var el = e.target;
     if (el._appPause) { el._appPause = false; return; }
     if (el.ended) return;
-    if (pf.active) { if (el !== pf.els[pf.cur]) return; }
-    else if (el !== audio) return;
-    if (!(wantStream || pf.active)) return;
+    if (!pf.active || el !== pf.els[pf.cur]) return;
     resumePending = true;
     mediaPlaybackState("paused");
     applyMediaMetadata();
@@ -427,13 +393,13 @@
   // no new timers.
   function tryResume() {
     if (!resumePending) return false;
-    var el = pf.active ? pf.els[pf.cur] : audio;
+    var el = pf.els[pf.cur];
     if (!el) { resumePending = false; return false; }
     resumePending = false;
     el.play().then(function () {
       mediaPlaybackState("playing");
       applyMediaMetadata();
-      if (pf.active) pfStatus();
+      pfStatus();
     })["catch"](function () {
       resumePending = true;
       streamState("tap play to resume", "bad");
@@ -460,7 +426,7 @@
     });
   }
   function onGesture(e) {
-    if (wantStream || pf.active || mode !== "live") { disarmGestureStart(); return; }
+    if (pf.active || mode !== "live") { disarmGestureStart(); return; }
     var t = e && e.target;
     // A tap aimed at a control belongs to that control.
     if (t && t.closest && t.closest("button, a, input, select, textarea, label, summary")) return;
@@ -476,80 +442,23 @@
     streamState("tap anywhere to start the audio", "bad");
   }
   // primeAudio clears the per-element playback lock during the gesture
-  // itself. The buffered player opens its store before it can play, and
-  // a play() that only happens after that wait has already lost the
+  // itself. The player opens its store before it can play, and a
+  // play() that only happens after that wait has already lost the
   // gesture on some browsers; a load() now keeps the element allowed.
   function primeAudio() {
-    if (transport !== "buffered" || !idbSupported) return;
+    if (!idbSupported) return;
     for (var i = 0; i < pf.els.length; i++) {
       try { pfEl(i).load(); } catch (err) {}
     }
   }
 
-  function teardownAudio() {
-    if (watchdog) { clearInterval(watchdog); watchdog = null; }
-    if (audio) {
-      audio.onerror = null;
-      audio.onended = null;
-      quiet(audio);
-      audio.removeAttribute("src");
-      audio.load();
-      if (audio.parentNode) audio.parentNode.removeChild(audio);
-      audio = null;
-    }
-  }
-
-  function stopStream(msg, cls) {
-    wantStream = false;
-    resumePending = false;
-    store.set("iar.wasplaying", false);
-    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    retryDelay = 500;
-    attempts = 0;
-    teardownAudio();
-    setPlayButton(false);
-    streamState(msg || "", cls || "");
-    mediaPlaybackState("none");
-  }
-
-  // streamFailed classifies a failure: an expired login is terminal,
-  // everything else schedules a reconnect.
-  function streamFailed(reason) {
-    if (!wantStream) return;
-    teardownAudio();
-    fetch("/state").then(function (r) {
-      if (r.status === 401 || r.status === 403) {
-        stopStream("session expired - reload this page and log in again", "bad");
-        $("conn").textContent = "logged out";
-      } else {
-        scheduleReconnect(reason);
-      }
-    }).catch(function () { scheduleReconnect(reason); });
-  }
-
-  function scheduleReconnect(reason) {
-    if (!wantStream || retryTimer) return;
-    attempts++;
-    streamState("reconnecting… (attempt " + attempts + (reason ? ", " + reason : "") + ")", "bad");
-    retryTimer = setTimeout(function () {
-      retryTimer = null;
-      connectStream();
-    }, retryDelay);
-    retryDelay = Math.min(retryDelay * 2, 12000);
-  }
-
-  // A connectivity change ends any backoff wait right away, and tears
-  // a stalled element down for an immediate reconnect instead of
-  // waiting for the watchdog.
+  // A connectivity change is a nudge: whatever the device was waiting
+  // on from the radio is asked for again at once rather than at the
+  // next timer.
   function retryNow() {
-    if (!wantStream || resumePending) return;
-    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    if (audio) {
-      if (audio.paused) return; // paused is not stalled; never restart over it
-      if (Date.now() - lastAdvance < 3000) return; // playback is progressing
-      teardownAudio();
-    }
-    connectStream();
+    if (!pf.active || resumePending) return;
+    pfRefreshQueue();
+    pfEnsureDownloads();
   }
   window.addEventListener("online", retryNow);
   // Becoming visible means the user is looking at the phone: resume a
@@ -567,76 +476,12 @@
     navigator.connection.addEventListener("change", retryNow);
   }
 
-  function connectStream() {
-    if (!wantStream || audio) return;
-    streamState(attempts > 0 ? "reconnecting… (attempt " + attempts + ")" : "connecting…", "");
-    audio = new Audio("/stream.mp3?t=" + Date.now());
-    audio.id = "liveaudio";
-    document.body.appendChild(audio);
-    audio.onerror = function () { streamFailed("stream error"); };
-    // A server-side drop ends the response cleanly; recover from that
-    // exactly like an error.
-    audio.onended = function () { streamFailed("stream ended"); };
-    audio.addEventListener("pause", onSystemPause);
-    audio.addEventListener("stalled", function () { streamState("stalled - waiting for data…", "bad"); });
-    audio.addEventListener("waiting", function () { streamState("buffering…", ""); });
-    audio.addEventListener("playing", function () { streamState("receiving audio…", ""); mediaPlaybackState("playing"); });
-    audio.play().then(function () {
-      autoStarting = false;
-      disarmGestureStart();
-      applyMediaMetadata();
-      mediaPlaybackState("playing");
-    }).catch(function (e) {
-      if (e && e.name === "NotAllowedError") {
-        stopStream("tap play to start audio", "bad");
-        armGestureStart();
-        return;
-      }
-      streamFailed("could not start audio");
-    });
-    // Honest progress: only report playing while currentTime advances.
-    lastTime = -1;
-    lastAdvance = Date.now();
-    watchdog = setInterval(function () {
-      if (!audio) return;
-      // A paused element is not "no audio arriving": after a route loss
-      // (car off) the phone pauses playback, and tearing down here
-      // would restart the stream on the phone's loudspeaker.
-      if (audio.paused) return;
-      var t = audio.currentTime;
-      if (t > lastTime + 0.2) {
-        lastTime = t;
-        lastAdvance = Date.now();
-        retryDelay = 500;
-        attempts = 0;
-        streamState("playing the live stream · " + Math.floor(t) + "s", "good");
-      } else if (Date.now() - lastAdvance > 8000) {
-        streamFailed("no audio arriving");
-      }
-    }, 2000);
-  }
-
-  function startStream() {
-    if (wantStream) return;
-    wantStream = true;
-    // The button tracks the intent from this instant: during a slow
-    // connect or a reconnect it must not invite a tap that would in
-    // fact abort what it says it is starting.
-    setPlayButton(true);
-    retryDelay = 500;
-    attempts = 0;
-    connectStream();
-  }
-
-  // ---- buffered (prefetched) playback ------------------------------
-  // Instead of the realtime stream, download whole upcoming tracks into
-  // IndexedDB and play them through two alternating audio elements, so
-  // minutes of audio survive a network dead zone. The phone default.
+  // ---- playback from this device's own bank -----------------------
+  // The radio makes songs into its store; this device takes the ones it
+  // lacks into IndexedDB and plays them through two alternating audio
+  // elements, at its own pace, so hours of audio survive a network dead
+  // zone. There is no other way to listen: nothing is streamed.
   var idbSupported = typeof indexedDB !== "undefined";
-  var phoneLike = false;
-  try { phoneLike = window.matchMedia && window.matchMedia("(pointer: coarse)").matches; } catch (e) {}
-  var transport = store.get("iar.transport", (phoneLike && idbSupported) ? "buffered" : "direct");
-  if (!idbSupported) transport = "direct";
 
   var pf = {
     active: false,
@@ -675,27 +520,35 @@
     // the poll's repaint can say it rather than talk over it.
     playWhy: "",
     lastAdvance: 0,
-    nudged: false
+    nudged: false,
+    // skipped is the music this device skipped with Next since it last
+    // told the radio: the rest of each skipped song, in seconds. The
+    // radio counts it as music consumed, and its next batch comes that
+    // much sooner.
+    skipped: 0
   };
 
   // The toss list outlives a reload, because the radio goes on offering
-  // the song until the stream reaches it. It is bounded and it expires:
-  // a song id is only unique within a run of the radio, so an entry
-  // kept for days could one day silence a different song that happens
-  // to inherit the id.
+  // the song for as long as it keeps it. It is tied to the sound rather
+  // than to a clock: a steer empties the radio's store and starts a new
+  // context, so the songs skipped in the old one can never come back,
+  // and the list is emptied with them. It is bounded all the same.
   var maxTossed = 300;
-  var tossKeepMs = 24 * 60 * 60 * 1000;
   (function loadTossed() {
     var saved = store.get("iar.tossed", {});
-    var now = Date.now();
     Object.keys(saved || {}).forEach(function (id) {
       var rec = saved[id];
       if (!rec || typeof rec !== "object") return;
-      if (!rec.at || now - rec.at > tossKeepMs) return;
       pf.tossed[id] = rec;
     });
   })();
   function saveTossed() { store.set("iar.tossed", pf.tossed); }
+  // clearTossed forgets every skipped song: the context they belonged
+  // to is gone.
+  function clearTossed() {
+    pf.tossed = {};
+    saveTossed();
+  }
   // pfTossed answers for one listing row or banked record. The title
   // rides along with the id: ids restart with the radio, names do not,
   // so a name that no longer matches means this is a different song
@@ -736,7 +589,7 @@
   function pfPlayable(id, title) { return !!id && !pf.bad[id] && !pfTossed(id, title); }
 
   // Buffering level (per device): how far ahead to download and how
-  // many finished tracks to keep banked.
+  // many played songs to keep banked.
   var bufLevel = store.get("iar.buflevel", "auto");
   if (bufLevel !== "eco" && bufLevel !== "max" && bufLevel !== "steady" && bufLevel !== "ultra") bufLevel = "auto";
   // Whether this device keeps a little of the mode it is NOT showing
@@ -747,8 +600,8 @@
   // downloads everything twice.
   var preloadOther = store.get("iar.preloadother", false) === true;
 
-  // Two banks live in one database: "tracks" is the live stream's
-  // queue, "chunks" is the saved songs. The upgrade names both rather
+  // Two banks live in one database: "tracks" is the radio's songs,
+  // "chunks" is the saved songs. The upgrade names both rather
   // than assuming which one is missing - a device that never ran the
   // one-store version arrives here with nothing at all.
   function idbOpen() {
@@ -818,8 +671,8 @@
   // switching between the two modes has something to play at once, not
   // so the device downloads everything twice.
   var warmDepth = 3;
-  // pfLive covers both reasons the live bank has work to do: someone is
-  // listening to it, or it is being kept warm behind the saved songs.
+  // pfLive covers both reasons the radio's bank has work to do: someone
+  // is listening to it, or it is being kept warm behind the saved songs.
   function pfLive() { return pf.active || pf.warm; }
 
   // pfBankSeconds reports how much audio is banked on this device.
@@ -867,36 +720,22 @@
   // the silence.
   var pfStallMs = 8000;
 
-  // pfOrdered reports whether a listing row belongs to the stream's own
-  // order: the play queue, then the songs waiting on disk. Filler does
-  // not. It is banked songs offered as spares at the end of the list,
-  // and a banked song goes out under its own id - so the very song this
-  // device is playing can turn up among them. Reading its place there
-  // put the device at the end of the stream: it stopped taking fresh
-  // songs and walked backwards through ones the radio had played.
-  function pfOrdered(row) { return row.kind !== "library"; }
-
-  // pfOrderedId reports whether an id is listed in the stream's order.
-  function pfOrderedId(id) {
+  // pfListed reports whether an id is in the radio's listing.
+  function pfListed(id) {
     for (var i = 0; i < pf.rows.length; i++) {
-      if (pf.rows[i].id === id && pfOrdered(pf.rows[i])) return true;
+      if (pf.rows[i].id === id) return true;
     }
     return false;
   }
 
-  // pfListedPlaying reports whether the playing track is still in the
-  // stream's order. Once the stream consumes it, every ordered row is
-  // upcoming from this device's point of view.
-  function pfListedPlaying() { return pfOrderedId(pf.playingId); }
-
   // pfReady is how many songs this device could play after the one it
   // is playing: the upcoming ones it has downloaded AND the ones the
-  // radio has since played past, which sound no different out of a
-  // phone in a tunnel. pfAhead answers a narrower question - how far
-  // ahead of the listing the downloader has got - and is what the
-  // downloader is steered by; this is what the listener is told,
-  // because a device saying "0 ahead" over fifty banked songs is the
-  // same lie as one saying it is waiting for the radio.
+  // radio has since let go, which sound no different out of a phone in
+  // a tunnel. pfAhead answers a narrower question - how far ahead of
+  // the listing the downloader has got - and is what the downloader is
+  // steered by; this is what the listener is told, because a device
+  // saying "0 ahead" over fifty banked songs is the same lie as one
+  // saying it is waiting for the radio.
   function pfReady() {
     var n = 0;
     Object.keys(pf.have).forEach(function (id) {
@@ -906,47 +745,37 @@
     return n;
   }
 
+  // pfAhead counts the listed songs after the one playing that this
+  // device holds. The listing is the radio's store in the order the
+  // songs were made, so "after" is simply further down it; a playing
+  // song the radio has let go leaves every listed song ahead.
   function pfAhead() {
     var n = 0;
-    var passed = !pfListedPlaying();
+    var passed = !pfListed(pf.playingId);
     pf.rows.forEach(function (row) {
-      // Spares are not ahead of anything: a banked song is more often
-      // one this device has already played than one it has yet to.
-      if (!pfOrdered(row)) return;
       if (row.id === pf.playingId) { passed = true; return; }
       if (passed && pf.have[row.id]) n++;
     });
     return n;
   }
 
-  // pfSpares counts the filler this device holds, other than the song it
-  // is playing.
-  function pfSpares() {
-    var n = 0;
-    pf.rows.forEach(function (row) {
-      if (!pfOrdered(row) && row.id !== pf.playingId && pf.have[row.id]) n++;
-    });
-    return n;
-  }
-
   // pfNextDownload is the row worth fetching next, or null when there is
   // none or enough is held already: the first row after the one playing
-  // that this device neither holds nor has thrown away. The stream's own
-  // rows come first. A spare only pads a thin stream up to the chosen
-  // depth, so the spares already held count against it - which keeps the
-  // economical level from pulling every banked song it is offered.
+  // that this device neither holds nor has thrown away. A device that
+  // is playing nothing starts at the top of the listing, which is the
+  // oldest song the radio still keeps - what the other listeners have
+  // already heard comes first, and only past that does the device take
+  // songs nobody has taken yet.
   function pfNextDownload(depth, starving) {
     var next = null;
-    var passed = !pfListedPlaying();
+    var passed = !pfListed(pf.playingId);
     for (var i = 0; i < pf.rows.length; i++) {
       var row = pf.rows[i];
       if (row.id === pf.playingId) { passed = true; continue; }
       if (passed && !pf.have[row.id] && !pfTossed(row.id, row.title)) { next = row; break; }
     }
     if (!next) return null;
-    var ahead = pfAhead();
-    if (!pfOrdered(next)) ahead += pfSpares();
-    return (ahead >= depth && !starving) ? null : next;
+    return (pfAhead() >= depth && !starving) ? null : next;
   }
 
   // pfAdoptRecords brings the device's stored songs back into memory.
@@ -964,7 +793,7 @@
         // what it is - banked music the radio has played past, kept
         // for the dead zone it was downloaded for and retired by the
         // next steer.
-        pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "" };
+        pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "", hash: rec.hash || "" };
       }
     });
   }
@@ -1003,12 +832,12 @@
         pf.queueTimer = setInterval(function () { pfRefreshQueue(); }, 10000);
       })
       .catch(function () {
-        // No usable storage: fall back to the direct stream.
+        // No usable storage: nothing can play here.
         pf.active = false;
-        transport = "direct";
-        store.set("iar.transport", transport);
-        syncTransportUI();
-        startStream();
+        pf.wantPlay = false;
+        store.set("iar.wasplaying", false);
+        setPlayButton(false);
+        streamState("this browser has no storage for songs, so nothing can play here", "bad");
       });
   }
 
@@ -1036,14 +865,14 @@
     setPlayButton(false);
     streamState(msg || "", cls || "");
     mediaPlaybackState("none");
-    // Nobody is listening to the live bank now, which is exactly when
-    // the background one may want to take over.
+    // Nobody is listening to the radio's bank now, which is exactly
+    // when the background one may want to take over.
     syncWarm();
   }
 
-  // syncWarm starts and stops the background live bank. It follows the
-  // setting and the mode: while the saved songs are on screen, the live
-  // queue is the one worth having ready.
+  // syncWarm starts and stops the background bank. It follows the
+  // setting and the mode: while the saved songs are on screen, the
+  // radio's songs are the ones worth having ready.
   function syncWarm() {
     var want = preloadOther && idbSupported && !pf.active && mode === "saved";
     if (want === pf.warm) return;
@@ -1096,8 +925,13 @@
       clearTimeout(deadline);
       if (pf.queueCtrl === ctrl) pf.queueCtrl = null;
     };
-    fetch("/api/queue", { signal: ctrl.signal }).then(function (r) {
+    // Every check carries the music skipped since the last one; the
+    // radio counts it as consumed and brings its next batch forward.
+    var skipped = pf.skipped;
+    var url = "/api/queue" + (skipped > 0 ? "?skipped=" + Math.round(skipped) : "");
+    fetch(url, { signal: ctrl.signal }).then(function (r) {
       settled();
+      if (r.ok) pf.skipped = Math.max(0, pf.skipped - skipped);
       if (r.status === 401 || r.status === 403) {
         stopBuffered("session expired - reload this page and log in again", "bad");
         $("conn").textContent = "logged out";
@@ -1130,7 +964,7 @@
         if (!samePrompt || !sameLength) pfForget(row.id);
       });
       // Stamp the current epoch onto the records this listing still
-      // names. The rest are songs the radio has played past - which is
+      // names. The rest are songs the radio has let go - which is
       // what every banked song becomes, and what they were downloaded
       // for. They used to be deleted here, so reopening the page threw
       // away the hours banked for the flight. They stay, and they stay
@@ -1171,7 +1005,7 @@
         if (row.id === pf.playingId) {
           lastNow = rec.title || rec.prompt || "buffered track";
           msArtist = "Track " + (pf.played || 0) + (rec.subtitle ? " \u00b7 " + rec.subtitle : "");
-          paintNow(null);
+          paintNow();
           applyMediaMetadata();
           pfStatus();
         }
@@ -1213,9 +1047,10 @@
 
   // pfEpochChanged: steering changed what comes next. Abort the
   // in-flight download, drop everything from the old context except the
-  // playing track, and switch to the first new-context track once it is
-  // downloaded.
+  // playing track, forget the songs skipped in it, and switch to the
+  // first new-context track once it is downloaded.
   function pfEpochChanged(newEpoch) {
+    clearTossed();
     // Abort without disowning: the aborted download's own handler
     // clears pf.ctrl if it is still the one holding it, so a controller
     // installed in the meantime is not nulled out from under a live
@@ -1284,18 +1119,26 @@
     // can actually empty. Left to the browser's cache there is a
     // second copy nothing here controls, and a flushed bank refills
     // from it instantly - even with the radio switched off.
+    var lyrics = "";
     fetch(row.url, { signal: ctrl.signal, cache: "no-store" }).then(function (r) {
       if (r.status === 401 || r.status === 403) { throw { auth: true }; }
       if (!r.ok) { throw new Error("track " + r.status); }
       return r.blob();
+    }).then(function (blob) {
+      // The words come separately: the listing is kept small by leaving
+      // them out, and a song is worth having even if they never arrive.
+      return fetch(row.url.replace(/\.mp3$/, ".json"), { signal: ctrl.signal, cache: "no-store" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (song) { if (song && song.lyrics) lyrics = song.lyrics; return blob; },
+          function () { return blob; });
     }).then(function (blob) {
       // The deadline covers the body too. Cleared on the headers, it
       // bounded only how long the radio took to start answering, and a
       // song trickling in at a byte a second held the slot for ever.
       clearTimeout(deadline);
       if (pf.ctrl === ctrl) pf.ctrl = null;
-      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "" };
-      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: row.lyrics || "", blob: blob, saved: Date.now() }))
+      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: lyrics, hash: row.hash || "" };
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: lyrics, hash: row.hash || "", blob: blob, saved: Date.now() }))
         .then(function () { pf.storeFull = false; })
         ["catch"](function () {
           // Out of room on the device: the song plays from memory this
@@ -1306,10 +1149,9 @@
         });
       pfTrimStore();
       pfShowMinutes();
-      // Only a freshly generated track is worth cutting the current
-      // song short for. Banked filler is older than what is playing and
-      // may be in a language the listener has just switched off.
-      if (pf.active && pf.switchOnDownload && row.kind !== "library") {
+      // The first song of a new setting is worth cutting the current
+      // one short for.
+      if (pf.active && pf.switchOnDownload) {
         pf.switchOnDownload = false;
         pfPlay(row.id);
       } else if (pf.wantPlay && !pf.playingId) {
@@ -1379,12 +1221,9 @@
     }
     if (!ids.length) return null;
     var at = ids.indexOf(afterId);
-    // Where to carry on from is read off the stream's order alone. A song
-    // listed only as a spare - which is where the radio's own playing and
-    // previous songs land - leaves this device at the head of the stream,
-    // not at the end of the list. The offline store has no order but its
-    // own, and keeps cycling through it.
-    if (listed && at >= 0 && !pfOrderedId(afterId)) at = -1;
+    // A song the radio has let go leaves this device at the start of
+    // what it still lists; the offline store has no order but its own,
+    // and keeps cycling through it.
     // Prefer something not heard yet in this context: a store of three
     // tracks otherwise cycles the same three forever.
     pf.wrapped = false;
@@ -1518,7 +1357,7 @@
       pf.played = (pf.played || 0) + 1;
       lastNow = rec.title || rec.prompt || "buffered track";
       msArtist = "Track " + pf.played + (rec.subtitle ? " · " + rec.subtitle : "");
-      paintNow(null);
+      paintNow();
       applyMediaMetadata();
       mediaPlaybackState("playing");
       updateSaveButtons(null);
@@ -1544,7 +1383,7 @@
         pf.wantPlay = true;
         updateSeek(null);
         updateSaveButtons(null);
-        paintNow(null);
+        paintNow();
       }
       pfPlayFails++;
       if (pfPlayFails >= maxPlayFails) {
@@ -1613,11 +1452,8 @@
   }
 
   // pfSkip is the manual, debounced skip. It changes playback only on
-  // this device; the stream and other listeners keep their position.
+  // this device; other listeners keep their place.
   var lastManualSkip = 0;
-  // pfJumpLive discards every banked song and rejoins the head of the
-  // server's queue: the manual escape from a device buffer full of
-  // sound the listener has moved past.
   // pfJumpLive empties this device completely: every downloaded song,
   // whatever is playing, and whatever was staged to play next. What
   // comes back comes from the server, so with the server unreachable
@@ -1657,7 +1493,7 @@
     pf.playingId = null;
     pf.wantPlay = true;
     pf.switchOnDownload = false;
-    setStatus([stateEl, $("steerstatus")], "catching up with the live stream…", "ok");
+    setStatus([stateEl, $("steerstatus")], "emptied this device - taking songs from the radio again…", "ok");
     pfShowMinutes();
     // Whatever listing is in flight describes a bank that no longer
     // exists, so it is dropped rather than waited for.
@@ -1678,9 +1514,13 @@
     // next song in the listing rather than whatever happens to be first
     // once the skipped one is gone.
     var nextId = pfNextId(tossId, true);
-    // Whatever happens after this, the skipped song stops here.
+    // Whatever happens after this, the skipped song stops here - and
+    // the rest of it is music consumed without being heard, which the
+    // radio is told about on the next check.
     var out = pf.els[pf.cur];
     if (out) {
+      var left = (isFinite(out.duration) ? out.duration : (rec && rec.dur) || 0) - (out.currentTime || 0);
+      if (left > 0) pf.skipped += left;
       out.onended = null;
       out.ontimeupdate = null;
       quiet(out);
@@ -1703,7 +1543,7 @@
     msArtist = "";
     updateSeek(null);
     updateSaveButtons(null);
-    paintNow(null);
+    paintNow();
     applyMediaMetadata();
     playTroubleCue();
     setStatus([stateEl, $("steerstatus")],
@@ -1712,12 +1552,9 @@
     pfEnsureDownloads();
   }
 
-  // paintNow names the song THIS listener is hearing. In buffered
-  // playback that is the device's own banked track, not the machine's:
-  // the phone plays its bank at its own pace, so painting the laptop's
-  // track here renamed the song under a listener who was looping one.
-  // The lyrics and the seek row already follow the device; the
-  // now-block was the part left behind.
+  // paintNow names the song THIS listener is hearing: the device's own
+  // banked song. The phone plays its bank at its own pace, and nothing
+  // the radio is playing is its business.
   // nowBase is the playing song's name without the save marker in
   // front of it, so the marker can be redrawn the instant a save is
   // asked for rather than at the next poll.
@@ -1728,7 +1565,7 @@
   }
   function paintSaveMark() { setText($("now"), saveMark() + nowBase); }
 
-  function paintNow(s) {
+  function paintNow() {
     var rec = pf.active && pf.playingId ? pf.have[pf.playingId] : null;
     if (rec) {
       nowTitle = rec.title || "";
@@ -1739,27 +1576,12 @@
       setText($("meta"), m);
       return;
     }
-    // Buffered playback between songs: this block names what THIS
-    // device is hearing, and it is hearing nothing. Painting the
-    // machine's song here would name a song the listener cannot hear.
-    if (pf.active) {
-      nowTitle = "";
-      paintNowText("…");
-      setText($("nowprompt"), "");
-      setText($("meta"), "");
-      return;
-    }
-    // Without a device track there is nothing to say until the next
-    // poll brings the machine's.
-    if (!s) return;
-    var t = s.track;
-    nowTitle = (t && t.title) || "";
-    paintNowText((t && (t.title || t.prompt)) || s.source || s.state || "...");
-    setText($("nowprompt"), (t && t.title && t.prompt) || "");
-    var meta = t && t.number ? "Track " + t.number : "";
-    if (t && t.subtitle) meta += (meta ? "  ·  " : "") + t.subtitle;
-    if (t && t.lang) meta += (meta ? "  ·  " : "") + "sung in " + t.lang;
-    setText($("meta"), meta);
+    // Between songs, or stopped: this block names what THIS device is
+    // hearing, and it is hearing nothing.
+    nowTitle = "";
+    paintNowText(pf.active ? "…" : "");
+    setText($("nowprompt"), "");
+    setText($("meta"), "");
   }
 
   // ---- renaming what is playing ------------------------------------
@@ -1782,11 +1604,14 @@
     })["catch"](function () {});
   }
   $("rename").addEventListener("click", function () {
-    // A device playing its own banked copy renames that song, not
-    // whatever the machine happens to be playing.
+    // The device renames the song it is playing.
     var id = pf.active && pf.playingId ? pf.playingId : "";
     var rec = id ? pf.have[id] : null;
-    var was = rec ? (rec.title || "") : nowTitle;
+    if (!rec) {
+      setStatus([stateEl, $("steerstatus")], "nothing is playing on this device to rename", "err");
+      return;
+    }
+    var was = rec.title || "";
     var name = window.prompt("New name for this song:", was);
     if (name === null) return;
     name = name.trim();
@@ -1795,19 +1620,22 @@
     act($("rename"), [stateEl, $("steerstatus")], "/retitle",
       "id=" + encodeURIComponent(id) + "&title=" + encodeURIComponent(name),
       "renaming…").then(function (d) {
-      if (!d || !rec) return;
+      if (!d) return;
       // The server has no say over this device's own copy; rename it
       // here so the screen and the lock screen change at once instead
       // of at the next listing.
       pfSetTitle(id, name);
       lastNow = name;
-      paintNow(null);
+      paintNow();
       applyMediaMetadata();
       renderLyrics(null);
     });
   });
 
   function pfStatus() {
+    // A system pause is waiting on a tap; the line that says so must
+    // not be painted over by the poll's "playing".
+    if (resumePending) return;
     // Nothing playing is its own state, and saying "playing" through it
     // is how a silent radio looks like a working one - after a flush
     // with the machine unreachable, or after a skip with nothing left
@@ -1862,26 +1690,16 @@
     var extra = pf.offline ? " · offline, playing banked tracks" : "";
     if (!pf.offline && pf.wrapped) extra = " · replaying stored tracks, nothing new yet";
     if (pf.loop) extra += " · looping this track";
-    pfState("playing (buffered) · " + pfReady() + " ahead" + extra, pf.offline ? "bad" : "good");
+    pfState("playing · " + pfReady() + " ahead" + extra, pf.offline ? "bad" : "good");
     pfShowMinutes();
   }
 
-  // ---- transport choice and the play button ------------------------
-  function syncTransportUI() {
-    $("buffered").checked = transport === "buffered";
+  // ---- the bank's settings and the play button ---------------------
+  function syncBankUI() {
     $("buflevel").value = bufLevel;
     $("preloadother").checked = preloadOther;
     pfShowMinutes();
   }
-  $("buffered").addEventListener("change", function () {
-    transport = $("buffered").checked ? "buffered" : "direct";
-    store.set("iar.transport", transport);
-    syncTransportUI();
-    if (wantStream || pf.active) {
-      stopListening("");
-      startListening();
-    }
-  });
   $("buflevel").addEventListener("change", function () {
     bufLevel = $("buflevel").value;
     store.set("iar.buflevel", bufLevel);
@@ -1891,7 +1709,7 @@
       pfStatus();
     }
     // One level, both banks: the saved songs are kept to the same
-    // depth as the stream, so "Maximum" means the same thing in both
+    // depth as the radio's, so "Maximum" means the same thing in both
     // modes.
     svTrim();
     svEnsure();
@@ -1906,33 +1724,31 @@
 
   function startListening() {
     store.set("iar.wasplaying", true);
-    if (transport === "buffered" && idbSupported) startBuffered(); else startStream();
+    startBuffered();
   }
   function stopListening(msg) {
     if (pf.active) stopBuffered(msg === undefined ? "stopped" : msg, "");
-    if (wantStream) stopStream(msg === undefined ? "stopped" : msg, "");
   }
 
   playBtn.addEventListener("click", function () {
     autoStarting = false;
     disarmGestureStart();
     if (resumePending) { tryResume(); return; }
-    if (wantStream || pf.active) {
+    if (pf.active) {
       stopListening("stopped");
       return;
     }
-    // Inside the gesture, before the wait: the buffered player has to
-    // open its store and ask the radio what is coming before it can
-    // play anything, and on a slow connection that wait outlives the
-    // tap that authorised the sound. The tap-anywhere path has always
+    // Inside the gesture, before the wait: the player has to open its
+    // store and ask the radio what is coming before it can play
+    // anything, and on a slow connection that wait outlives the tap
+    // that authorised the sound. The tap-anywhere path has always
     // primed the elements here; the play button never did.
     primeAudio();
     startListening();
   });
 
-  // The loop button repeats what this listener is hearing. Buffered
-  // playback loops the local track on this device alone; on the direct
-  // stream it asks the radio itself, which loops the room for everyone.
+  // The loop button repeats what this listener is hearing, on this
+  // device alone; the radio and the other listeners are not involved.
   function paintLoop(on) {
     var btn = $("loop");
     if (!btn) return;
@@ -1950,23 +1766,25 @@
   }
   $("loop").addEventListener("click", function () {
     buzz();
-    if (pf.active) { pfSetLoop(!pf.loop); return; }
-    act($("loop"), [stateEl, $("steerstatus")], "/loop", "", "toggling the loop…");
+    if (!pf.active) {
+      setStatus([stateEl, $("steerstatus")], "nothing is playing on this device to loop", "err");
+      return;
+    }
+    pfSetLoop(!pf.loop);
   });
   $("next").addEventListener("click", function () {
     buzz();
-    if (pf.active) {
-      pfSkip();
+    if (!pf.active) {
+      setStatus([stateEl, $("steerstatus")], "nothing is playing on this device to skip", "err");
       return;
     }
-    act($("next"), [stateEl, $("steerstatus")], "/next", "", "skipping…");
+    pfSkip();
   });
 
   // ---- media session (lock screen, car displays) -------------------
-  // lastNow is the playing track's short title (the laptop's track in
-  // direct mode, this device's track in buffered mode, the chunk in
-  // saved mode); msArtist carries "Track N" plus the genre/mood
-  // subtitle (or the chunk's tag).
+  // lastNow is the playing track's short title (this device's track in
+  // live mode, the chunk in saved mode); msArtist carries "Track N"
+  // plus the genre/mood subtitle (or the chunk's tag).
   var lastNow = "";
   var msArtist = "";
   var lastMetaSig = "";
@@ -2049,9 +1867,8 @@
         break;
       case "nexttrack":
         if (mode === "live") {
-          // Same debounce/double-fire guards as the on-page controls.
-          if (pf.active) { pfSkip(); return; }
-          if (me && me.steer) act($("next"), [stateEl, $("steerstatus")], "/next", "", "skipping…");
+          // Same debounce/double-fire guards as the on-page control.
+          if (pf.active) pfSkip();
         } else {
           repeatOne = null; updateLoopState(); step(1);
         }
@@ -2128,25 +1945,18 @@
   var lyricsSig = null;
   var lyricsText = "";
   var lyricsTitle = "";
-  // Buffered playback runs on this device's own copy, which is rarely
-  // the track the machine is on: the words have to follow what is
-  // coming out of THIS phone, or they arrive a track late.
-  // playingSong is the song whose words the panel is showing: this
-  // device's own record while it plays its bank, the machine's track
-  // otherwise. Returning the song rather than just its words lets the
-  // panel head the lyrics with the name they belong to.
-  function playingSong(s) {
-    if (pf.active) {
-      if (!pf.playingId) return null;
-      return pf.have[pf.playingId] || null;
-    }
-    // Not playing this device's own bank: the panel follows the radio
-    // itself. The room's speakers are singing these words right now,
-    // so they show whether or not this device also streams the audio.
-    return (s && s.track) || null;
+  // The words follow what is coming out of THIS phone: this device's
+  // own record of the song it is playing. Returning the song rather
+  // than just its words lets the panel head the lyrics with the name
+  // they belong to.
+  function playingSong() {
+    if (!pf.active || !pf.playingId) return null;
+    return pf.have[pf.playingId] || null;
   }
+  var lastVocals = false;
   function renderLyrics(s) {
-    var song = playingSong(s);
+    if (s) lastVocals = !!s.vocals;
+    var song = playingSong();
     var text = (song && song.lyrics) || "";
     lyricsText = text;
     lyricsTitle = (song && song.title) || "";
@@ -2160,7 +1970,7 @@
     if (!text) {
       var none = document.createElement("span");
       none.className = "empty";
-      none.textContent = s.vocals ? "no words for this track" : "this track has no vocals";
+      none.textContent = !song ? "nothing playing on this device" : (lastVocals ? "no words for this track" : "this track has no vocals");
       box.appendChild(none);
       return;
     }
@@ -2347,10 +2157,7 @@
 
   // ---- saved-track state ------------------------------------------
   // The server remembers which track ids were saved; the page greys
-  // the save buttons for whatever THIS device is hearing (the laptop's
-  // track in direct mode, this device's own track in buffered mode).
-  var lastTrack = null;   // /state track object (direct mode)
-  var lastPrev = null;    // /state prev object
+  // the save buttons for whatever THIS device is hearing.
   var savedIds = {};      // server-confirmed saved ids
   var localSaved = {};    // optimistic marks while the encode runs
   var savingIds = {};     // saves asked for and not answered yet
@@ -2364,11 +2171,12 @@
   //
   // Every entry names one concrete track id, never "the one playing":
   // by the time the queue drains, the one playing is a different song
-  // and saving that would be saving the wrong thing. The radio can save
-  // a song long after it has played it - every song is banked in its
-  // library the moment it is fed - so the reach of this is as deep as
-  // that library, and the radio is the one that says when a song is
-  // gone: its answer settles the entry either way.
+  // and saving that would be saving the wrong thing. The radio keeps a
+  // played song for a while and remembers every song it ever made, so
+  // a save reaches back as far as this device's bank does: a song the
+  // radio has let go is saved from the copy on this device, which the
+  // radio checks against its record before keeping. Its answer settles
+  // the entry either way.
   var saveQueue = [];
   // How long to go on retrying while the radio cannot be reached at
   // all. Every answer it gives settles an entry, so this bounds nothing
@@ -2409,29 +2217,53 @@
     saveQueue = saveQueue.filter(function (item) { return item.id !== id; });
     if (saveQueue.length !== before) persistSaveQueue();
   }
-  // postSave is the one place a save reaches the radio. It marks the
-  // failures that are worth queueing - the request never arrived, or
-  // the radio is up but not answering - apart from the ones that mean
-  // the song is simply gone, which no amount of retrying fixes.
+  // saveAnswer reads one save's reply: a dead radio is worth queueing
+  // for, an answer is final.
+  function saveAnswer(r) {
+    if (r.status === 401) { loggedOut(); throw new Error("logged out"); }
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (r.status >= 500) {
+        var busy = new Error(d.error || ("error " + r.status));
+        busy.offline = true;
+        throw busy;
+      }
+      if (!r.ok) throw new Error(d.error || d.ack || ("error " + r.status));
+      return d;
+    });
+  }
+  function noRadio() {
+    var gone = new Error("no connection to the radio");
+    gone.offline = true;
+    throw gone;
+  }
+  // bankedBlob reads a song's bytes back out of this device's store.
+  function bankedBlob(id) {
+    return dbReady().then(function () { return idbReq(idbStore("readonly").get(id)); })
+      .then(function (rec) { return rec && rec.blob ? rec.blob : null; });
+  }
+  // postSave is the one place a save reaches the radio, in two steps.
+  // The first names the song; the radio saves it from its own store if
+  // it still has it. If it has let the song go it asks for the copy on
+  // this device, and the second step sends those bytes - the radio
+  // checks them against the record it kept of the song, and saves them
+  // under the name and words it recorded. A song this device no longer
+  // holds either is simply gone, which no amount of retrying fixes.
   function postSave(which, tag) {
     var body = "tag=" + encodeURIComponent(tag || "");
     if (which) body += "&which=" + encodeURIComponent(which);
     return fetch("/save", { method: "POST", headers: headers, body: body })
-      .then(function (r) {
-        if (r.status === 401) { loggedOut(); throw new Error("logged out"); }
-        return r.json().catch(function () { return {}; }).then(function (d) {
-          if (r.status >= 500) {
-            var busy = new Error(d.error || ("error " + r.status));
-            busy.offline = true;
-            throw busy;
-          }
-          if (!r.ok) throw new Error(d.error || d.ack || ("error " + r.status));
-          return d;
+      .then(saveAnswer, noRadio)
+      .then(function (d) {
+        if (!d || !d.upload || !which) return d;
+        return bankedBlob(which).then(function (blob) {
+          if (!blob) return { ack: "this device no longer has that song to send", saved: false };
+          var rec = pf.have[which];
+          var hash = (rec && rec.hash) || "";
+          var url = "/save/upload?tag=" + encodeURIComponent(tag || "") +
+            (hash ? "&hash=" + encodeURIComponent(hash) : "");
+          return fetch(url, { method: "POST", headers: { "X-IAR-Remote": "1", "Content-Type": "audio/mpeg" }, body: blob })
+            .then(saveAnswer, noRadio);
         });
-      }, function () {
-        var gone = new Error("no connection to the radio");
-        gone.offline = true;
-        throw gone;
       });
   }
   function queueSave(id, tag, title) {
@@ -2490,8 +2322,7 @@
   window.addEventListener("online", flushSaveQueue);
 
   function saveTargets() {
-    if (pf.active) return { cur: pf.playingId, prev: pf.prevId };
-    return { cur: lastTrack && lastTrack.id, prev: lastPrev && lastPrev.id };
+    return { cur: pf.active ? pf.playingId : null, prev: pf.active ? pf.prevId : null };
   }
   // isSaved must answer with a real boolean. classList.toggle treats an
   // undefined second argument as "no force given" and flips the class,
@@ -2519,16 +2350,8 @@
   // known server state.
   function updateSaveButtons(s) {
     if (s) {
-      // A stopgap or a library filler leaves /state without a track,
-      // but the machine's save target is still the last generated one -
-      // so keeping it here is what stops the control from claiming the
-      // track is saveable and then answering "already saved".
-      if (s.track) lastTrack = s.track;
-      if (s.prev) lastPrev = s.prev;
       savedIds = {};
       (s.saved_ids || []).forEach(function (id) { savedIds[id] = true; });
-      if (s.track && s.track.saved) savedIds[s.track.id] = true;
-      if (s.prev && s.prev.saved) savedIds[s.prev.id] = true;
       // The radio can have a song safe before its answer gets back to
       // this device - a save whose reply was lost with the signal is
       // still a save, and retrying it would be asking twice.
@@ -2547,42 +2370,31 @@
     applyMediaMetadata();
   }
 
-  // doSave saves what the listener is hearing: the buffered player's
-  // own track ids on the phone, the laptop's current/previous track in
-  // direct mode. Saving an already-saved track is a friendly no-op.
+  // doSave saves what the listener is hearing: this device's own track
+  // ids, because the radio cannot know which song this device is
+  // playing. Saving an already-saved track is a friendly no-op.
   function doSave(btn, wantPrev, statusEl) {
     statusEl = statusEl || $("savestatus");
     var ids = saveTargets();
     var id = wantPrev ? ids.prev : ids.cur;
-    // which is what the radio is asked to save. A buffered device has
-    // to name its own track, because the radio cannot know which one
-    // this device is playing. On the live stream the radio resolves
-    // "the one playing" for itself, and that is the point: this page's
-    // idea of the playing track is only as fresh as its last poll, and
-    // a phone with its screen off stops polling. Naming an id there
-    // meant a locked phone asking for a song the radio had already
-    // moved past - "that track is no longer available to save" - while
-    // the song the listener was actually hearing sat there saveable.
-    // The id is still what the buttons and the offline queue are keyed
-    // on; it just no longer decides what gets saved.
-    var authoritative = pf.active || wantPrev;
-    var which = pf.active ? id : (wantPrev ? "prev" : "");
-    if (authoritative && isSaved(id)) {
-      setStatus(statusEl, "already saved", "ok");
-      return Promise.resolve({ ack: "already saved" });
-    }
-    if (pf.active && !id) {
+    if (!id) {
       setStatus(statusEl, wantPrev
         ? "no previous track on this device yet"
         : "nothing is playing on this device yet", "err");
       return Promise.resolve(null);
     }
-    if (authoritative && savingIds[id]) {
+    var which = id;
+    if (isSaved(id)) {
+      setStatus(statusEl, "already saved", "ok");
+      return Promise.resolve({ ack: "already saved" });
+    }
+    if (savingIds[id]) {
       setStatus(statusEl, "already saving that track", "ok");
       return Promise.resolve({ ack: "already saving" });
     }
     var tag = saveTag();
-    var named = wantPrev ? ((lastPrev && lastPrev.title) || "") : (lastNow || "");
+    var rec = pf.have[id];
+    var named = (rec && rec.title) || lastNow || "";
     buzz();
     // The marker in front of the song's name is keyed on the id this
     // page knows. A stale one still clears when the save settles, so
@@ -2828,7 +2640,6 @@
       // Proof the radio is reachable: whatever a dead patch swallowed
       // can go now.
       if (saveQueue.length) flushSaveQueue();
-      paintNow(s);
       // Every change to the sound branches the session, so the name in
       // the status line is also how the station list learns that what
       // is playing has moved - including when someone changed it from
@@ -2840,31 +2651,13 @@
       var srv = s.session || "";
       srv += (srv ? "  ·  " : "") + (s.ready || s.queued + " ready") + (s.generating ? " · generating" : "");
       setText($("srvline"), srv);
-      if (!pf.active) updateSeek(null, s.elapsed, s.duration);
-      // A pause at the machine is a fact about a room this listener is
-      // not in and cannot act on, so it is not mentioned. What is worth
-      // saying is why the music is not what they just asked for yet.
+      // What is worth saying is why the music is not what they just
+      // asked for yet.
       var phaseText = "";
       if (s.phase) phaseText = s.phase + " (" + s.phase_info + ")";
-      else if (s.switching) phaseText = "New setting saved - the first track in it is generating.";
-      else if (s.loop_on) phaseText = pf.active
-        ? "The radio itself is looping its playing track; this device plays its own bank."
-        : "Looping this track until the loop is turned off.";
-      else if (s.looping) phaseText = "Replaying the last track while the next one generates.";
-      // Cue the stream only at the seam, never over a playing song:
-      // the looped track starting again is the moment worth marking,
-      // and the elapsed clock running backwards is that moment.
-      var at = clockSeconds(s.elapsed);
-      if (s.looping && !pf.active && wantStream && at >= 0) {
-        if (loopClock >= 0 && at < loopClock) {
-          duckThrough(audio, playTroubleCue());
-        }
-        loopClock = at;
-      } else {
-        loopClock = -1;
-      }
+      else if (s.switching) phaseText = "New setting saved - the first song in it is generating.";
       setText($("phase"), phaseText);
-      paintLoop(pf.active ? pf.loop : !!s.loop_on);
+      paintLoop(pf.active && pf.loop);
       renderSound(s);
       renderLyrics(s);
       renderLyricsGen(s);
@@ -2874,27 +2667,6 @@
         pfRefreshQueue();
       }
       if (pf.active) pfStatus();
-      // Keep the media session honest in every mode: the title is the
-      // track's short name and the artist carries "Track N" plus the
-      // genre/mood subtitle. Direct mode follows the laptop's track
-      // here; buffered mode plays this device's own track and sets its
-      // metadata in pfPlay.
-      var changed = false;
-      if (mode === "live" && !pf.active) {
-        var artist = t && t.number
-          ? "Track " + t.number + (t.subtitle ? " · " + t.subtitle : "")
-          : (s.session_desc || s.session || "");
-        if (artist !== msArtist) {
-          msArtist = artist;
-          changed = true;
-        }
-        var now = (t && (t.title || t.prompt)) || s.source || s.state || "";
-        if (now !== lastNow) {
-          lastNow = now;
-          changed = true;
-        }
-      }
-      if (changed && (wantStream || pf.active)) applyMediaMetadata();
     }).catch(function () {
       // One missed poll on mobile data is normal. Saying "disconnected"
       // on the first one and taking it back on the next just strobes.
@@ -3609,7 +3381,7 @@
   // keeps saved songs ready behind it.
   setInterval(function () { if (mode === "saved" || preloadOther) loadChunks(); }, 30000);
 
-  syncTransportUI();
+  syncBankUI();
   setMode(mode);
   // Cold start: a page load while listening was on (a reload, or Chrome
   // reopened in the car) tries to pick playback straight back up; a

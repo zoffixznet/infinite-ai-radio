@@ -12,28 +12,47 @@ import (
 
 	"iar/internal/accounts"
 	"iar/internal/export"
+	"iar/internal/player"
 )
 
-// queueTrackJSON is one prefetchable track in the queue listing.
+// queueTrackJSON is one song in the store, as the listing offers it.
+// The lyrics are not here - a listing of a hundred songs would carry
+// a hundred lyric sheets ten times a minute - but at the song's own
+// JSON route, which a client reads once, when it takes the song.
 type queueTrackJSON struct {
 	ID        string  `json:"id"`
 	Prompt    string  `json:"prompt"`
 	Title     string  `json:"title,omitempty"`
 	Subtitle  string  `json:"subtitle,omitempty"`
 	DurationS float64 `json:"duration_s"`
-	Kind      string  `json:"kind"`
-	Lyrics    string  `json:"lyrics,omitempty"`
-	// URL is the authenticated, range-capable MP3 route for the track.
+	// Taken reports some player has taken the song already; the store
+	// keeps it for the ones that have not caught up.
+	Taken bool `json:"taken,omitempty"`
+	// URL is the authenticated, range-capable MP3 route for the song.
 	URL string `json:"url"`
 	// Hash is the SHA-256 of the MP3 the URL serves, when the radio
 	// recorded one; the page sends it back to save from its own copy.
 	Hash string `json:"hash,omitempty"`
 }
 
-// queueJSON is the upcoming-tracks listing a prefetching client polls.
+// songJSON is one song with everything a client shows about it.
+type songJSON struct {
+	queueTrackJSON
+	Lyrics string `json:"lyrics,omitempty"`
+}
+
+// queueJSON is the store's listing a client polls.
 type queueJSON struct {
 	Epoch  int              `json:"epoch"`
 	Tracks []queueTrackJSON `json:"tracks"`
+}
+
+func rowJSON(t player.QueueTrack) queueTrackJSON {
+	return queueTrackJSON{
+		ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
+		DurationS: t.Seconds, Taken: t.Taken,
+		URL: "/queue/" + url.PathEscape(t.ID) + ".mp3", Hash: t.Hash,
+	}
 }
 
 func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accounts.User) {
@@ -46,13 +65,19 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 	epoch, tracks := s.ctl.QueueTracks()
 	out := queueJSON{Epoch: epoch, Tracks: []queueTrackJSON{}}
 	for _, t := range tracks {
-		out.Tracks = append(out.Tracks, queueTrackJSON{
-			ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
-			DurationS: t.Seconds, Kind: t.Kind, Lyrics: t.Lyrics,
-			URL: "/queue/" + url.PathEscape(t.ID) + ".mp3", Hash: t.Hash,
-		})
+		out.Tracks = append(out.Tracks, rowJSON(t))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleQueueSong serves one song's details, lyrics included.
+func (s *Server) handleQueueSong(w http.ResponseWriter, r *http.Request, id string) {
+	row, lyrics, ok := s.ctl.Song(id)
+	if !ok {
+		http.Error(w, "no such song", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, songJSON{queueTrackJSON: rowJSON(row), Lyrics: lyrics})
 }
 
 // handleQueueTrack serves one listed track as MP3 with Range
@@ -62,16 +87,23 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 // handler (never on the playback path), and cached so several phones
 // prefetching the same track encode it once.
 func (s *Server) handleQueueTrack(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	if id, ok := strings.CutSuffix(r.PathValue("file"), ".json"); ok && id != "" {
+		s.handleQueueSong(w, r, id)
+		return
+	}
 	id, ok := strings.CutSuffix(r.PathValue("file"), ".mp3")
 	if !ok || id == "" {
 		http.NotFound(w, r)
 		return
 	}
 	if path, ok := s.ctl.TrackFile(id); ok {
-		// Opened before anything else: feeding the song deletes the
-		// file, and the open descriptor is what keeps the bytes.
+		// Opened before anything else: a trim can delete the file, and
+		// the open descriptor is what keeps the bytes.
 		if f, err := os.Open(path); err == nil {
 			defer f.Close()
+			// Downloading is taking: the song is this client's now, and
+			// the store's level drops by one.
+			s.ctl.Take(id)
 			w.Header().Set("Content-Type", "audio/mpeg")
 			w.Header().Set("Cache-Control", "no-store")
 			http.ServeContent(w, r, id+".mp3", time.Time{}, f)
