@@ -6,10 +6,11 @@ winning", "switch to piano" - and the music follows. No cloud, no API
 keys, no subscriptions, nothing leaves the machine.
 
 It is one Go binary that manages everything else: it installs the music
-model, supervises it, buffers songs ahead of playback, joins them with
-crossfades, and keeps audio flowing when the generator hiccups. There is
-a terminal interface and a phone-first web remote, so the machine can
-sit in a cupboard and the radio can live in your pocket.
+model, supervises it, makes songs ahead into a store that every listener
+takes from, joins them with crossfades on the machine's own speakers, and
+keeps the music going when the generator hiccups. There is a terminal
+interface and a phone-first web remote, so the machine can sit in a
+cupboard and the radio can live in your pocket.
 
 [![the radio playing on the phone](assets/thumbs/remote-player.png)](assets/remote-player.png) [![the saved songs player](assets/thumbs/remote-saved.png)](assets/remote-saved.png) [![the words of the playing song](assets/thumbs/remote-lyrics.png)](assets/remote-lyrics.png)
 
@@ -150,8 +151,9 @@ different one. The first song takes a minute or so to make; after that
 the store fills ahead of you, and a restart plays from it at once.
 
 The best way to drive the radio is the **web interface** - the station
-picker, live lyrics, per-song saving, seeking and buffered playback all
-live there, and it beats the terminal even on the machine itself:
+picker, live lyrics, per-song saving, seeking and a bank of songs kept
+on the phone itself all live there, and it beats the terminal even on
+the machine itself:
 
 ```sh
 ./iar remote setup   # once: create your login (email + password)
@@ -184,10 +186,12 @@ Quit with `quit` or Ctrl+C. Only one player runs at a time; a second one
 refuses to start and says so.
 
 The engine is woken only when there is work: songs are planned and
-rendered in batches to a disk buffer, and between batches the engine
-shuts down completely, giving back all of its graphics and system memory
-while playback continues from the buffer. A relaunch with a healthy
-buffer plays immediately without touching the graphics card at all.
+rendered in batches into the song store on disk, and between batches the
+engine shuts down completely, giving back all of its graphics and system
+memory while every listener plays on from the store. Once the store is
+full, nothing more is made until somebody takes a song. A relaunch with
+songs in the store plays immediately without touching the graphics card
+at all.
 
 ## Steering the music
 
@@ -218,7 +222,7 @@ Steering has real semantics, not just word-appending:
   "vocals in Spanish" set tempo, key, meter and vocal language as hard
   constraints the engine honours directly.
 - Repeating a request already in effect changes nothing (and says so)
-  instead of churning the queue.
+  instead of throwing away the songs made ahead.
 
 Steering accumulates: "calmer" then "no drums" gives you calm, drumless
 music. `clear` wipes the accumulated steering and returns to the
@@ -291,7 +295,7 @@ Languages the engine has no tag for still work best-effort (the words
 are written in that language and sung without a language hint), and the
 `languages` listing says which ones those are. Steering a language by
 hand ("sing in French") pins the session to it; flipping a switch
-releases the pin and drops the tracks queued ahead.
+releases the pin and drops the songs made ahead.
 
 ### Terminal commands
 
@@ -311,15 +315,15 @@ typed at the same prompt. A leading slash is optional: `skip` and
 | `delete <name>` | delete a session or hide a preset (asks first) |
 | `delete autos [days]` | delete the sessions nobody named (asks first) |
 | `mp3 <minutes> [file]` | export minutes of the current vibe to MP3 |
-| `skip` | jump to the next track |
-| `loop` | repeat the playing track until toggled off |
-| `pause` / `resume` | pause or continue output |
+| `skip` | jump to the next track on this machine's speakers |
+| `loop` | repeat the track playing on this machine until toggled off |
+| `pause` / `resume` | pause or continue this machine's output |
 | `play` / `stop` | switch this machine's player on or off; the radio keeps making songs |
-| `restart` | empty the buffer and start generating over, session kept |
+| `restart` | empty the song store and start generating over, session kept |
 | `volume <0-100>` | set output volume |
 | `lyrics [name]` | show or switch the lyric writer |
 | `languages [list]` | show or set the offered languages; `+X`/`-X`/`none` switch this session's |
-| `status` | engine, buffer and session status |
+| `status` | engine, store and session status |
 | `help` | list commands |
 | `quit` | exit |
 
@@ -338,11 +342,11 @@ should not play the first song into whatever room it sits in.
 
 ### Starting generation over
 
-`restart` throws away every song the radio has made ahead and starts
+`restart` throws away every song in the radio's store and starts
 generating again from the first rung of the batch ladder: one quick
 song, then a small batch, then deeper ones as the sound settles. The
 session, its steering and your saved songs are untouched - only the
-songs waiting in the buffer go. It is for the evening when the eighty
+songs in the store go. It is for the evening when the eighty
 songs already rendered are not the ones you want to hear, and the only
 way to get a fresh run out of the same settings was to load a different
 preset and load this one back, which threw the steering away and took
@@ -367,9 +371,11 @@ under a new one, named after where it came from
 (`gym-grind-20260904-231500`). If the change is not an improvement,
 `load gym-grind` puts the old sound back and you can try something else
 from there. The acknowledgment names the session it kept, so you never
-have to go looking. Changes made before anything has been heard - three
-steers while the first track is still rendering - stay in one session
-rather than leaving a trail of sounds nobody heard.
+have to go looking. Changes made before the sound has produced a song -
+three steers while the first track is still rendering - stay in one
+session rather than leaving a trail of sounds nobody heard, and a burst
+of changes within 30 seconds of each other makes one branch, not one
+per tap.
 
 A session you named and one that was named for you work the same way in
 every respect: both resume, both can be loaded, both are listed. The one
@@ -500,8 +506,8 @@ Play starts from the songs that are already there. The device makes
 sound out of its own bank first and asks the radio what is coming next
 afterwards, so a bank built for a dead zone starts playing inside one -
 on a signal that has gone, and on the worse kind that is present and
-carries nothing. Songs the radio has since played past stay banked and
-stay playable, and reopening the page keeps them; steering the radio
+carries nothing. Songs the radio's store has since let go of stay
+banked and stay playable, and reopening the page keeps them; steering the radio
 somewhere new retires them, because that is the moment you have said
 you want something else.
 
@@ -562,9 +568,9 @@ The pencil beside the song's name renames it, so a name you disagree
 with can be fixed while the song is still playing instead of from the
 saved list, which means leaving the live page and stopping the radio.
 The new name is the last word: it replaces the name everywhere the song
-is kept - the queue other devices read, the copy banked for instant
-starts, the song still waiting on disk. If you had already saved that
-song, its file is renamed on disk too, tag and all.
+is kept - the store's listing other devices read, and the radio's book
+of every song it made. If you had already saved that song, its file is
+renamed on disk too, tag and all.
 
 Settings opens on the build the page came from, under the heading. The
 machine prints the same string when it starts (`iar: Infinite AI Radio
@@ -695,9 +701,7 @@ everything else keeps its default. The complete set, with defaults:
   "player": "auto",
   "track_seconds": 150,
   "crossfade_seconds": 3,
-  "buffer_tracks": 6,
   "volume": 80,
-  "bed_while_waiting": false,
   "pipe_latency_ms": 200,
   "normalize_loudness": true,
   "mp3_quality": 0,
@@ -726,13 +730,11 @@ everything else keeps its default. The complete set, with defaults:
     "lm_backend": "auto",
     "inference_steps": 12,
     "thinking": true,
-    "offload_dit": false,
     "max_track_seconds": 300,
     "repo_url": "https://github.com/ace-step/ACE-Step-1.5",
     "tag": "v0.1.8"
   },
   "buffer": {
-    "phased": true,
     "songs": 72
   },
   "ollama": {
@@ -762,12 +764,8 @@ everything else keeps its default. The complete set, with defaults:
   every song's length comes from the song, bounded only by
   `max_track_seconds`. A vocal track's length follows its words, and an
   instrumental's is chosen by the engine's planner to suit the piece.
-- `crossfade_seconds` (0.5-10): equal-power crossfade between tracks.
-- `buffer_tracks` (1-8): only used when `buffer.phased` is false - how
-  many finished tracks the in-memory queue keeps ahead of playback
-  (about 28 MB per 150-second track). With phased generation (the default) the queue ahead of
-  playback lives on disk instead (see the `buffer` section) and phone
-  listeners prefetch straight from it, so this setting is not used.
+- `crossfade_seconds` (0.5-10): equal-power crossfade between tracks on
+  this machine's speakers and in MP3 exports.
 - `volume` (0-100): initial output volume for this machine's own
   speakers; phones play from their own banks and are not affected. A
   machine started with `--remote` has its own player off until `play`
@@ -777,12 +775,12 @@ everything else keeps its default. The complete set, with defaults:
   player is asked for. Larger values ride out heavy system load at the
   cost of a slightly slower response to volume/pause.
 - `normalize_loudness`: level every generated track to a consistent
-  loudness (peak-safe) before playback and banking.
-- `mp3_quality` (0-9): libmp3lame VBR quality for exports, snippets
-  and - under phased generation, the default - the songs stored in the
-  disk buffer, which are decoded back for playback. 0 is best (the
-  default), 9 is smallest; raising it shrinks the disk buffer at the
-  cost of playback quality.
+  loudness (peak-safe) before it goes into the store.
+- `mp3_quality` (0-9): libmp3lame VBR quality for the songs in the
+  store - the very files phones download and saving copies - and for
+  exports and saves made from this machine's speakers. 0 is best (the
+  default), 9 is smallest; raising it shrinks the store and every
+  download at the cost of quality.
 - `snippets_dir`: where the `save` command writes captured tracks, one
   subdirectory per tag (`untagged/` for saves without one). Empty means
   `snippets/` under the data directory.
@@ -818,8 +816,11 @@ everything else keeps its default. The complete set, with defaults:
   A language steered in by hand ("sing in
   French") pins the session to it and outranks its list; a preset that
   names a language of its own seeds the list instead, so the switches
-  show it. Flipping a switch releases that pin, drops the tracks queued
+  show it. Flipping a switch releases that pin, drops the songs made
   ahead and starts generating in the new languages.
+- `buffer_tracks` is no longer used: the songs ahead of every listener
+  live in the store on disk (see the `buffer` section). The key can be
+  deleted.
 - `vocal_languages_off` is no longer used. Which languages are sung
   lives in the session now, so that loading one sings what it was saved
   with; sessions written before that are converted the first time they
@@ -860,22 +861,17 @@ admin; the Users page does the rest).
 
 ### acestep
 
-Settings in this section are read when the engine daemon starts. Under
-phased generation (the default) the radio stops and restarts the daemon
-around every batch, so an edit here is picked up within a cycle on its
-own; with `buffer.phased` off, the daemon outlives sessions and an
-`iar engine stop` is needed for changes (and after flipping
-`buffer.phased` itself, so the daemon restarts with the matching
-disk-backing mode).
+Settings in this section are read when the engine daemon starts. The
+radio stops and restarts the daemon around every batch, so an edit here
+is picked up within a cycle on its own.
 
 - `port`: pins the engine API to a fixed localhost port. The default 0
   allocates a free port for each engine daemon (the port is recorded in
   the state directory and shown by `iar engine status`).
 - `idle_minutes`: the shared engine daemon shuts down after this long
   with nothing using it, freeing GPU memory. Restarting the player
-  within the window reuses the warm engine instantly. Under phased
-  generation (the default) the daemon is stopped at the end of every
-  cycle anyway, so this is only a backstop for one left running by an
+  within the window reuses the warm engine instantly. The radio stops
+  the daemon at the end of every generation cycle anyway, so this is only a backstop for one left running by an
   interrupted run.
 - `lm_model_path`: pins the engine's internal planner language model
   (e.g. `"acestep-5Hz-lm-0.6B"` or `"acestep-5Hz-lm-1.7B"`). Empty lets
@@ -893,19 +889,9 @@ disk-backing mode).
   little more brightness.
 - `thinking`: when true, the engine's planner LM sketches the track
   before synthesis, which improves musical coherence at some speed cost.
-- `offload_dit`: only used when `buffer.phased` is false. Under phased
-  generation (the default) the music model is already streamed from
-  disk and released between cycles, so this setting changes nothing. With `buffer.phased` off:
-  when true, the music model is kept in system memory
-  between tracks instead of staying resident on the graphics card. Turn
-  it on when something else needs the card - a speech-to-text model, a
-  game, another generator. The radio only computes for about a fifth of
-  the time it runs, so this hands roughly four and a half gigabytes of
-  video memory back for the rest of it. It costs a few seconds per
-  track while the weights move back, and about the same amount of
-  system memory to hold them; the music itself is identical. It does
-  not lower the peak during generation, so it fixes the collisions that
-  happen between tracks, not the ones during them.
+- `offload_dit` is no longer used: the music model is always streamed
+  from disk and released between cycles, so it never sits on the
+  graphics card between songs. The key can be deleted.
 - `max_track_seconds`: a ceiling on track length, however the length
   was decided - derived from a written lyric sheet, or picked by the
   engine's planner for an instrumental or a song it wrote the words
@@ -919,7 +905,7 @@ disk-backing mode).
 
 ### buffer
 
-Phased generation, the default way music is produced: every model gets
+Phased generation, the way music is produced: every model gets
 the graphics card in turn, and none of them ever fights another for
 it. A cycle begins before the engine wakes, with the card still free:
 the lyric helper writes the coming batch's words there and names and
@@ -935,8 +921,8 @@ alone on the card, the audio model dropped entirely, the pre-written
 words consumed as-is), renders it from the planned audio codes (audio
 model alone, streamed from disk), stores the songs on disk under the
 data directory, and shuts down completely - between cycles the engine
-holds no video memory and no system memory at all. Playback feeds from
-the disk buffer.
+holds no video memory and no system memory at all. Every listener -
+this machine's player and each phone - takes its songs from that store.
 
 Batch sizes climb a ladder: one opener as fast as possible
 (engine-invented words allowed), then a ten-song audition of songs with
@@ -966,9 +952,6 @@ the newest `songs` taken songs and trims the oldest beyond that; the
 songs nobody has taken yet are what the generator fills against, and
 they are never trimmed. A steer or `restart` drops the lot.
 
-- `phased`: turns the split pipeline on (the default). false restores
-  the fused path: each track generated in one engine job with the audio
-  model resident the whole time.
 - `songs` (3 or more, 72 by default): how many songs the generator
   makes ahead - it fills to this many untaken songs, one rung at a
   time - and how many taken songs the store keeps for players that
@@ -976,6 +959,8 @@ they are never trimmed. A steer or `restart` drops the lot.
   default lets a phone that comes back find everything it missed; the
   store never holds more than twice this. Out-of-range values are
   clamped at load.
+- `phased` is no longer used: whichever engine makes it, every song is
+  planned, rendered and kept in the store. The key can be deleted.
 
 ### ollama
 
@@ -1068,9 +1053,8 @@ current terms on the model card if this matters for your use.
 
 The engine runs as a local API server, listening on localhost only,
 managed by a daemon the player starts, supervises and restarts as
-needed (`iar engine status` / `iar engine stop`). Under phased
-generation - the default - the daemon is started for each generation
-cycle and shut down again afterwards, so between cycles it holds no
+needed (`iar engine status` / `iar engine stop`). The daemon is
+started for each generation cycle and shut down again afterwards, so between cycles it holds no
 graphics memory and no system memory at all.
 
 **The Ollama model, the radio's other voice.** The steering interpreter
@@ -1101,10 +1085,10 @@ log, which has the full story including the engine's own output.
 - **No sound** - confirm `pw-play` or `pacat` plays something, then try
   `./iar --player pipe`.
 - **The first track takes a while** - the initial model load is a few
-  minutes; later launches skip it while the disk buffer is healthy.
+  minutes; later launches skip it while the store holds songs.
 - **Buzz or static while a track generates** - if the underrun counter
-  (in the header and in `iar doctor`) stays at zero, the audio stream
-  itself is clean and the noise is electrical interference induced
+  (in the header and in `iar doctor`) stays at zero, the audio sent to
+  the speakers is clean and the noise is electrical interference induced
   after the digital output.
 - **Generation failures** - playback degrades gracefully (the store,
   then looping the last track, then silence) and the engine restarts

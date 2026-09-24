@@ -105,7 +105,7 @@ func (a *app) buildEngine(ctx context.Context, dormant bool) (engine.Engine, *ac
 		})
 		return eng, remote, ""
 	default:
-		return tone.New(0), nil, fmt.Sprintf("unknown engine %q in config; playing tones instead", a.cfg.Engine)
+		return tone.New(0), nil, fmt.Sprintf("unknown engine %q (use acestep or tone); playing tones instead", a.cfg.Engine)
 	}
 }
 

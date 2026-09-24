@@ -71,7 +71,7 @@ func runDoctor() error {
 	// GPU.
 	nvsmi := which("nvidia-smi")
 	if nvsmi == "" {
-		check("nvidia gpu", false, "nvidia-smi not found; music generation will be very slow or unavailable (noise modes still work)")
+		check("nvidia gpu", false, "nvidia-smi not found; music generation will be very slow or unavailable (the tone engine, --engine tone, still works)")
 	} else {
 		out, err := exec.CommandContext(ctx, "nvidia-smi",
 			"--query-gpu=name,memory.total,driver_version", "--format=csv,noheader").Output()

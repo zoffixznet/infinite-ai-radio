@@ -59,8 +59,13 @@ if ! python3 -c 'import PIL' 2>/dev/null; then
   exit 1
 fi
 
+# The settings sheet shows the build's version; the pictures carry the
+# latest release's rather than a development build's.
+IAR_SHOT_VERSION=${IAR_SHOT_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null)}
+export IAR_SHOT_VERSION
+
 MEM_BEFORE=$(mem)
-echo "shooting into $RAW (run tag $IAR_SHOOT_ID)"
+echo "shooting into $RAW (run tag $IAR_SHOOT_ID, version ${IAR_SHOT_VERSION:-unstamped})"
 
 # The timeout is a backstop: if the browser wedges, the trap still runs.
 if ! IAR_SHOTS="$RAW" timeout --signal=TERM --kill-after=30s 10m \

@@ -1,7 +1,7 @@
 {
   "name": "Infinite AI Radio",
   "short_name": "AI Radio",
-  "description": "Listen to and steer your own AI radio stream.",
+  "description": "Listen to and steer your own AI radio.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

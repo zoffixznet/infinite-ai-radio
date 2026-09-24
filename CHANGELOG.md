@@ -34,7 +34,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   through the speakers. After a rung is made the generator waits as
   long as that rung's music runs before making the next, less what
   listeners skipped - every phone reports the seconds it skipped with
-  Next on its checks for new songs, and so does the terminal's `next`.
+  Next on its checks for new songs, and so does the terminal's `skip`.
   A cycle runs only while the store holds fewer than `buffer.songs`
   untaken songs, and a batch never makes more than the room left, so a
   full store is the off switch and the engine sleeps until somebody
@@ -47,9 +47,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   by default) taken songs, trimming the oldest beyond that. The songs
   nobody has taken yet are what the generator fills against. The
   player's place in the store is remembered, so a restart continues
-  after the last song it took rather than replaying the kept ones. The
-  phone is offered the kept songs as spares. The store keeps its
-  listing in memory now, instead of reading every song's sidecar on
+  after the last song it took rather than replaying the kept ones. A
+  phone that was away is offered the kept songs first. The store keeps
+  its listing in memory now, instead of reading every song's sidecar on
   every poll.
 - A song goes out to the phone as the very file the radio rendered,
   byte for byte, instead of being encoded again on the way out; and
@@ -62,6 +62,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rename now outlive a restart, and a copy of a song the radio no
   longer holds can be recognised by its hash and saved under the
   recorded name.
+- `iar buffer clear` refuses while the radio is running. The running
+  radio keeps the store's listing in memory, so emptying the store
+  behind its back left it listing songs that were gone; `restart` in
+  the radio, or the phone's "Empty the buffer and start over", empties
+  a running radio's store instead.
+- The phone says how much music is on the device in hours and minutes,
+  the way the machine's own readout says it. "~189 min banked" is
+  arithmetic nobody should have to do to answer "how long can I drive
+  on this"; it reads "~3h09m" now.
 
 ### Removed
 
@@ -89,6 +98,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same store, ladder, phone and exports as the real engine; a
   configuration still naming the `noise` engine is read as `tone`. A
   saved session that was a noise session plays the default sound.
+- `buffer.phased` and `buffer_tracks`. Every engine now makes its songs
+  into the store; the old path that queued songs in memory is gone.
+  Both keys can be deleted from the configuration.
 
 ### Fixed
 
@@ -106,34 +118,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sat on disk. It is found in the store now, after a restart too, and a
   save queued in a dead zone waits a day for the radio to come back
   instead of giving up after a quarter of an hour.
-- A phone keeps its place in the stream. The songs the radio has just
-  played are offered at the end of the list as spares, and now that a
-  song keeps its name, the one a phone is playing can be among them;
-  the phone must not read that as being at the end of the stream,
-  where it would stop fetching new songs and play backwards through
-  old ones.
 - A song can be saved or renamed while the radio is fading into it.
   For the few seconds of the crossfade it had left the play queue but
   was not yet the song playing, and was in no list the radio looked in
   - so a phone running ahead of the speakers, playing exactly that song,
   was told it was "no longer here". A skip opens that window at the
   moment a listener is most likely to be reaching for the pencil.
-
-### Changed
-
-- The phone says how much music is on the device in hours and minutes,
-  the way the machine's own readout says it. "~189 min banked" is
-  arithmetic nobody should have to do to answer "how long can I drive
-  on this"; it reads "~3h09m" now.
-- The instant-start bank stores songs as MP3 rather than uncompressed
-  audio, which is what the rendered buffer, your saved songs and the
-  phone have always used. The bank was the last uncompressed store on
-  disk, dating from when it was the only one and a banked song had to
-  be readable without spawning a decoder. At the default cap it held
-  about twenty songs in 600 MB; the same space now holds roughly a
-  hundred. Any uncompressed tracks from before are cleared out on the
-  next start - re-encoding them would be re-encoding music the radio
-  can simply make again - so expect the bank to refill from scratch.
 
 ## [1.3.2] - 2026-09-18
 

@@ -105,12 +105,11 @@ func TestScreenshots(t *testing.T) {
 	// A music-mode sandbox with a fake engine: real queue, prefetch and
 	// steering behaviour, no GPU, and no helper model, so the shoot
 	// produces the same pictures on any machine.
-	// The fake engine renders instantly, so the buffer's real 120-minute
-	// render-ahead would spawn dozens of encodes at once. Floor every
-	// depth (the config clamps below 10/10/5) so the shoot renders the
-	// handful of songs the pages actually show.
+	// The ladder makes the opener and a batch of ten straight away and
+	// then waits on the clock, so the fake engine's instant renders stop
+	// at the handful of songs the pages actually show.
 	sb := prepareSandbox(t, "acestep", `"vocal_languages":["English","Spanish","Japanese"],`+
-		`"buffer":{"phased":true,"songs":72}`)
+		`"buffer":{"songs":72}`)
 	// Resume the seeded station rather than starting from the prompt, so
 	// the now-playing line names a station instead of a generated
 	// session id. --no-llm keeps the shoot reproducible: with a helper
@@ -151,11 +150,8 @@ func TestScreenshots(t *testing.T) {
 	loginAdmin(t, w, sb.base)
 
 	// --- the live screen, playing ---
-	waitFor(t, 20*time.Second, "a track to be playing", func() bool {
-		var now string
-		w.exec(`var e=document.getElementById('now'); return e ? e.textContent : '';`, &now)
-		return now != "" && !strings.Contains(now, "…")
-	})
+	// The page names only what the phone itself plays, so nothing is
+	// named until play is pressed below.
 	// Let the machine finish stocking before the phone starts banking:
 	// a device can only download what is offered, and starting while
 	// one track is listed is a race the picture loses half the time.

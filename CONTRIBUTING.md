@@ -24,7 +24,8 @@ make smoke   # end-to-end run of the built binary, sandboxed and silent
 
 `make test`, `make smoke` and the browser test all run against sandboxed
 data directories (`IAR_DATA_DIR`, `IAR_CONFIG_DIR`) and a null or file
-audio backend, so they never touch your own library or make a sound.
+audio backend, so they never touch your own sessions, song store or
+saved songs, and never make a sound.
 
 Two heavier targets need extra tools and are skipped automatically when
 those are missing:
@@ -72,3 +73,6 @@ SMTP credentials first.
   the audio backend, for verifying digital output.
 - `IAR_SHOTS`: directory `make screenshots` writes the phone-remote
   pictures into.
+- `IAR_SHOT_VERSION`: the version the screenshot shoot stamps into the
+  binary it photographs (the settings sheet shows it). `make
+  screenshots` defaults it to the latest release tag.

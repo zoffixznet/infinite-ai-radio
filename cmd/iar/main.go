@@ -74,9 +74,9 @@ func rootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "iar [prompt]",
 		Short: "Endless AI background music, generated locally",
-		Long: `Infinite AI Radio plays a continuous stream of AI-generated background music using
+		Long: `Infinite AI Radio plays endless AI-generated background music using
 models running entirely on your machine. Run it with no arguments to
-start playing; type plain English while it plays to steer the stream.
+start playing; type plain English while it plays to steer the music.
 Start straight from an idea with a prompt:
 
   iar "dark techno"
@@ -104,7 +104,7 @@ Built-in presets (start with --preset, list with 'iar presets'):
 	fl.StringVar(&pf.preset, "preset", "", "start from a built-in preset (see 'iar presets')")
 	fl.StringVar(&pf.session, "session", "", "resume a saved session by name")
 	fl.StringVar(&pf.prompt, "prompt", "", "start a fresh session from a free-text prompt")
-	fl.StringVar(&pf.engine, "engine", "", "generation engine: acestep or noise")
+	fl.StringVar(&pf.engine, "engine", "", "generation engine: acestep, or tone (short tone songs, no GPU needed)")
 	fl.StringVar(&pf.player, "player", "", "audio backend: auto, pipe, null or file")
 	fl.StringVar(&pf.playerFile, "player-file", "", "output path for the file backend")
 	fl.BoolVar(&pf.plain, "plain", false, "plain line-based interface (no full-screen UI)")
