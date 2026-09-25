@@ -622,7 +622,7 @@ func (o *Orchestrator) Status() Status {
 	// cycles, so the gauge has a target to draw against.
 	st.RampBatch = o.batchCapNow
 	if !o.genBusy || st.RampBatch == 0 {
-		st.RampBatch = o.batchForLocked()
+		st.RampBatch = o.batchForLocked(o.bufPlans)
 	}
 	st.BatchRendered = o.batchRenderedNow
 	st.BufferedSeconds = o.bufSeconds

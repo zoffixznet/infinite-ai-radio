@@ -971,15 +971,24 @@ the engine at once. When it wakes it makes a whole batch of 80 and
 sleeps again. With one listener taking a song every three or four
 minutes, that is 80 songs made, then four to five hours asleep, then
 80 more. A cycle renders everything it plans, and a batch under way
-finishes even if the store crosses the mark part way through. A steer
-drops every stored plan and song and restarts the ladder, so trying
-prompts never wastes deep work - but a restart of the player does
-not: the store carries a context and a build stamp, continues across
-restarts of the same binary, and is cleared when a different build of
-the player takes over, so songs rendered by older code never linger
-into an upgrade. `restart` empties it and puts the ladder back on its
-first rung without touching the session, and `iar buffer clear` does
-the same to a stopped radio.
+finishes even if the store crosses the mark part way through. A batch
+cut short - the writer running out of words at 25 of 80, say - that
+still leaves the store stocked counts as the top rung made, so the
+next wake, hours later, makes a whole 80 rather than the rest of that
+one; cut short with the store under the mark, the rest of the rung
+follows within the minute, and plans the interrupted batch left
+waiting for their audio count toward the rung rather than on top of
+it. A steer drops every stored plan and song and restarts the ladder,
+so trying prompts never wastes deep work - but a restart of the
+player does not: the store carries a context, a build stamp and the
+rung the ladder had reached, continues across restarts of the same
+binary, and is cleared when a different build of the player takes
+over, so songs rendered by older code never linger into an upgrade. A
+radio that comes back to a stocked store sleeps until the store falls
+under the mark and then makes a whole 80, as it would have without
+the restart. `restart` empties the store and puts the ladder back on
+its first rung without touching the session, and `iar buffer clear`
+does the same to a stopped radio.
 
 Playing a song does not delete it from the store. The player takes
 it, which marks it as consumed and leaves it on disk for a player that

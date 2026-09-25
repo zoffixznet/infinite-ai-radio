@@ -49,7 +49,7 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	o.rung = len(ladder) - 1
 	o.phasedEpoch, o.phasedSynced = o.epoch, true
 	o.mu.Unlock()
-	if batch := o.batchFor(); batch <= 10 {
+	if batch := o.batchFor(0); batch <= 10 {
 		t.Fatalf("batch before the restart = %d; the test needs the ladder at the top", batch)
 	}
 	desc := sess.Describe()
@@ -99,7 +99,7 @@ func TestRestartGenerationEmptiesTheBufferAndStartsTheLadderOver(t *testing.T) {
 	if synced := o.syncPhasedState(); synced != epoch {
 		t.Fatalf("the loops reconcile against epoch %d, want %d", synced, epoch)
 	}
-	if batch := o.batchFor(); batch != 1 {
+	if batch := o.batchFor(epoch); batch != 1 {
 		t.Errorf("batch after the restart = %d, want 1", batch)
 	}
 }

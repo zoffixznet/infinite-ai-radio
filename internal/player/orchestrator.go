@@ -123,9 +123,10 @@ type Status struct {
 	// batch cycle, so the gauge can say "rendered 40 · 23 to play"
 	// instead of an ambiguous count.
 	BatchRendered int
-	// RampBatch is the song count the running (or next) batch makes:
+	// RampBatch is the song count the running (or next) batch plans:
 	// 1 for a fresh context, then the ladder's rungs, whole, less what
-	// an interrupted cycle already made of the rung.
+	// an interrupted cycle already made of the rung and the plans it
+	// left waiting for their audio.
 	RampBatch       int
 	BufferedSeconds float64
 	// PlannedTracks and PlannedSeconds are songs the planner has

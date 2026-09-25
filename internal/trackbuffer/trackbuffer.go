@@ -125,6 +125,28 @@ func (s *Store) SetCursor(name, base string) {
 	s.writeMarker("cursor-"+name, base)
 }
 
+// Rung returns the rung of the batch ladder the generator had reached
+// when it last closed one, so a restart carries on from there rather
+// than climbing the ladder again over a store that is already deep. 0
+// for a fresh store, one started over, or one from before the marker
+// existed: the ladder's first rung.
+func (s *Store) Rung() int {
+	raw, err := os.ReadFile(filepath.Join(s.dir, "rung"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// SetRung records the rung of the batch ladder the generator is on.
+func (s *Store) SetRung(n int) {
+	s.writeMarker("rung", strconv.Itoa(n))
+}
+
 // writeMarker writes one small state file atomically.
 func (s *Store) writeMarker(name, value string) {
 	if os.MkdirAll(s.dir, 0o755) != nil {
@@ -219,7 +241,9 @@ func (s *Store) Sweep() (dropped int, freed int64) {
 }
 
 // DropAll removes every plan and rendered song regardless of epoch
-// (the store belonged to a different steering context).
+// (the store belonged to a different steering context, or is being
+// started over). The ladder's rung goes with them: whatever fills the
+// store next starts from the first rung.
 func (s *Store) DropAll() (dropped int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -235,6 +259,7 @@ func (s *Store) DropAll() (dropped int) {
 			}
 		}
 	}
+	os.Remove(filepath.Join(s.dir, "rung"))
 	return dropped
 }
 

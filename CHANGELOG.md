@@ -46,6 +46,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the reserve plus this many minutes' worth of songs at the mean length
   of what is in store; 0 wakes the engine at the reserve exactly.
 
+### Fixed
+
+- A restart of the player carries on from the rung of the batch ladder
+  it had reached, which the store now records beside its context. It
+  used to come back on the first rung, so a radio restarted on a
+  stocked store answered the first dip under the mark with a single
+  song - one the engine was allowed to invent the words for - then ten,
+  then a wait as long as their music, then twenty, another wait, forty,
+  another wait, and only then a whole 80: four or five engine wakes
+  over several hours for handfuls of songs, after every reboot or
+  restart. A steer, `restart` and `iar buffer clear` still put the
+  ladder back on its first rung.
+- A batch cut short no longer leaves part of itself owed twice. Plans
+  an interrupted batch left waiting for their audio count toward the
+  rung, so the cycle that carries on plans only what the rung still
+  lacks and renders the leftovers with it; a rung of twenty could come
+  out as thirty-five songs before, and a top batch as up to 120. And a
+  top batch the writer cut short that still leaves the store stocked
+  closes the rung: the next wake, hours later, makes a whole 80 rather
+  than the remainder, and the log says the engine is asleep on a
+  stocked store instead of claiming the words are being written when
+  nothing is.
+
 ## [2.0.0] - 2026-09-24
 
 ### Changed

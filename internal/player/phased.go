@@ -120,9 +120,14 @@ func (o *Orchestrator) phasedEng() phasedEngine {
 
 // adoptDiskBuffer continues from the buffer a previous run left
 // behind: when the stored context matches the session's, the highest
-// epoch on disk becomes this run's, and stray older epochs are
-// dropped. Run before the loops start, so the first sync sees a
-// matching world.
+// epoch on disk becomes this run's, stray older epochs are dropped,
+// and the ladder picks up at the rung the store records. A restart is
+// not a steer and not a wipe: the store it comes back to was filled by
+// a ladder that may well have reached the top, and climbing it again
+// - an opener, ten, a clock, twenty, a clock, forty, a clock - would
+// be several engine wakes for handfuls of songs over a store that is
+// already deep, which is exactly what the ladder exists to avoid.
+// Run before the loops start, so the first sync sees a matching world.
 func (o *Orchestrator) adoptDiskBuffer() {
 	_, sess := o.snapshotSession()
 	if sess == nil || o.Buffer.Context() != sess.ContextKey() {
@@ -132,9 +137,14 @@ func (o *Orchestrator) adoptDiskBuffer() {
 	if !ok {
 		return
 	}
+	rung := o.Buffer.Rung()
+	if rung > topRung {
+		rung = topRung
+	}
 	o.mu.Lock()
 	o.epoch = de
 	o.phasedEpoch = de
+	o.rung = rung
 	o.mu.Unlock()
 	if dropped := o.Buffer.DropOtherEpochs(de); dropped > 0 {
 		o.log.Info("older epochs cleared while adopting the buffer",
@@ -142,7 +152,7 @@ func (o *Orchestrator) adoptDiskBuffer() {
 	}
 	tracks, secs := o.Buffer.TrackStats(de)
 	o.log.Info("buffer adopted from the previous run", "event", "buffer_adopted",
-		"epoch", de, "songs", tracks, "seconds", secs)
+		"epoch", de, "songs", tracks, "seconds", secs, "rung", ladder[rung])
 }
 
 // syncPhasedState aligns the on-disk buffer with what the radio is
@@ -170,6 +180,12 @@ func (o *Orchestrator) syncPhasedState() int {
 		o.skipCredit = 0
 	}
 	o.mu.Unlock()
+	if changed {
+		// The store's record of the rung goes back to the first with
+		// it, so a restart in the middle of the new context's climb does
+		// not resume the old one's.
+		o.Buffer.SetRung(0)
+	}
 	if !booted {
 		// A crash, a kill or a power cut leaves half-written files and
 		// songs missing one of their two halves. Nothing else collects
@@ -257,20 +273,26 @@ func (o *Orchestrator) bufferedSeconds(epoch int) float64 {
 	return secs
 }
 
-// batchFor is how many songs the next cycle makes: the rung's size,
-// less what this rung has made already. A rung is made whole - never
-// trimmed to the room left in the tub - because the point of the
-// ladder is one large batch and then hours with the card left alone,
-// not a top-up of a handful of songs after every take.
-func (o *Orchestrator) batchFor() int {
+// batchFor is how many songs the next cycle plans: the rung's size,
+// less what this rung has made already and less the plans an
+// interrupted cycle left waiting for their audio, which the cycle
+// renders as well. A rung is made whole - never trimmed to the room
+// left in the tub - because the point of the ladder is one large batch
+// and then hours with the card left alone, not a top-up of a handful
+// of songs after every take; and never more than whole, which is what
+// planning the rung's remainder on top of the plans already stored
+// would come to.
+func (o *Orchestrator) batchFor(epoch int) int {
+	planned, _ := o.Buffer.PlanStats(epoch)
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.batchForLocked()
+	return o.batchForLocked(planned)
 }
 
-// batchForLocked is batchFor under the lock.
-func (o *Orchestrator) batchForLocked() int {
-	size := ladder[o.rung] - o.rungMade
+// batchForLocked is batchFor under the lock, given the plans already
+// stored for the epoch.
+func (o *Orchestrator) batchForLocked(planned int) int {
+	size := ladder[o.rung] - o.rungMade - planned
 	if size < 0 {
 		size = 0
 	}
@@ -318,7 +340,7 @@ func (o *Orchestrator) plannable(epoch int) int {
 	if o.rungWaitLeft() > 0 {
 		return 0
 	}
-	return o.batchFor()
+	return o.batchFor(epoch)
 }
 
 // completeRung closes the rung once its batch is made and the ladder
@@ -329,15 +351,26 @@ func (o *Orchestrator) plannable(epoch int) int {
 // however long ago the batch was made, so a tub drained below the
 // mark a minute after a batch wakes it at once and a tub nobody draws
 // from leaves it asleep for good. The next wake makes a whole top
-// batch.
+// batch - so the top rung also closes when a cycle ends short of it
+// with the tub stocked and no plan left waiting for its audio: the
+// writer running out of words at 25 of 80 has still put the tub over
+// the mark, and the rest of that rung is not owed to the next wake,
+// which comes hours later and makes a whole 80. A rung cut short
+// while the tub is under the mark stays open, and the cycle that
+// re-enters within the minute makes the rest of it.
 func (o *Orchestrator) completeRung(epoch int) {
 	level, secs := o.Buffer.Level(epoch)
+	planned, _ := o.Buffer.PlanStats(epoch)
+	below := wakeMark(o.cfg.Buffer, level, secs)
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.rungMade == 0 {
+		o.mu.Unlock()
 		return
 	}
-	if o.rungMade < ladder[o.rung] {
+	whole := o.rungMade >= ladder[o.rung]
+	shortButStocked := o.rung == topRung && level >= below && planned == 0
+	if !whole && !shortButStocked {
+		o.mu.Unlock()
 		return // the rung is not made yet; the next cycle carries on
 	}
 	o.rungWait = time.Duration(o.rungSeconds * float64(time.Second))
@@ -349,12 +382,16 @@ func (o *Orchestrator) completeRung(epoch int) {
 	o.skipCredit = 0
 	o.log.Info("ladder rung made", "event", "ladder_rung", "rung", ladder[o.rung],
 		"songs", o.rungMade, "wait_seconds", o.rungWait.Seconds(), "level", level,
-		"wake_below", wakeMark(o.cfg.Buffer, level, secs))
+		"wake_below", below)
 	if o.rung < topRung {
 		o.rung++
 	}
 	o.rungMade = 0
 	o.rungSeconds = 0
+	rung := o.rung
+	o.mu.Unlock()
+	// Recorded in the store, so a restart carries on from this rung.
+	o.Buffer.SetRung(rung)
 }
 
 // ReportSkipped credits the ladder with music a listener skipped:
@@ -459,19 +496,23 @@ func (o *Orchestrator) runCycle(ctx context.Context, failures, oomStreak *int) {
 		if o.exportingNow() {
 			return // an export owns the engine; it finishes on its own
 		}
-		if lyricStarved {
-			// More plans are due, but they are waiting on words: the
-			// wordsmith needs the card, so the render daemon is stopped
-			// even though the cycle is not finished. The radio is still
-			// making songs; the loop re-enters within seconds.
-			o.hibernateEngine(sleepForWriter)
-			return
-		}
 		if ctx.Err() != nil {
 			o.hibernateEngine(sleepQuit)
 			return
 		}
 		epoch := o.syncPhasedState()
+		if lyricStarved && o.plannable(epoch) > 0 {
+			// More plans are due, but they are waiting on words: the
+			// wordsmith needs the card, so the render daemon is stopped
+			// even though the cycle is not finished. The radio is still
+			// making songs; the loop re-enters within seconds. Only
+			// while a writer round can actually follow, though: the
+			// short batch may have stocked the tub, and then nothing
+			// is written and the engine is simply asleep, which is
+			// what the line below says.
+			o.hibernateEngine(sleepForWriter)
+			return
+		}
 		if o.wantCycle(epoch) {
 			return // more work due (ramp climbing, or a fresh epoch): stay warm
 		}

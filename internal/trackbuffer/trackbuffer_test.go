@@ -403,3 +403,39 @@ func TestASongsIDTravelsWithIt(t *testing.T) {
 		t.Fatalf("next id = %q ok=%v", next.ID, ok)
 	}
 }
+
+// The ladder's rung is a marker beside the cursors: it survives a
+// restart of the radio, a fresh store is on the first rung, a value
+// nobody could have written reads as the first, and a wipe takes it
+// with the songs.
+func TestTheRungMarkerSurvivesARestartAndGoesWithAWipe(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir, 0, nil)
+	if got := s.Rung(); got != 0 {
+		t.Fatalf("a fresh store is on rung %d, want 0", got)
+	}
+	s.SetRung(4)
+	if got := New(dir, 0, nil).Rung(); got != 4 {
+		t.Fatalf("the next run reads rung %d, want 4", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rung"), []byte("top\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Rung(); got != 0 {
+		t.Fatalf("an unreadable marker reads as rung %d, want 0", got)
+	}
+	s.SetRung(-1)
+	if got := s.Rung(); got != 0 {
+		t.Fatalf("a negative marker reads as rung %d, want 0", got)
+	}
+	s.SetRung(3)
+	if err := s.PutPlan(1, 1, &engine.Plan{Caption: "x", Seconds: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.DropAll(); n != 1 {
+		t.Fatalf("DropAll removed %d files, want the one plan", n)
+	}
+	if got := s.Rung(); got != 0 {
+		t.Fatalf("after a wipe the store is on rung %d, want 0", got)
+	}
+}

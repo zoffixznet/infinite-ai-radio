@@ -222,12 +222,12 @@ func ladderOrchestrator(t *testing.T, cfg config.Config) (o *Orchestrator, made 
 func TestTheLadderClimbsOnTime(t *testing.T) {
 	o, made := ladderOrchestrator(t, testConfig())
 
-	if got := o.batchFor(); got != 1 {
+	if got := o.batchFor(0); got != 1 {
 		t.Fatalf("the first batch = %d, want the opener alone", got)
 	}
 	// The opener waits for nothing: the ten-song batch follows it.
 	made(1, 200)
-	if left, next := o.rungWaitLeft(), o.batchFor(); left != 0 || next != 10 {
+	if left, next := o.rungWaitLeft(), o.batchFor(0); left != 0 || next != 10 {
 		t.Fatalf("after the opener: wait %v, next batch %d; want 0 and 10", left, next)
 	}
 	// Ten songs of 200 seconds: the next rung is due when they have
@@ -248,13 +248,13 @@ func TestTheLadderClimbsOnTime(t *testing.T) {
 	}
 	// A rung cut short stays open: the next cycle makes the rest.
 	made(3, 200)
-	if next := o.batchFor(); next != 17 {
+	if next := o.batchFor(0); next != 17 {
 		t.Fatalf("after 3 of 20: next batch %d, want the remaining 17", next)
 	}
 	made(17, 200)
 	o.ReportSkipped(20 * 200)
 	// The 40-rung is made whole, whatever the store holds.
-	if next := o.batchFor(); next != 40 {
+	if next := o.batchFor(0); next != 40 {
 		t.Fatalf("the 40-rung's batch = %d, want the whole 40", next)
 	}
 }
@@ -336,28 +336,102 @@ func TestTakingSongsAboveTheMarkDoesNotWakeTheEngine(t *testing.T) {
 }
 
 // The ladder's rungs, whole: a batch is the rung's size less what an
-// interrupted cycle already made of it, and never less for the store
-// being deep.
+// interrupted cycle already made of it and less the plans it left
+// waiting for their audio, and never less for the store being deep.
 func TestBatchLadder(t *testing.T) {
 	cfg := testConfig()
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
-	for _, tc := range []struct{ rung, made, want int }{
-		{0, 0, 1},   // the opener: sound as fast as possible
-		{1, 0, 10},  // the audition batch
-		{2, 0, 20},  // then 20...
-		{3, 0, 40},  // ...and 40
-		{4, 0, 80},  // 80 at the top, again and again
-		{4, 30, 50}, // a rung cut short: the rest of it
-		{4, 80, 0},  // a rung made: nothing until it closes
+	for _, tc := range []struct{ rung, made, planned, want int }{
+		{0, 0, 0, 1},   // the opener: sound as fast as possible
+		{1, 0, 0, 10},  // the audition batch
+		{2, 0, 0, 20},  // then 20...
+		{3, 0, 0, 40},  // ...and 40
+		{4, 0, 0, 80},  // 80 at the top, again and again
+		{4, 30, 0, 50}, // a rung cut short: the rest of it
+		{4, 80, 0, 0},  // a rung made: nothing until it closes
+		{2, 5, 14, 1},  // 5 made and 14 plans waiting: one more to plan
+		{4, 40, 40, 0}, // the rest of the rung is planned already
+		{1, 3, 7, 0},   // ...however it is split
+		{4, 30, 60, 0}, // more plans than the rung lacks: none on top
+		{0, 0, 1, 0},   // the opener's plan is on disk: render it
 	} {
 		o.mu.Lock()
 		o.rung, o.rungMade = tc.rung, tc.made
-		got := o.batchForLocked()
+		got := o.batchForLocked(tc.planned)
 		o.mu.Unlock()
 		if got != tc.want {
-			t.Errorf("rung %d with %d made makes %d, want %d", tc.rung, tc.made, got, tc.want)
+			t.Errorf("rung %d with %d made and %d planned makes %d, want %d",
+				tc.rung, tc.made, tc.planned, got, tc.want)
 		}
+	}
+}
+
+// Plans an interrupted cycle left waiting count toward the rung: the
+// cycle that re-enters plans only what the rung still lacks, renders
+// the leftovers with it, and the rung comes out whole - not the rung's
+// remainder on top of the leftovers, which is how a rung of ten used
+// to come out as seventeen songs.
+func TestLeftoverPlansCountTowardTheRung(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	eng := &pausableMock{}
+	sess := session.New()
+	sess.Vocal = true
+	o := heldOrchestrator(t, eng, nil, sess)
+	// A mark well out of the way: what is under test is the rung's
+	// arithmetic, not the store stocking. The store is this context's,
+	// so the cycle's first sync keeps what is seeded in it.
+	o.cfg.Buffer.ReserveSongs, o.cfg.Buffer.LowMinutes = 100, 0
+	o.Buffer.SetContext(sess.ContextKey())
+	// The ten-song rung: three made, then the cycle was interrupted
+	// with seven plans on disk.
+	o.mu.Lock()
+	o.rungMade = 3
+	o.mu.Unlock()
+	for seq := 4; seq <= 10; seq++ {
+		plan := &engine.Plan{Caption: "planned", Lyrics: "[Verse]\nwords", Seconds: 1}
+		if err := o.Buffer.PutPlan(0, seq, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if next := o.plannable(0); next != 0 {
+		t.Fatalf("plannable with 3 made and 7 waiting = %d, want 0: the rung is all planned", next)
+	}
+	if !o.wantCycle(0) {
+		t.Fatal("seven plans wait for their audio and no cycle is wanted")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	failures, oomStreak := 0, 0
+	o.runCycle(ctx, &failures, &oomStreak)
+
+	if plans, renders := eng.plans.Load(), eng.renders.Load(); plans != 0 || renders != 7 {
+		t.Fatalf("the re-entered cycle planned %d and rendered %d; want 0 and the 7 leftovers", plans, renders)
+	}
+	if level, _ := o.Buffer.Level(0); level != 7 {
+		t.Fatalf("level after the cycle = %d, want 7", level)
+	}
+	if planned, _ := o.Buffer.PlanStats(0); planned != 0 {
+		t.Fatalf("%d plans still wait after the cycle", planned)
+	}
+	o.mu.Lock()
+	rung, rungMade := o.rung, o.rungMade
+	o.mu.Unlock()
+	if rung != 2 || rungMade != 0 {
+		t.Errorf("after the cycle: rung %d with %d made; want the ladder on 20 with nothing made of it", rung, rungMade)
+	}
+	// Half planned, half not: the cycle plans the difference.
+	o.mu.Lock()
+	o.rung, o.rungMade = 2, 5
+	o.mu.Unlock()
+	for seq := 11; seq <= 24; seq++ {
+		plan := &engine.Plan{Caption: "planned", Lyrics: "[Verse]\nwords", Seconds: 1}
+		if err := o.Buffer.PutPlan(0, seq, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if next := o.batchFor(0); next != 1 {
+		t.Errorf("the batch with 5 made and 14 waiting of 20 = %d, want 1", next)
 	}
 }
 
@@ -449,6 +523,324 @@ func TestABatchInProgressCompletesAsTheLevelCrossesTheMark(t *testing.T) {
 	}
 	if o.plannable(0) != 0 || o.wantCycle(0) {
 		t.Error("a stocked store wants a cycle after the batch")
+	}
+}
+
+// The ladder's rung is kept in the store: written when a rung closes,
+// put back to the first by a steer, and gone with a wipe.
+func TestTheLadderRungIsKeptInTheStore(t *testing.T) {
+	o, made := ladderOrchestrator(t, testConfig())
+	if got := o.Buffer.Rung(); got != 0 {
+		t.Fatalf("a fresh store records rung %d, want the first", got)
+	}
+	made(1, 200)
+	if got := o.Buffer.Rung(); got != 1 {
+		t.Errorf("after the opener the store records rung %d, want 1", got)
+	}
+	made(10, 200)
+	if got := o.Buffer.Rung(); got != 2 {
+		t.Errorf("after the ten the store records rung %d, want 2", got)
+	}
+	// A steer starts the ladder over, in memory and on disk.
+	o.mu.Lock()
+	o.epoch++
+	o.mu.Unlock()
+	o.syncPhasedState()
+	o.mu.Lock()
+	rung := o.rung
+	o.mu.Unlock()
+	if rung != 0 || o.Buffer.Rung() != 0 {
+		t.Errorf("after a steer: rung %d in memory, %d in the store; want the first in both", rung, o.Buffer.Rung())
+	}
+	made(1, 200)
+	if got := o.Buffer.Rung(); got != 1 {
+		t.Errorf("after the new context's opener the store records rung %d, want 1", got)
+	}
+	// A wipe takes the rung with the songs.
+	o.Buffer.DropAll()
+	if got := o.Buffer.Rung(); got != 0 {
+		t.Errorf("after a wipe the store records rung %d, want the first", got)
+	}
+}
+
+// restartedOrchestrator is a radio coming back to the store a previous
+// run left for the same steering context: songs under epoch 3, the
+// ladder recorded at the given rung, and the new run booted through
+// adoption and its first sync, the way Start does.
+func restartedOrchestrator(t *testing.T, cfg config.Config, songs, rung int) *Orchestrator {
+	t.Helper()
+	skipWithoutFFmpeg(t)
+	dir := t.TempDir()
+	sess := session.New()
+	prev := trackbuffer.New(dir, 0, testLogger())
+	prev.SetContext(sess.ContextKey())
+	prev.SetRenderVersion(trackbuffer.RenderVersion)
+	prev.SetRung(rung)
+	for seq := 1; seq <= songs; seq++ {
+		track := &engine.Track{
+			Lyrics:  fmt.Sprintf("[Verse]\nsong %d", seq),
+			Samples: make([]int16, audio.SampleRate*audio.Channels),
+		}
+		if _, err := prev.PutTrack(context.Background(), 3, seq, track); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
+		session.NewStore(t.TempDir()), sess, &capturePlayer{}, testLogger())
+	o.Buffer = trackbuffer.New(dir, 0, testLogger())
+	o.adoptDiskBuffer()
+	if epoch := o.syncPhasedState(); epoch != 3 {
+		t.Fatalf("the new run synced against epoch %d, want the adopted 3", epoch)
+	}
+	return o
+}
+
+// A restart is not a steer: the store the radio comes back to was
+// filled by a ladder that had reached the top, and the ladder carries
+// on from there. Stocked, the engine sleeps; the first take under the
+// mark is answered with a whole top batch, at once, with the writer's
+// words - not with an opener, a ten, a clock, a twenty, a clock, a
+// forty, a clock and only then the eighty, which used to be the shape
+// of the first hours after every restart.
+func TestARestartCarriesOnFromTheTopOfTheLadder(t *testing.T) {
+	cfg := testConfig()
+	cfg.Buffer.ReserveSongs, cfg.Buffer.LowMinutes = 3, 0
+	o := restartedOrchestrator(t, cfg, 5, topRung)
+	o.mu.Lock()
+	rung, wait, doneAt := o.rung, o.rungWait, o.rungDoneAt
+	o.mu.Unlock()
+	if rung != topRung || wait != 0 || !doneAt.IsZero() {
+		t.Fatalf("after the restart: rung %d, wait %v, done at %v; want the top, no wait, no clock", rung, wait, doneAt)
+	}
+	// Five in store against a mark of three: stocked, nothing due.
+	if o.plannable(3) != 0 || o.wantCycle(3) {
+		t.Fatal("a stocked store wants a cycle after a restart")
+	}
+	if got := o.sleepReasonNow(3); got != sleepStocked {
+		t.Errorf("stocked after a restart: sleep reason %d, want stocked", got)
+	}
+	// Three takes bring it under the mark: a whole top batch, this
+	// instant, and no engine-invented words for it.
+	for seq := 1; seq <= 3; seq++ {
+		o.Buffer.Take(3, fmt.Sprintf("e00000003-%08d", seq))
+	}
+	if next := o.plannable(3); next != 80 || !o.wantCycle(3) {
+		t.Fatalf("under the mark after a restart: plannable %d, want the whole 80 at once", next)
+	}
+	if left := o.rungWaitLeft(); left != 0 {
+		t.Errorf("a clock of %v runs after a restart at the top", left)
+	}
+	o.mu.Lock()
+	opener := o.rung == 0
+	o.mu.Unlock()
+	if opener {
+		t.Error("the first batch after a restart is treated as the opener")
+	}
+}
+
+// A restart while the ladder is still climbing resumes at its rung:
+// the twenty that was next before the restart is what is made after
+// it, whole.
+func TestARestartCarriesOnFromARungOfTheClimb(t *testing.T) {
+	o := restartedOrchestrator(t, testConfig(), 2, 2)
+	if next := o.plannable(3); next != 20 || !o.wantCycle(3) {
+		t.Fatalf("after a restart at the third rung: plannable %d, want the whole 20", next)
+	}
+	// A store that never recorded a rung - none was ever closed - is
+	// on the first.
+	o = restartedOrchestrator(t, testConfig(), 1, 0)
+	if next := o.plannable(3); next != 1 {
+		t.Fatalf("after a restart with no rung recorded: plannable %d, want the opener", next)
+	}
+	// A rung from beyond the ladder is clamped to the top.
+	o = restartedOrchestrator(t, testConfig(), 1, 99)
+	o.mu.Lock()
+	rung := o.rung
+	o.mu.Unlock()
+	if rung != topRung {
+		t.Errorf("a recorded rung past the ladder's end came back as %d, want the top", rung)
+	}
+}
+
+// A top batch cut short - the writer running out of words at 25 of
+// 80, say - with the store stocked closes the rung: the next wake,
+// hours later, makes a whole 80, not the 55 the rung was short. Cut
+// short with the store still under the mark, the rung stays open and
+// the cycle that re-enters makes the rest; and plans still waiting
+// for their audio keep it open too, so the songs they become count
+// toward the rung rather than on top of a fresh one.
+func TestAnInterruptedTopBatchOnAStockedStoreClosesTheRung(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	cfg := testConfig()
+	cfg.Buffer.ReserveSongs, cfg.Buffer.LowMinutes = 3, 0
+	o, made := ladderOrchestrator(t, cfg)
+	o.mu.Lock()
+	o.rung = topRung
+	o.mu.Unlock()
+	// Under the mark the rung stays open: the rest of it is due.
+	made(25, 200)
+	if next := o.batchFor(0); next != 55 {
+		t.Fatalf("cut short under the mark: next batch %d, want the remaining 55", next)
+	}
+	// Stocked, with plans waiting, still open: they are the rung's.
+	for seq := 1; seq <= 3; seq++ {
+		track := &engine.Track{Samples: make([]int16, audio.SampleRate*audio.Channels), Spec: engine.Spec{Prompt: "p"}}
+		if _, err := o.Buffer.PutTrack(context.Background(), 0, seq, track); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := o.Buffer.PutPlan(0, 4, &engine.Plan{Caption: "planned", Seconds: 1}); err != nil {
+		t.Fatal(err)
+	}
+	made(5, 200)
+	o.mu.Lock()
+	rungMade := o.rungMade
+	o.mu.Unlock()
+	if rungMade != 30 {
+		t.Fatalf("stocked with a plan waiting: %d made of the rung, want it still open at 30", rungMade)
+	}
+	// Stocked with nothing waiting: the rung closes short, no clock
+	// is set, and the store records the top.
+	o.Buffer.DropPlan(0, 4)
+	made(1, 200)
+	o.mu.Lock()
+	rung, rungMade, wait, doneAt := o.rung, o.rungMade, o.rungWait, o.rungDoneAt
+	o.mu.Unlock()
+	if rung != topRung || rungMade != 0 || wait != 0 || !doneAt.IsZero() {
+		t.Fatalf("cut short on a stocked store: rung %d, %d made, wait %v, done at %v; want the top closed with no clock",
+			rung, rungMade, wait, doneAt)
+	}
+	if got := o.Buffer.Rung(); got != topRung {
+		t.Errorf("the store records rung %d, want the top", got)
+	}
+	// The next dip under the mark is answered with a whole 80.
+	o.Buffer.Take(0, "e00000000-00000001")
+	if next := o.plannable(0); next != 80 || !o.wantCycle(0) {
+		t.Fatalf("under the mark after a short top batch: plannable %d, want the whole 80", next)
+	}
+	// A rung of the climb cut short on a stocked store stays open: it
+	// is made whole before the ladder climbs.
+	track := &engine.Track{Samples: make([]int16, audio.SampleRate*audio.Channels), Spec: engine.Spec{Prompt: "p"}}
+	if _, err := o.Buffer.PutTrack(context.Background(), 0, 5, track); err != nil {
+		t.Fatal(err)
+	}
+	if !o.stocked(0) {
+		t.Fatal("the store is under the mark; the check below needs it stocked")
+	}
+	o.mu.Lock()
+	o.rung, o.rungMade = 1, 0
+	o.mu.Unlock()
+	made(4, 200)
+	if next := o.batchFor(0); next != 6 {
+		t.Errorf("the ten-rung cut short at 4 on a stocked store: next batch %d, want the remaining 6", next)
+	}
+}
+
+// shortWordsmith is an Ollama stand-in that writes a few lyric sheets
+// and then fails, the way a helper does on a bad night: the batch it
+// was writing for comes out short.
+func shortWordsmith(t *testing.T, sheets int) *httptest.Server {
+	t.Helper()
+	var written atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]string{{"name": "test-model"}},
+		})
+	})
+	mux.HandleFunc("/api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+			Format json.RawMessage `json:"format"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		reply := "[Verse]\nsteel in the water\n\n[Chorus]\nhold the line"
+		switch {
+		case len(req.Messages) > 1 && strings.Contains(req.Messages[1].Content, "Reply with exactly"):
+			reply = "OK"
+		case len(req.Format) > 0:
+			reply = `{"title":"Steel In The Water","subtitle":"nu-metal, driving"}`
+		case len(req.Messages) > 1 && strings.Contains(req.Messages[1].Content, "Music style:"):
+			if int(written.Add(1)) > sheets {
+				http.Error(w, "no more words tonight", http.StatusInternalServerError)
+				return
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": map[string]string{"role": "assistant", "content": reply},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A top batch that the writer cuts short can still stock the store.
+// Then no writer round follows - nothing is due - and the engine is
+// asleep on a stocked store, which is what the log says: not that the
+// render model was unloaded while the words are written, because none
+// are being written.
+func TestAShortBatchThatStocksTheStoreIsLoggedAsStocked(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	srv := shortWordsmith(t, 2)
+	builder := prompting.NewBuilder(prompting.NewOllama(srv.URL, "", 0), testLogger())
+	builder.ProbeAsync(context.Background())
+	if !builder.AwaitHelper(context.Background(), 5*time.Second) {
+		t.Fatal("the helper never became usable")
+	}
+	sess := session.New()
+	sess.Vocal = true
+	sess.LyricsGenerator = "smoothbrain"
+	eng := &pausableMock{}
+	cfg := testConfig()
+	cfg.Buffer.ReserveSongs, cfg.Buffer.LowMinutes = 2, 0
+	var logbuf lockedBuffer
+	o := New(cfg, eng, builder, session.NewStore(t.TempDir()), sess, &capturePlayer{},
+		slog.New(slog.NewJSONHandler(&logbuf, nil)))
+	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
+	// As Start sets it: the words come from wordsmith rounds on the
+	// free card, never from a background write behind a busy engine.
+	o.builder.SetPhased(true)
+	o.mu.Lock()
+	o.rung = topRung
+	o.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	failures, oomStreak := 0, 0
+	o.runCycle(ctx, &failures, &oomStreak)
+
+	// The writer's two sheets, the one reuse the builder allows, and
+	// nothing past that: a batch far short of the 80 it set out for.
+	plans, renders := eng.plans.Load(), eng.renders.Load()
+	if plans < 2 || plans > 3 || renders != plans {
+		t.Fatalf("the cycle planned %d and rendered %d; want a short batch of the writer's sheets", plans, renders)
+	}
+	level, _ := o.Buffer.Level(0)
+	if level != int(renders) || level < 2 {
+		t.Fatalf("level after the short batch = %d, want %d (stocked at a mark of 2)", level, renders)
+	}
+	o.mu.Lock()
+	rung, rungMade := o.rung, o.rungMade
+	o.mu.Unlock()
+	if rung != topRung || rungMade != 0 {
+		t.Errorf("after the short batch: rung %d with %d made; want the top rung closed", rung, rungMade)
+	}
+	if o.plannable(0) != 0 || o.wantCycle(0) {
+		t.Error("a stocked store wants a cycle after the short batch")
+	}
+	if got := eng.hibernated.Load(); got != 1 {
+		t.Errorf("the engine was put down %d times, want once", got)
+	}
+	log := logbuf.String()
+	if want := fmt.Sprintf("engine asleep: %d songs in store", level); !strings.Contains(log, want) ||
+		!strings.Contains(log, `"event":"engine_hibernated"`) {
+		t.Errorf("the short batch's sleep was not logged as a stocked store:\n%s", log)
+	}
+	if strings.Contains(log, "render model unloaded while the words are written") {
+		t.Errorf("the log says the words are being written, and none are:\n%s", log)
 	}
 }
 
