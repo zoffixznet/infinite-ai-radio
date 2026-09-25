@@ -622,14 +622,16 @@ func (o *Orchestrator) Status() Status {
 	// cycles, so the gauge has a target to draw against.
 	st.RampBatch = o.batchCapNow
 	if !o.genBusy || st.RampBatch == 0 {
-		st.RampBatch = o.batchForLocked(o.bufLevel)
+		st.RampBatch = o.batchForLocked()
 	}
 	st.BatchRendered = o.batchRenderedNow
 	st.BufferedSeconds = o.bufSeconds
 	st.PlannedTracks = o.bufPlans
 	st.PlannedSeconds = o.bufPlanSeconds
 	st.StoreLevel = o.bufLevel
-	st.StoreTarget = o.cfg.Buffer.Songs
+	st.StoreSeconds = o.bufLevelSeconds
+	st.WakeBelow = wakeMark(o.cfg.Buffer, o.bufLevel, o.bufLevelSeconds)
+	st.StoreTarget = storeCeiling(st.WakeBelow)
 	st.NextBatchIn = o.rungWaitLeftLocked()
 	if o.Telemetry != nil {
 		// The sampler measures on its own timer; this is a copy of the

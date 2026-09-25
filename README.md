@@ -189,17 +189,20 @@ The engine is woken only when there is work: songs are planned and
 rendered in batches into the song store on disk, and between batches the
 engine shuts down completely, giving back all of its graphics and system
 memory while every listener plays on from the store. Once the store is
-full, nothing more is made until somebody takes a song. A relaunch with
-songs in the store plays immediately without touching the graphics card
-at all.
+stocked, nothing more is made until the listeners have taken enough
+songs to bring it under its wake mark - hours, with one phone
+listening, and for ever with nobody listening. A relaunch with songs
+in the store plays immediately without touching the graphics card at
+all.
 
 `--telemetry` adds a readout of the processor, memory and graphics
 card. The share marked `radio` is everything working for the radio at
 that moment - writing a batch's words is the engine working as much as
 rendering is, so the writer counts while the words are being written -
 and the `models` row names what is on the card for the radio, or says
-the engine is asleep and why: the store is full, or the next batch is
-not due yet. The `gen` row says what is being made right now - the
+the engine is asleep and why: the store is stocked (how many songs are
+in it, how much music that is, and the level it wakes below), or the
+next batch is not due yet. The `gen` row says what is being made right now - the
 words being written, the engine waking for the next batch, the next
 track rendering - and `shared` names whatever else is on the card.
 
@@ -343,10 +346,12 @@ typed at the same prompt. A leading slash is optional: `skip` and
 speakers and it takes nothing from the store, which goes on filling
 for the phones exactly as before. `play` switches it back on, from the
 song it was on. That is all the switch does - the radio itself never
-sleeps on a command. It sleeps on its own: once the store holds
-`buffer.songs` songs nobody has taken, no batch is due and the engine
-sleeps until somebody takes a song, so a machine left running
-overnight with nobody listening makes nothing overnight. `--remote`
+sleeps on a command. It sleeps on its own: once the store is stocked
+to its wake mark (`buffer.reserve_songs` untaken songs plus
+`buffer.low_minutes` of music), no batch is due and the engine sleeps
+until the listeners have taken enough songs to bring it under, so a
+machine left running overnight with nobody listening makes nothing
+overnight. `--remote`
 starts with the player off, because a machine started as the station
 should not play the first song into whatever room it sits in.
 
@@ -752,7 +757,9 @@ everything else keeps its default. The complete set, with defaults:
     "tag": "v0.1.8"
   },
   "buffer": {
-    "songs": 72
+    "songs": 72,
+    "reserve_songs": 80,
+    "low_minutes": 45
   },
   "ollama": {
     "enabled": true,
@@ -944,22 +951,35 @@ this machine's player and each phone - takes its songs from that store.
 Batch sizes climb a ladder: one opener as fast as possible
 (engine-invented words allowed), then a ten-song audition of songs with
 the writer's own words straight after it, then batches of 20, 40 and
-80 - the ceiling. The ladder climbs on the clock: after a rung is made,
-the generator waits as long as that rung's music runs before making
-the next, less whatever listeners skipped meanwhile (every device
-reports the seconds it skipped with Next, and skipping is faster
-consumption). A cycle renders everything it plans, and between cycles
-the engine sleeps; a cycle runs at all only while the store holds
-fewer than `songs` untaken songs, and a batch never makes more than
-the room left, so a full store is the off switch - the engine sleeps
-until somebody takes a song. A steer drops every stored plan and song
-and restarts the ladder, so trying prompts never wastes deep work -
-but a restart of the player does not: the store carries a context and
-a build stamp, continues across restarts of the same binary, and is
-cleared when a different build of the player takes over, so songs
-rendered by older code never linger into an upgrade. `restart` empties
-it and puts the ladder back on its first rung without touching the
-session, and `iar buffer clear` does the same to a stopped radio.
+80 - the top. Every rung is made whole; a batch is never cut down to
+the room left in the store. While the ladder climbs it climbs on the
+clock: after a rung is made, the generator waits as long as that
+rung's music runs before making the next, less whatever listeners
+skipped meanwhile (every device reports the seconds it skipped with
+Next, and skipping is faster consumption), so a sound you may still
+steer away from is never over-produced. Once the top rung has been
+made, no clock runs at all. The store is stocked, and the engine
+sleeps until the songs nobody has taken fall below the wake mark:
+`reserve_songs` - enough for a fresh phone to fill its bank without
+waking anything - plus `low_minutes` of music on top, so that once
+the phone has filled up there is still that much left to play. Only
+listeners taking songs bring the level down, so a phone paused on a
+full bank wakes nothing, however long it sits, and a machine left
+running with nobody listening makes nothing; two phones filling their
+banks at once drain the store under the mark within minutes and wake
+the engine at once. When it wakes it makes a whole batch of 80 and
+sleeps again. With one listener taking a song every three or four
+minutes, that is 80 songs made, then four to five hours asleep, then
+80 more. A cycle renders everything it plans, and a batch under way
+finishes even if the store crosses the mark part way through. A steer
+drops every stored plan and song and restarts the ladder, so trying
+prompts never wastes deep work - but a restart of the player does
+not: the store carries a context and a build stamp, continues across
+restarts of the same binary, and is cleared when a different build of
+the player takes over, so songs rendered by older code never linger
+into an upgrade. `restart` empties it and puts the ladder back on its
+first rung without touching the session, and `iar buffer clear` does
+the same to a stopped radio.
 
 Playing a song does not delete it from the store. The player takes
 it, which marks it as consumed and leaves it on disk for a player that
@@ -967,15 +987,25 @@ has not caught up - a phone that was away, say, plays the songs the
 speakers already played before it takes anything new. The store keeps
 the newest `songs` taken songs and trims the oldest beyond that; the
 songs nobody has taken yet are what the generator fills against, and
-they are never trimmed. A steer or `restart` drops the lot.
+they are never trimmed. A steer or `restart` drops the lot. At the
+default settings the store holds up to about 172 untaken songs (a
+batch of 80 made just under a wake mark of about 93) plus 72 taken
+ones - about 245 songs, around 1.2 GB at the radio's usual song
+sizes.
 
-- `songs` (3 or more, 72 by default): how many songs the generator
-  makes ahead - it fills to this many untaken songs, one rung at a
-  time - and how many taken songs the store keeps for players that
-  have not caught up. The deepest phone setting holds 72, so the
-  default lets a phone that comes back find everything it missed; the
-  store never holds more than twice this. Out-of-range values are
-  clamped at load.
+- `songs` (3 or more, 72 by default): how many taken songs the store
+  keeps for players that have not caught up. The deepest phone setting
+  holds 72, so the default lets a phone that comes back find
+  everything it missed. Out-of-range values are clamped at load.
+- `reserve_songs` (1 or more, 80 by default): untaken songs always
+  kept in store, so a fresh phone can fill its bank without waking the
+  engine. The deepest phone setting takes 72 at once.
+- `low_minutes` (0 or more, 45 by default): how much music beyond the
+  reserve the store keeps before the engine is woken. The wake mark
+  is the reserve plus this many minutes' worth of songs at the mean
+  length of what is in store; the engine sleeps while the untaken
+  songs number the mark or more, and makes a whole top batch once
+  they fall under it. 0 wakes it at the reserve exactly.
 - `phased` is no longer used: whichever engine makes it, every song is
   planned, rendered and kept in the store. The key can be deleted.
 
@@ -1033,7 +1063,8 @@ Inside the data directory:
   `tracks/` (rendered MP3s, each with a JSON metadata sidecar that also
   records when the song was taken), the stored steering context, and
   the player's cursor. The largest directory after `engine/`; how much
-  it holds follows the batch ladder and the `songs` setting
+  it holds follows the batch ladder and the `buffer` settings - up to
+  about 245 songs, around 1.2 GB, at the defaults
 - `songbook.jsonl` - one line per song the radio has made: the file's
   hash, its name, words and prompt, and where it was saved
 - `snippets/<tag>/` - tracks captured with the save command, one

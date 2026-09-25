@@ -74,14 +74,25 @@ type Config struct {
 // audio model alone), stored on disk, and served from there while both
 // models stay completely unloaded. Batch sizes ramp up as a steering
 // context proves stable, so fiddling with prompts never wastes a deep
-// buffer of work.
+// buffer of work; once the ladder is at the top the engine sleeps
+// until the listeners have taken enough songs to bring the store
+// down to its reserve.
 type Buffer struct {
-	// Songs is how many songs the store keeps: made ahead for the
-	// players to take, and, once taken, kept for players that have not
-	// caught up. The generator fills to this many untaken songs, one
-	// ladder rung at a time; the deepest phone setting holds 72, so
-	// that is the default. The store never holds more than twice this.
+	// Songs is how many taken songs the store keeps for players that
+	// have not caught up: a song a player takes stays on disk until it
+	// is this many songs behind the newest taken one. The deepest phone
+	// setting holds 72, so that is the default.
 	Songs int `json:"songs"`
+	// ReserveSongs is how many untaken songs are always kept in store,
+	// so a fresh phone can fill its bank without waking the engine.
+	// The deepest phone setting holds 72 and the top batch is 80, so
+	// 80 is the default.
+	ReserveSongs int `json:"reserve_songs"`
+	// LowMinutes is how much music beyond the reserve the store keeps
+	// before the engine is woken: once the untaken songs hold less than
+	// the reserve plus this many minutes, the engine makes a whole top
+	// batch and sleeps again. Zero wakes it at the reserve exactly.
+	LowMinutes int `json:"low_minutes"`
 }
 
 // Sessions tunes session housekeeping.
@@ -220,7 +231,9 @@ func Default() Config {
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
 		Buffer: Buffer{
-			Songs: 72,
+			Songs:        72,
+			ReserveSongs: 80,
+			LowMinutes:   45,
 		},
 		ACEStep: ACEStep{
 			Port:            0,
@@ -324,6 +337,12 @@ func (c *Config) sanitize() {
 	}
 	if c.Buffer.Songs < 3 {
 		c.Buffer.Songs = 3
+	}
+	if c.Buffer.ReserveSongs < 1 {
+		c.Buffer.ReserveSongs = 1
+	}
+	if c.Buffer.LowMinutes < 0 {
+		c.Buffer.LowMinutes = 0
 	}
 	if c.TrackSeconds < 30 {
 		c.TrackSeconds = 30

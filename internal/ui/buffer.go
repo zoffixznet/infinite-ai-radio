@@ -115,10 +115,19 @@ func genIdle(st player.Status) string {
 	return "idle"
 }
 
+// stocked reports the store holds the wake mark or more: the engine
+// sleeps until the listeners have taken enough songs to bring it
+// under, and no clock runs.
+func stocked(st player.Status) bool {
+	return st.WakeBelow > 0 && st.StoreLevel >= st.WakeBelow
+}
+
 // bufferGauge describes the store for the status bar: while a batch
-// runs, how much of it is rendered; between batches, how full the
-// store is and when the tap next runs. ok is false when there is
-// nothing meaningful to draw.
+// runs, how much of it is rendered; between batches, how much of the
+// store is filled and what starts the next batch - the clock while
+// the ladder climbs, the level falling under the wake mark once the
+// store is stocked. ok is false when there is nothing meaningful to
+// draw.
 func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool) {
 	toPlay := st.BufferedTracks
 	if st.Generating && st.RampBatch > 0 {
@@ -137,8 +146,10 @@ func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool
 	// then is how much music is banked and what starts the next batch.
 	text = fmt.Sprintf("%d songs to play (%s)", toPlay, fmtSpan(st.BufferedSeconds))
 	switch {
-	case st.StoreTarget > 0 && st.StoreLevel >= st.StoreTarget:
-		text += " · store full"
+	case stocked(st):
+		// Stocked: no countdown, because none runs. What wakes the
+		// engine is the store falling under the mark.
+		text += fmt.Sprintf(" · stocked, engine wakes below %d in store", st.WakeBelow)
 	case st.NextBatchIn > 0:
 		text += " · next batch in " + fmtSpan(st.NextBatchIn.Seconds())
 	case st.RampBatch > 0:
@@ -146,6 +157,9 @@ func bufferGauge(st player.Status) (frac, consumed float64, text string, ok bool
 	}
 	if st.StoreTarget > 0 {
 		frac = float64(st.StoreLevel) / float64(st.StoreTarget)
+		if frac > 1 {
+			frac = 1
+		}
 	}
 	return frac, 0, text, true
 }

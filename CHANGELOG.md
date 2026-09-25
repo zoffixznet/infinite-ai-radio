@@ -6,6 +6,46 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The engine makes a whole batch and then leaves the graphics card
+  alone for hours. Every rung of the batch ladder is made whole now -
+  a batch is never cut down to the room left in the store - and once
+  the top rung of 80 has been made no clock runs at all: the engine
+  sleeps until the songs nobody has taken fall below the wake mark,
+  which only listeners taking songs can bring about, then makes a
+  whole 80 and sleeps again. The store's depth used to be both the cap
+  on untaken songs and the wake threshold, so a fresh phone filling its
+  bank emptied most of the store in seconds and woke the engine for a
+  top-up of a handful of songs, and in steady state every take opened
+  the tap for a few more; the batch of 80 was never made. A phone
+  paused on a full bank wakes nothing, however long it sits; two
+  phones filling their banks at once drain the store under the mark
+  within minutes and wake the engine at once, not after a stale
+  timer. While the ladder climbs it still climbs on the clock, and
+  skipped music still brings the next rung forward; past the top it
+  wakes on the level alone. A batch under way finishes even if the
+  store crosses the mark part way through.
+- The status line, the buffer row and the `models` row say "stocked"
+  where they used to say the store was full, and say what wakes the
+  engine: how many songs are in store, how much music that is, and
+  the level it wakes below - never a countdown, because none runs.
+  The log's sleep line says the same.
+- The store now holds up to about 172 untaken songs plus the 72 taken
+  ones it keeps - about 245 songs, around 1.2 GB at the radio's usual
+  song sizes. `buffer.songs` keeps its meaning as the taken songs kept
+  for players that have not caught up; it no longer caps what is made
+  ahead.
+
+### Added
+
+- `buffer.reserve_songs` (80 by default): untaken songs always kept in
+  store, so a fresh phone can fill its bank without waking the engine.
+- `buffer.low_minutes` (45 by default): how much music beyond the
+  reserve the store keeps before the engine is woken. The wake mark is
+  the reserve plus this many minutes' worth of songs at the mean length
+  of what is in store; 0 wakes the engine at the reserve exactly.
+
 ## [2.0.0] - 2026-09-24
 
 ### Changed

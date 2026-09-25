@@ -21,7 +21,9 @@ func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 		PlannedTracks:   1,
 		PlannedSeconds:  200,
 		StoreLevel:      9,
-		StoreTarget:     72,
+		StoreSeconds:    31 * 60,
+		WakeBelow:       93,
+		StoreTarget:     172,
 		NextBatchIn:     45 * time.Minute,
 	}
 
@@ -37,28 +39,42 @@ func TestBufferShowsTheDiskBufferNotThePrefetch(t *testing.T) {
 	if !ok {
 		t.Fatal("phased status produced no gauge")
 	}
-	// Nine untaken songs of a store that fills to 72.
-	if frac < 0.12 || frac > 0.13 {
-		t.Errorf("gauge fraction %.3f, want about 0.125", frac)
+	// Nine untaken songs of a store that comes to hold 172.
+	if frac < 0.05 || frac > 0.06 {
+		t.Errorf("gauge fraction %.3f, want about 0.052", frac)
 	}
 	for _, want := range []string{"11 songs to play (37m)", "next batch in 45m"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("gauge text %q is missing %q", text, want)
 		}
 	}
-	// A full store says so, and a due batch says how big it is.
-	st.StoreLevel = 72
-	if _, _, text, _ = bufferGauge(st); !strings.Contains(text, "store full") {
-		t.Errorf("a full store reads %q", text)
+	// A stocked store says what wakes the engine - the level falling
+	// under the mark - and never a countdown, because none runs; a
+	// stale clock left over from the climb does not show either.
+	st.StoreLevel, st.StoreSeconds = 151, 8*3600+50*60
+	if _, _, text, _ = bufferGauge(st); !strings.Contains(text, "stocked, engine wakes below 93 in store") ||
+		strings.Contains(text, "next batch") {
+		t.Errorf("a stocked store reads %q", text)
 	}
-	st.StoreLevel, st.NextBatchIn, st.RampBatch = 9, 0, 20
-	if _, _, text, _ = bufferGauge(st); !strings.Contains(text, "next batch of 20 due") {
+	// At the mark exactly the store is stocked too.
+	st.StoreLevel, st.NextBatchIn = 93, 0
+	if _, _, text, _ = bufferGauge(st); !strings.Contains(text, "wakes below 93") {
+		t.Errorf("a store at the mark reads %q", text)
+	}
+	// A due batch says how big it is.
+	st.StoreLevel, st.NextBatchIn, st.RampBatch = 92, 0, 80
+	if _, _, text, _ = bufferGauge(st); !strings.Contains(text, "next batch of 80 due") {
 		t.Errorf("a due batch reads %q", text)
+	}
+	// The bar never runs past full, however deep the store gets.
+	st.StoreLevel = 200
+	if frac, _, _, _ = bufferGauge(st); frac != 1 {
+		t.Errorf("gauge fraction past the ceiling = %.3f, want 1", frac)
 	}
 }
 
 func TestBufferPhasedWithNothingYet(t *testing.T) {
-	st := player.Status{StoreTarget: 72}
+	st := player.Status{WakeBelow: 93, StoreTarget: 172}
 	if got := bufferReady(st); got != "nothing buffered yet" {
 		t.Errorf("ready line reads %q", got)
 	}
@@ -186,7 +202,8 @@ func TestBufferLineBetweenBatches(t *testing.T) {
 		BufferedTracks:  17,
 		BufferedSeconds: 51 * 60,
 		StoreLevel:      15,
-		StoreTarget:     72,
+		WakeBelow:       93,
+		StoreTarget:     172,
 		NextBatchIn:     45 * time.Minute,
 	}
 

@@ -67,8 +67,11 @@ func testConfig() config.Config {
 	cfg := config.Default()
 	cfg.TrackSeconds = 2
 	cfg.CrossfadeSeconds = 0.5
-	// A small store keeps a test's generator from filling seventy songs.
+	// A small reserve with no minutes on top keeps a test's generator
+	// from climbing to eighty-song batches: the store is stocked after
+	// the opener and the ten-song rung, and the engine sleeps.
 	cfg.Buffer.Songs = 6
+	cfg.Buffer.ReserveSongs, cfg.Buffer.LowMinutes = 6, 0
 	return cfg
 }
 

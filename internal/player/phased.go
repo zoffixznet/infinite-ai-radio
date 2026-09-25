@@ -3,9 +3,11 @@ package player
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"iar/internal/audio"
+	"iar/internal/config"
 	"iar/internal/engine"
 	"iar/internal/prompting"
 	"iar/internal/session"
@@ -19,14 +21,21 @@ import (
 // renders the batch (the diffusion model alone, the planner untouched),
 // stores everything in the tub, and puts the engine to sleep. The
 // engine wakes only when the tub's level - the songs nobody has taken
-// yet - is below the configured depth, and a rung is due.
+// yet - is below the wake mark, and a rung is due.
 //
-// Batch sizes climb a ladder on the clock: one opener as fast as
-// possible, then ten songs straight after it, then 20, 40 and 80. After
-// a rung is made the tap waits as long as that rung's music runs before
-// the next, less whatever listeners skipped - so an evening of
-// prompt-fiddling never wastes an hour of planned songs, and a tub
-// nobody is drawing from still fills while the house is empty.
+// Filling runs in two stages. While the ladder climbs - after a steer
+// or a wipe - batch sizes go 1, 10, 20, 40, 80 on the clock: one
+// opener as fast as possible, ten songs straight after it, and then
+// each rung waits as long as its music runs before the next, less
+// whatever listeners skipped, so an evening of prompt-fiddling never
+// wastes an hour of planned songs. Every rung is made whole; a batch
+// is never trimmed to the room left in the tub. Once the top rung has
+// been made no clock runs at all: the engine sleeps until the untaken
+// songs fall below the wake mark - which only listeners taking songs
+// can bring about - then makes a whole top batch and sleeps again. A
+// phone paused on a full bank takes nothing, so the engine sleeps
+// indefinitely; two phones filling their banks at once drain the tub
+// below the mark within minutes and wake it at once.
 const (
 	// phasedPrefetch is how many decoded tracks sit in memory ahead of
 	// playback (the one playing rides the mixer; these cover decode
@@ -38,9 +47,40 @@ const (
 )
 
 // ladder is the batch ladder: how many songs each rung makes. The
-// opener rung is one song; the ceiling rung refills the tub in
-// batches of eighty (capped at the room left in it).
+// opener rung is one song; the top rung refills the tub in whole
+// batches of eighty whenever the level falls below the wake mark.
 var ladder = [...]int{1, 10, 20, 40, 80}
+
+// topRung is the ladder's last rung: the batch the tub is refilled in
+// for as long as the steering context stands.
+const topRung = len(ladder) - 1
+
+// fallbackSongSeconds stands in for the mean song length while the tub
+// holds no untaken song to measure: a typical song is about three and
+// a half minutes.
+const fallbackSongSeconds = 210.0
+
+// wakeMark is the low-water mark in songs: the engine is woken only
+// while fewer untaken songs than this are in the tub. It is the
+// reserve - what a fresh phone takes to fill its bank, kept so that
+// filling never wakes the engine - plus the low-water minutes of music
+// on top, converted to songs at the mean length of what is in the tub
+// (fallbackSongSeconds when it is empty). The mark is in songs
+// because the reserve is: a phone's bank is counted in songs, and the
+// minutes are what must still be playable once it has taken them.
+func wakeMark(b config.Buffer, level int, levelSeconds float64) int {
+	mean := fallbackSongSeconds
+	if level > 0 && levelSeconds > 0 {
+		mean = levelSeconds / float64(level)
+	}
+	return b.ReserveSongs + int(math.Ceil(float64(b.LowMinutes)*60/mean))
+}
+
+// storeCeiling is the most untaken songs the tub comes to hold: a whole
+// top batch made just under the wake mark.
+func storeCeiling(wakeBelow int) int {
+	return wakeBelow - 1 + ladder[topRung]
+}
 
 // phasedEngine is what the generator needs from the engine: a plan
 // step and a render step, so the two models never share the card.
@@ -191,6 +231,7 @@ func (o *Orchestrator) publishBufferStats(epoch int) {
 	plans, planSecs := o.Buffer.PlanStats(epoch)
 	o.mu.Lock()
 	o.bufLevel = tracks
+	o.bufLevelSeconds = secs
 	o.bufTracks = tracks
 	o.bufSeconds = secs
 	o.bufPlans = plans
@@ -217,25 +258,30 @@ func (o *Orchestrator) bufferedSeconds(epoch int) float64 {
 }
 
 // batchFor is how many songs the next cycle makes: the rung's size,
-// less what this rung has made already, capped at the room left in the
-// tub. Zero when the tub is full.
-func (o *Orchestrator) batchFor(epoch int) int {
-	level, _ := o.Buffer.Level(epoch)
+// less what this rung has made already. A rung is made whole - never
+// trimmed to the room left in the tub - because the point of the
+// ladder is one large batch and then hours with the card left alone,
+// not a top-up of a handful of songs after every take.
+func (o *Orchestrator) batchFor() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.batchForLocked(level)
+	return o.batchForLocked()
 }
 
-// batchForLocked is batchFor against a known level. Callers hold o.mu.
-func (o *Orchestrator) batchForLocked(level int) int {
+// batchForLocked is batchFor under the lock.
+func (o *Orchestrator) batchForLocked() int {
 	size := ladder[o.rung] - o.rungMade
-	if room := o.cfg.Buffer.Songs - level; size > room {
-		size = room
-	}
 	if size < 0 {
 		size = 0
 	}
 	return size
+}
+
+// stocked reports whether the tub holds the wake mark or more: nothing
+// is made until listeners take songs.
+func (o *Orchestrator) stocked(epoch int) bool {
+	level, secs := o.Buffer.Level(epoch)
+	return level >= wakeMark(o.cfg.Buffer, level, secs)
 }
 
 // rungWaitLeft is how long the tap still waits before the next rung:
@@ -259,38 +305,52 @@ func (o *Orchestrator) rungWaitLeftLocked() time.Duration {
 	return left
 }
 
-// plannable is how many songs a cycle starting now may plan: the
-// batch, once the rung is due; nothing while the tap is waiting.
+// plannable is how many songs a cycle starting now may plan: nothing
+// while the tub is stocked to the wake mark or while the ladder's
+// clock is being waited out; otherwise the rung's remaining size,
+// whole. A cycle reads it once, at its start, and finishes the batch
+// it set out to make: the level crossing the mark mid-batch does not
+// cut a rung short.
 func (o *Orchestrator) plannable(epoch int) int {
+	if o.stocked(epoch) {
+		return 0
+	}
 	if o.rungWaitLeft() > 0 {
 		return 0
 	}
-	return o.batchFor(epoch)
+	return o.batchFor()
 }
 
-// completeRung closes the rung once its batch is made (or the tub is
-// full): the tap waits as long as the batch's music runs before the
-// next rung, and the ladder climbs. The opener's rung waits nothing,
-// so the ten-song batch follows it straight away.
+// completeRung closes the rung once its batch is made and the ladder
+// climbs. While climbing, the tap then waits as long as the batch's
+// music runs before the next rung; the opener's rung waits nothing,
+// so the ten-song batch follows it straight away. The top rung sets
+// no wait at all: from there the engine wakes on the level alone,
+// however long ago the batch was made, so a tub drained below the
+// mark a minute after a batch wakes it at once and a tub nobody draws
+// from leaves it asleep for good. The next wake makes a whole top
+// batch.
 func (o *Orchestrator) completeRung(epoch int) {
-	level, _ := o.Buffer.Level(epoch)
+	level, secs := o.Buffer.Level(epoch)
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.rungMade == 0 {
 		return
 	}
-	if o.rungMade < ladder[o.rung] && level < o.cfg.Buffer.Songs {
+	if o.rungMade < ladder[o.rung] {
 		return // the rung is not made yet; the next cycle carries on
 	}
 	o.rungWait = time.Duration(o.rungSeconds * float64(time.Second))
-	if o.rung == 0 {
-		o.rungWait = 0
-	}
 	o.rungDoneAt = time.Now()
+	if o.rung == 0 || o.rung == topRung {
+		o.rungWait = 0
+		o.rungDoneAt = time.Time{}
+	}
 	o.skipCredit = 0
 	o.log.Info("ladder rung made", "event", "ladder_rung", "rung", ladder[o.rung],
-		"songs", o.rungMade, "wait_seconds", o.rungWait.Seconds(), "level", level)
-	if o.rung < len(ladder)-1 {
+		"songs", o.rungMade, "wait_seconds", o.rungWait.Seconds(), "level", level,
+		"wake_below", wakeMark(o.cfg.Buffer, level, secs))
+	if o.rung < topRung {
 		o.rung++
 	}
 	o.rungMade = 0
@@ -298,9 +358,11 @@ func (o *Orchestrator) completeRung(epoch int) {
 }
 
 // ReportSkipped credits the ladder with music a listener skipped:
-// skipping is faster consumption, so the next rung comes sooner.
-// Listeners report it on every check for new songs; the credits add up
-// across them.
+// skipping is faster consumption, so while the ladder climbs the next
+// rung comes sooner. Listeners report it on every check for new songs;
+// the credits add up across them. Past the top rung there is no clock
+// to shorten - the skip's take is what brings the level down - and
+// the credit is simply kept until the next rung closes.
 func (o *Orchestrator) ReportSkipped(seconds float64) {
 	if seconds <= 0 {
 		return
@@ -313,8 +375,8 @@ func (o *Orchestrator) ReportSkipped(seconds float64) {
 
 // wantCycle reports whether the engine should wake and produce: plans
 // left over from an interrupted cycle always get their audio; past
-// that, a rung is due only while the tub is below its depth and the
-// last rung's wait has run out.
+// that, a rung is due only while the tub is below the wake mark and
+// the last rung's wait, if the ladder is still climbing, has run out.
 func (o *Orchestrator) wantCycle(epoch int) bool {
 	if o.eng == nil {
 		return false // nothing can be made
@@ -354,7 +416,7 @@ func (o *Orchestrator) cycleLoop(ctx context.Context) {
 		if !o.wantCycle(epoch) {
 			// Hibernation only ever happens inside runCycle's defer, so
 			// a cycle that ended staying warm and then found no work on
-			// its way back - the store filled, the mode changed, a
+			// its way back - the store stocked, the mode changed, a
 			// cooldown started - left the daemon holding the card with
 			// nothing left to enter that would put it down. This
 			// goroutine is the only one that runs a cycle, so nothing
@@ -972,8 +1034,10 @@ const (
 	// sleepForWriter: the render daemon is stopped only so the writer
 	// can have the card. The radio is still making songs.
 	sleepForWriter sleepReason = iota
-	// sleepStoreFull: nothing more to make until somebody takes a song.
-	sleepStoreFull
+	// sleepStocked: the store holds the wake mark or more; nothing is
+	// made until the listeners have taken enough songs to bring it
+	// under. The log line says how much is in store and the mark.
+	sleepStocked
 	// sleepUntilDue: the ladder's clock is being waited out.
 	sleepUntilDue
 	// sleepCooldown: a batch is due, but the last cycle gave up on
@@ -991,8 +1055,8 @@ func sleepLog(why sleepReason) (event, msg string) {
 	switch why {
 	case sleepForWriter:
 		return "render_unloaded", "render model unloaded while the words are written"
-	case sleepStoreFull:
-		return "engine_hibernated", "engine asleep: the store is full"
+	case sleepStocked:
+		return "engine_hibernated", "engine asleep: the store is stocked"
 	case sleepUntilDue:
 		return "engine_hibernated", "engine asleep until the next batch is due"
 	case sleepCooldown:
@@ -1004,37 +1068,71 @@ func sleepLog(why sleepReason) (event, msg string) {
 }
 
 // sleepReasonNow decides, on the paths where the engine sleeps because
-// no cycle is wanted, between a failure cooldown, a full store, the
+// no cycle is wanted, between a failure cooldown, a stocked store, the
 // clock, and anything else. The cooldown comes first: it is what stops
 // a cycle whose batch is otherwise due, and a line saying no batch is
 // due while one waits on the cooldown would be untrue.
 func (o *Orchestrator) sleepReasonNow(epoch int) sleepReason {
-	level, _ := o.Buffer.Level(epoch)
+	stocked := o.stocked(epoch)
 	o.mu.Lock()
 	cooling := time.Now().Before(o.cycleCooldown)
-	full := level >= o.cfg.Buffer.Songs
 	waiting := o.rungWaitLeftLocked() > 0
 	o.mu.Unlock()
 	switch {
 	case cooling:
 		return sleepCooldown
-	case full:
-		return sleepStoreFull
+	case stocked:
+		return sleepStocked
 	case waiting:
 		return sleepUntilDue
 	}
 	return sleepNoWork
 }
 
+// stockedMessage is the log line for an engine asleep on a stocked
+// store: what is in store, how much music that is, and the mark the
+// store must fall below before the engine is woken.
+func stockedMessage(level int, seconds float64, wakeBelow int) string {
+	return fmt.Sprintf("engine asleep: %d songs in store, %s of music; wakes below %d",
+		level, spanText(seconds), wakeBelow)
+}
+
+// spanText writes a stretch of music the way a listener thinks about
+// it: hours and minutes for a deep store, minutes or seconds for a
+// shallow one.
+func spanText(seconds float64) string {
+	d := time.Duration(seconds * float64(time.Second))
+	switch {
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh%02dm", int(d/time.Hour), int(d/time.Minute)%60)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d > 0:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return "0m"
+}
+
 // hibernateEngine stops heartbeating and shuts the engine daemon down,
 // giving all of its graphics and system memory back until the next
 // cycle. Playback continues from the disk buffer. why says whether
 // this is the engine going to sleep or only the writer's turn on the
-// card, which is what the log line reports.
+// card, which is what the log line reports; an engine asleep on a
+// stocked store is logged with what is in store and when it wakes.
 func (o *Orchestrator) hibernateEngine(why sleepReason) {
 	o.setEngineActive(false)
 	if h, ok := o.eng.(interface{ HibernateEngine() bool }); ok && h.HibernateEngine() {
 		event, msg := sleepLog(why)
+		if why == sleepStocked && o.Buffer != nil {
+			o.mu.Lock()
+			epoch := o.epoch
+			o.mu.Unlock()
+			level, secs := o.Buffer.Level(epoch)
+			below := wakeMark(o.cfg.Buffer, level, secs)
+			o.log.Info(stockedMessage(level, secs, below), "event", event,
+				"level", level, "seconds", secs, "wake_below", below)
+			return
+		}
 		o.log.Info(msg, "event", event)
 	}
 }

@@ -150,11 +150,14 @@ func modelRow(st player.Status) telemetryRow {
 
 // asleepWhy says why nothing is being made, in the words the buffer
 // row uses; empty when neither of its two reasons holds (the engine is
-// about to wake, or a cooldown after failures is running).
+// about to wake, or a cooldown after failures is running). A stocked
+// store says how much is in it and the mark the engine wakes below,
+// because that - not a clock - is what ends the sleep.
 func asleepWhy(st player.Status) string {
 	switch {
-	case st.StoreTarget > 0 && st.StoreLevel >= st.StoreTarget:
-		return "the store is full"
+	case stocked(st):
+		return fmt.Sprintf("%d songs in store, %s of music; wakes below %d",
+			st.StoreLevel, fmtSpan(st.StoreSeconds), st.WakeBelow)
 	case st.NextBatchIn > 0:
 		return "next batch due in " + fmtSpan(st.NextBatchIn.Seconds())
 	}

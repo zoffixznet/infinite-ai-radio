@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"iar/internal/audio"
+	"iar/internal/config"
 	"iar/internal/engine"
 	"iar/internal/engine/enginetest"
 	"iar/internal/prompting"
@@ -73,9 +74,9 @@ func TestPhasedCyclePlansRendersFeedsAndHibernates(t *testing.T) {
 	eng := &phasedMock{}
 	pl := &capturePlayer{}
 	cfg := testConfig()
-	// A store that fills at one song is full after the opener, so
+	// A store stocked at one song is stocked after the opener, so
 	// exactly one cycle runs and then hibernates.
-	cfg.Buffer.Songs = 1
+	cfg.Buffer.ReserveSongs, cfg.Buffer.LowMinutes = 1, 0
 	sess := session.New()
 	builder := prompting.NewBuilder(nil, testLogger())
 	o := New(cfg, eng, builder, session.NewStore(t.TempDir()), sess, pl, testLogger())
@@ -195,31 +196,38 @@ func TestAdoptionRefusesAnotherContextsBuffer(t *testing.T) {
 	}
 }
 
-// The ladder climbs on the clock. One opener; the ten-song batch
-// straight after it; then every rung waits as long as its music runs
-// before the next, less what listeners skipped; a rung that was cut
-// short stays open; and a rung never makes more than the room left in
-// the store.
-func TestTheLadderClimbsOnTime(t *testing.T) {
-	cfg := testConfig()
-	cfg.Buffer.Songs = 25
-	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
+// ladderOrchestrator is a phased radio with an empty store and nothing
+// running, for walking the ladder by hand: made closes a rung the way
+// a cycle's renders do.
+func ladderOrchestrator(t *testing.T, cfg config.Config) (o *Orchestrator, made func(songs int, seconds float64)) {
+	t.Helper()
+	o = New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
 	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
-	made := func(songs int, seconds float64) {
+	made = func(songs int, seconds float64) {
 		o.mu.Lock()
 		o.rungMade += songs
 		o.rungSeconds += float64(songs) * seconds
 		o.mu.Unlock()
 		o.completeRung(0)
 	}
+	return o, made
+}
 
-	if got := o.batchFor(0); got != 1 {
+// The ladder climbs on the clock. One opener; the ten-song batch
+// straight after it; then every rung waits as long as its music runs
+// before the next, less what listeners skipped; a rung that was cut
+// short stays open; and every rung is made whole, never trimmed to
+// the room left in the store.
+func TestTheLadderClimbsOnTime(t *testing.T) {
+	o, made := ladderOrchestrator(t, testConfig())
+
+	if got := o.batchFor(); got != 1 {
 		t.Fatalf("the first batch = %d, want the opener alone", got)
 	}
 	// The opener waits for nothing: the ten-song batch follows it.
 	made(1, 200)
-	if left, next := o.rungWaitLeft(), o.batchFor(0); left != 0 || next != 10 {
+	if left, next := o.rungWaitLeft(), o.batchFor(); left != 0 || next != 10 {
 		t.Fatalf("after the opener: wait %v, next batch %d; want 0 and 10", left, next)
 	}
 	// Ten songs of 200 seconds: the next rung is due when they have
@@ -240,60 +248,207 @@ func TestTheLadderClimbsOnTime(t *testing.T) {
 	}
 	// A rung cut short stays open: the next cycle makes the rest.
 	made(3, 200)
-	if next := o.batchFor(0); next != 17 {
+	if next := o.batchFor(); next != 17 {
 		t.Fatalf("after 3 of 20: next batch %d, want the remaining 17", next)
 	}
 	made(17, 200)
 	o.ReportSkipped(20 * 200)
-	// The 40-rung is capped at the room left in a store of 25.
-	if next := o.batchFor(0); next != 25 {
-		t.Fatalf("the 40-rung's batch = %d, want the store's room of 25", next)
+	// The 40-rung is made whole, whatever the store holds.
+	if next := o.batchFor(); next != 40 {
+		t.Fatalf("the 40-rung's batch = %d, want the whole 40", next)
 	}
 }
 
-// A full store is the off switch: no rung is due, however long the
-// wait has been over. Taking a song makes room for exactly that much.
-func TestAFullStoreRunsNoCycle(t *testing.T) {
+// The wake mark: the reserve, plus the low-water minutes turned into
+// songs at the mean length of what is in store - or at a typical
+// song's length while the store holds nothing to measure. The default
+// settings give 93: a fresh phone's 80, and 45 minutes of three-and-a-
+// half-minute songs on top.
+func TestTheWakeMarkArithmetic(t *testing.T) {
+	def := config.Default().Buffer
+	for _, tc := range []struct {
+		name    string
+		b       config.Buffer
+		level   int
+		seconds float64
+		want    int
+	}{
+		{"defaults, an empty store", def, 0, 0, 93},
+		{"defaults, typical songs", def, 20, 20 * 210, 93},
+		{"defaults, three-minute songs", def, 10, 10 * 180, 95},
+		{"defaults, five-minute songs", def, 10, 10 * 300, 89},
+		{"a partial song still counts whole", def, 1, 1, 80 + 2700},
+		{"no minutes beyond the reserve", config.Buffer{ReserveSongs: 80}, 5, 5 * 200, 80},
+		{"a reserve of one", config.Buffer{ReserveSongs: 1}, 0, 0, 1},
+		{"minutes on a small reserve", config.Buffer{ReserveSongs: 3, LowMinutes: 10}, 4, 4 * 120, 8},
+	} {
+		if got := wakeMark(tc.b, tc.level, tc.seconds); got != tc.want {
+			t.Errorf("%s: wake mark %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	// The store's ceiling is a whole top batch made just under the mark.
+	if got := storeCeiling(93); got != 172 {
+		t.Errorf("ceiling at a mark of 93 = %d, want 172", got)
+	}
+}
+
+// A stocked store is the off switch: no rung is due while the store
+// holds the wake mark or more, however many songs are taken above it.
+// A fresh phone filling its bank takes dozens at once, and none of
+// that wakes the engine; the take that brings the level under the
+// mark does, and the batch it wakes for is the whole top rung.
+func TestTakingSongsAboveTheMarkDoesNotWakeTheEngine(t *testing.T) {
 	skipWithoutFFmpeg(t)
 	o, _ := idOrchestrator(t)
-	o.cfg.Buffer.Songs = 3
+	o.cfg.Buffer.ReserveSongs, o.cfg.Buffer.LowMinutes = 3, 0
 	o.mu.Lock()
-	o.rung = len(ladder) - 1
+	o.rung = topRung
 	o.mu.Unlock()
-	for seq := 1; seq <= 3; seq++ {
-		renderSong(t, o, seq, "t-1790000000000-005"+string(rune('0'+seq)))
+	for seq := 1; seq <= 10; seq++ {
+		renderSong(t, o, seq, fmt.Sprintf("t-1790000000000-05%02d", seq))
 	}
-	if o.batchFor(0) != 0 || o.wantCycle(0) {
-		t.Fatal("a full store still wants a cycle")
+	if o.plannable(0) != 0 || o.wantCycle(0) {
+		t.Fatal("a stocked store wants a cycle")
 	}
-	o.Buffer.Take(0, "e00000000-00000001")
-	if next := o.batchFor(0); next != 1 || !o.wantCycle(0) {
-		t.Fatalf("one song taken: next batch %d, want 1 and a cycle due", next)
+	// Six songs go at once, and the store still holds more than the mark.
+	for seq := 1; seq <= 6; seq++ {
+		o.Buffer.Take(0, fmt.Sprintf("e00000000-%08d", seq))
+	}
+	if level, _ := o.Buffer.Level(0); level != 4 {
+		t.Fatalf("level after six takes = %d, want 4", level)
+	}
+	if o.plannable(0) != 0 || o.wantCycle(0) {
+		t.Fatal("six songs taken above the mark woke the engine")
+	}
+	// At the mark exactly the store is still stocked.
+	o.Buffer.Take(0, "e00000000-00000007")
+	if o.plannable(0) != 0 || o.wantCycle(0) {
+		t.Fatal("a store holding exactly the mark woke the engine")
+	}
+	// Under it, the engine wakes for a whole top batch.
+	o.Buffer.Take(0, "e00000000-00000008")
+	if next := o.plannable(0); next != 80 || !o.wantCycle(0) {
+		t.Fatalf("under the mark: next batch %d, want the whole 80 and a cycle due", next)
+	}
+	if got := o.sleepReasonNow(0); got != sleepNoWork {
+		t.Errorf("under the mark the sleep reason is %d, want no work (a batch is due)", got)
 	}
 }
 
-// The full ladder, rung by rung, as the store empties.
+// The ladder's rungs, whole: a batch is the rung's size less what an
+// interrupted cycle already made of it, and never less for the store
+// being deep.
 func TestBatchLadder(t *testing.T) {
 	cfg := testConfig()
-	cfg.Buffer.Songs = 72
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
 		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
-	for _, tc := range []struct{ rung, level, want int }{
+	for _, tc := range []struct{ rung, made, want int }{
 		{0, 0, 1},   // the opener: sound as fast as possible
-		{1, 1, 10},  // the audition batch
-		{2, 11, 20}, // then 20...
-		{3, 31, 40}, // ...and 40
-		{4, 0, 72},  // 80 is the ceiling, capped at the room in the store
-		{4, 71, 1},  // a top-up makes just what was taken
-		{4, 72, 0},  // and a full store makes nothing
+		{1, 0, 10},  // the audition batch
+		{2, 0, 20},  // then 20...
+		{3, 0, 40},  // ...and 40
+		{4, 0, 80},  // 80 at the top, again and again
+		{4, 30, 50}, // a rung cut short: the rest of it
+		{4, 80, 0},  // a rung made: nothing until it closes
 	} {
 		o.mu.Lock()
-		o.rung, o.rungMade = tc.rung, 0
-		got := o.batchForLocked(tc.level)
+		o.rung, o.rungMade = tc.rung, tc.made
+		got := o.batchForLocked()
 		o.mu.Unlock()
 		if got != tc.want {
-			t.Errorf("rung %d at level %d makes %d, want %d", tc.rung, tc.level, got, tc.want)
+			t.Errorf("rung %d with %d made makes %d, want %d", tc.rung, tc.made, got, tc.want)
 		}
+	}
+}
+
+// Past the top rung there is no clock: the rung closes with no wait,
+// the ladder stays at the top, and the moment the store falls under
+// the mark a whole top batch is plannable - not after the eighty
+// songs' music has run, which for a store two phones just drained
+// would be a stale timer. Skips have nothing left to shorten.
+func TestTheTopRungSetsNoClock(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	cfg := testConfig()
+	cfg.Buffer.ReserveSongs, cfg.Buffer.LowMinutes = 3, 0
+	o, made := ladderOrchestrator(t, cfg)
+	o.mu.Lock()
+	o.rung = topRung
+	o.mu.Unlock()
+	made(80, 200)
+	o.mu.Lock()
+	rung, wait, doneAt := o.rung, o.rungWait, o.rungDoneAt
+	o.mu.Unlock()
+	if rung != topRung || wait != 0 || !doneAt.IsZero() {
+		t.Fatalf("after the top rung: rung %d, wait %v, done at %v; want the top, no wait, no clock", rung, wait, doneAt)
+	}
+	if left := o.rungWaitLeft(); left != 0 {
+		t.Fatalf("the top rung left a wait of %v", left)
+	}
+	// An empty store is under the mark: the next batch is due at once,
+	// and it is the whole top rung.
+	if next := o.plannable(0); next != 80 || !o.wantCycle(0) {
+		t.Fatalf("under the mark after the top rung: plannable %d, want 80 at once", next)
+	}
+	// Stocked, nothing is due; a skip changes nothing, because there
+	// is no clock for it to shorten.
+	for seq := 1; seq <= 3; seq++ {
+		track := &engine.Track{Samples: make([]int16, audio.SampleRate*audio.Channels), Spec: engine.Spec{Prompt: "p"}}
+		if _, err := o.Buffer.PutTrack(context.Background(), 0, seq, track); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o.ReportSkipped(3600)
+	if o.plannable(0) != 0 || o.wantCycle(0) {
+		t.Fatal("a stocked store wants a cycle after a skip")
+	}
+	if got := o.sleepReasonNow(0); got != sleepStocked {
+		t.Errorf("stocked after the top rung: sleep reason %d, want stocked", got)
+	}
+	// One take under the mark, and the batch is due this instant.
+	o.Buffer.Take(0, "e00000000-00000001")
+	if next := o.plannable(0); next != 80 || !o.wantCycle(0) {
+		t.Fatalf("one take under the mark: plannable %d, want 80 at once", next)
+	}
+}
+
+// A batch is the unit: a cycle that set out to make a rung makes all
+// of it, even though the store crosses the wake mark a song or two
+// in. Only the next wake reads the level.
+func TestABatchInProgressCompletesAsTheLevelCrossesTheMark(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	eng := &pausableMock{}
+	sess := session.New()
+	sess.Vocal = true
+	o := heldOrchestrator(t, eng, nil, sess)
+	o.cfg.Buffer.ReserveSongs, o.cfg.Buffer.LowMinutes = 2, 0
+	// The ten-song rung is due: the store is empty.
+	if next := o.plannable(0); next != 10 {
+		t.Fatalf("plannable before the cycle = %d, want the ten-song rung", next)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	failures, oomStreak := 0, 0
+	o.runCycle(ctx, &failures, &oomStreak)
+
+	if got := eng.renders.Load(); got != 10 {
+		t.Fatalf("the cycle rendered %d songs, want the whole rung of 10", got)
+	}
+	if level, _ := o.Buffer.Level(0); level != 10 {
+		t.Fatalf("level after the cycle = %d, want 10", level)
+	}
+	o.mu.Lock()
+	rung, rungMade := o.rung, o.rungMade
+	o.mu.Unlock()
+	if rung != 2 || rungMade != 0 {
+		t.Errorf("after the batch: rung %d with %d made; want the ladder on 20 with nothing made of it", rung, rungMade)
+	}
+	// Stocked well past the mark, the engine was put down for that
+	// reason, and nothing more is due.
+	if got := eng.hibernated.Load(); got != 1 {
+		t.Errorf("the engine was put down %d times, want once", got)
+	}
+	if o.plannable(0) != 0 || o.wantCycle(0) {
+		t.Error("a stocked store wants a cycle after the batch")
 	}
 }
 
@@ -484,7 +639,7 @@ func TestTheWriterPhaseIsMakingSongs(t *testing.T) {
 		msg   string
 	}{
 		{sleepForWriter, "render_unloaded", "render model unloaded while the words are written"},
-		{sleepStoreFull, "engine_hibernated", "engine asleep: the store is full"},
+		{sleepStocked, "engine_hibernated", "engine asleep: the store is stocked"},
 		{sleepUntilDue, "engine_hibernated", "engine asleep until the next batch is due"},
 		{sleepCooldown, "engine_hibernated", "engine asleep: resting after failures before the next try"},
 		{sleepNoWork, "engine_hibernated", "engine asleep: no batch is due"},
@@ -500,12 +655,16 @@ func TestTheWriterPhaseIsMakingSongs(t *testing.T) {
 // The reason picked when no cycle is wanted follows the store and the
 // ladder's clock, the same facts the buffer row shows - except that a
 // cooldown after failures outranks both, because it is what is
-// actually keeping the engine from a batch that is due.
+// actually keeping the engine from a batch that is due. An engine put
+// down on a stocked store is logged with what is in store and the
+// mark it wakes below.
 func TestSleepReasonFollowsTheStoreAndTheClock(t *testing.T) {
 	cfg := testConfig()
-	cfg.Buffer.Songs = 1
+	cfg.Buffer.ReserveSongs, cfg.Buffer.LowMinutes = 1, 0
+	var logbuf lockedBuffer
 	o := New(cfg, &phasedMock{}, prompting.NewBuilder(nil, testLogger()),
-		session.NewStore(t.TempDir()), session.New(), &capturePlayer{}, testLogger())
+		session.NewStore(t.TempDir()), session.New(), &capturePlayer{},
+		slog.New(slog.NewJSONHandler(&logbuf, nil)))
 	o.Buffer = trackbuffer.New(t.TempDir(), 9, testLogger())
 	// An empty store with no rung waiting: nothing to say but that
 	// no batch is due.
@@ -518,14 +677,14 @@ func TestSleepReasonFollowsTheStoreAndTheClock(t *testing.T) {
 	if got := o.sleepReasonNow(0); got != sleepUntilDue {
 		t.Errorf("waiting out the clock: %d", got)
 	}
-	// A full store outranks the clock.
+	// A stocked store outranks the clock.
 	skipWithoutFFmpeg(t)
-	track := &engine.Track{Samples: make([]int16, audio.SampleRate*audio.Channels), Spec: engine.Spec{Prompt: "p"}}
+	track := &engine.Track{Samples: make([]int16, 90*audio.SampleRate*audio.Channels), Spec: engine.Spec{Prompt: "p"}}
 	if _, err := o.Buffer.PutTrack(context.Background(), 0, 1, track); err != nil {
 		t.Fatal(err)
 	}
-	if got := o.sleepReasonNow(0); got != sleepStoreFull {
-		t.Errorf("full store: %d", got)
+	if got := o.sleepReasonNow(0); got != sleepStocked {
+		t.Errorf("stocked store: %d", got)
 	}
 	// A cycle that gave up on failures rests the engine; that is the
 	// reason, whatever the store and the clock say.
@@ -534,8 +693,34 @@ func TestSleepReasonFollowsTheStoreAndTheClock(t *testing.T) {
 		t.Errorf("cooling down after failures: %d", got)
 	}
 	o.coolDown(-time.Second)
-	if got := o.sleepReasonNow(0); got != sleepStoreFull {
+	if got := o.sleepReasonNow(0); got != sleepStocked {
 		t.Errorf("cooldown over: %d", got)
+	}
+	// The log line says what is in store and when the engine wakes.
+	o.hibernateEngine(sleepStocked)
+	if log := logbuf.String(); !strings.Contains(log, "engine asleep: 1 songs in store, 1m of music; wakes below 1") ||
+		!strings.Contains(log, `"event":"engine_hibernated"`) || !strings.Contains(log, `"wake_below":1`) {
+		t.Errorf("a stocked store's sleep was logged as:\n%s", log)
+	}
+}
+
+// The words of the stocked-store line, for the log and for the rows
+// that say the same thing.
+func TestStockedMessage(t *testing.T) {
+	for _, tc := range []struct {
+		level     int
+		seconds   float64
+		wakeBelow int
+		want      string
+	}{
+		{151, 8*3600 + 50*60, 93, "engine asleep: 151 songs in store, 8h50m of music; wakes below 93"},
+		{12, 37 * 60, 8, "engine asleep: 12 songs in store, 37m of music; wakes below 8"},
+		{3, 1.5, 3, "engine asleep: 3 songs in store, 1s of music; wakes below 3"},
+		{1, 0, 1, "engine asleep: 1 songs in store, 0m of music; wakes below 1"},
+	} {
+		if got := stockedMessage(tc.level, tc.seconds, tc.wakeBelow); got != tc.want {
+			t.Errorf("stockedMessage(%d, %v, %d) = %q, want %q", tc.level, tc.seconds, tc.wakeBelow, got, tc.want)
+		}
 	}
 }
 
@@ -665,7 +850,7 @@ func TestEngineAwakeFollowsTheCycle(t *testing.T) {
 	if !o.Status().EngineAwake {
 		t.Fatal("an engine woken for a batch reads asleep")
 	}
-	o.hibernateEngine(sleepStoreFull)
+	o.hibernateEngine(sleepStocked)
 	if o.Status().EngineAwake {
 		t.Fatal("an engine put down reads awake")
 	}

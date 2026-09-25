@@ -52,6 +52,43 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if cfg.Engine != "acestep" || cfg.TrackSeconds != 150 || cfg.ACEStep.InferenceSteps != 12 {
 		t.Fatalf("defaults wrong: %+v", cfg)
 	}
+	if cfg.Buffer.Songs != 72 || cfg.Buffer.ReserveSongs != 80 || cfg.Buffer.LowMinutes != 45 {
+		t.Fatalf("buffer defaults wrong: %+v", cfg.Buffer)
+	}
+}
+
+// A config file that names only the store's depth - the shape of every
+// file written before the reserve existed - keeps the reserve and the
+// low-water minutes at their defaults; out-of-range values for the
+// pair are clamped like the rest.
+func TestBufferReserveDefaultsAndClamps(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvDataDir, filepath.Join(dir, "data"))
+	t.Setenv(EnvConfigDir, dir)
+	p, _ := ResolvePaths()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"buffer":{"songs":40}}`), 0o644)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Buffer.Songs != 40 || cfg.Buffer.ReserveSongs != 80 || cfg.Buffer.LowMinutes != 45 {
+		t.Fatalf("an old-shaped file loads as %+v", cfg.Buffer)
+	}
+	os.WriteFile(filepath.Join(dir, "config.json"),
+		[]byte(`{"buffer":{"songs":1,"reserve_songs":0,"low_minutes":-5}}`), 0o644)
+	cfg, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Buffer.Songs != 3 || cfg.Buffer.ReserveSongs != 1 || cfg.Buffer.LowMinutes != 0 {
+		t.Fatalf("out-of-range values load as %+v", cfg.Buffer)
+	}
+	os.WriteFile(filepath.Join(dir, "config.json"),
+		[]byte(`{"buffer":{"reserve_songs":20,"low_minutes":0}}`), 0o644)
+	cfg, _ = Load(p)
+	if cfg.Buffer.ReserveSongs != 20 || cfg.Buffer.LowMinutes != 0 {
+		t.Fatalf("a small reserve with no low-water minutes loads as %+v", cfg.Buffer)
+	}
 }
 
 func TestLoadOverridesAndSanitizes(t *testing.T) {

@@ -99,13 +99,21 @@ type Status struct {
 	// BufferedTracks and BufferedSeconds are the songs already rendered
 	// and waiting to play (in the store, plus the in-memory prefetch).
 	BufferedTracks int
-	// StoreLevel is how many songs nobody has taken yet, and
-	// StoreTarget the depth the generator fills to; NextBatchIn is how
-	// long the tap still waits before the next rung, zero when a rung
-	// is due or the store is full.
-	StoreLevel  int
-	StoreTarget int
-	NextBatchIn time.Duration
+	// StoreLevel is how many songs nobody has taken yet and
+	// StoreSeconds their music; WakeBelow is the wake mark, the level
+	// under which the engine is woken for a batch (the store is stocked
+	// while the level is at or above it); StoreTarget is the most
+	// untaken songs the store comes to hold, a whole top batch made
+	// just under the mark, which is what the gauge draws the level
+	// against. NextBatchIn is how long the tap still waits before the
+	// next rung while the ladder climbs; zero when a rung is due, and
+	// always zero once the ladder is at the top, from where the engine
+	// wakes on the level alone.
+	StoreLevel   int
+	StoreSeconds float64
+	WakeBelow    int
+	StoreTarget  int
+	NextBatchIn  time.Duration
 	// WordsmithWant/WordsmithWrote report a wordsmith round in
 	// progress: the writer holding the card, writing the coming
 	// batch's words. Zero when no round is running.
@@ -115,9 +123,9 @@ type Status struct {
 	// batch cycle, so the gauge can say "rendered 40 · 23 to play"
 	// instead of an ambiguous count.
 	BatchRendered int
-	// RampBatch is the song count the running (or next) batch makes
-	// (1 for a fresh context, then the ladder's rungs, capped at the
-	// room left in the store); 0 when the store is full.
+	// RampBatch is the song count the running (or next) batch makes:
+	// 1 for a fresh context, then the ladder's rungs, whole, less what
+	// an interrupted cycle already made of the rung.
 	RampBatch       int
 	BufferedSeconds float64
 	// PlannedTracks and PlannedSeconds are songs the planner has
@@ -301,8 +309,10 @@ type Orchestrator struct {
 	// makes; rungMade and rungSeconds count what this rung has made so
 	// far; rungDoneAt and rungWait say when the last rung finished and
 	// how long its music runs, which is how long the tap waits before
-	// the next; skipCredit is the music listeners skipped since, which
-	// shortens that wait. All reset by a steer.
+	// the next while the ladder climbs (both stay zero once it is at
+	// the top: from there the engine wakes on the store's level alone);
+	// skipCredit is the music listeners skipped since, which shortens
+	// that wait. All reset by a steer.
 	rung        int
 	rungMade    int
 	rungSeconds float64
@@ -317,23 +327,24 @@ type Orchestrator struct {
 	cycleCooldown time.Time
 	renderFails   map[int]int
 	// Cached store depth, refreshed by the phased loops for the status
-	// display: the level (songs nobody has taken), and the same plus
-	// the in-memory prefetch as songs and seconds.
-	bufLevel       int
-	bufTracks      int
-	bufSeconds     float64
-	bufPlans       int
-	bufPlanSeconds float64
-	lastGen        time.Duration
-	exporting      string
-	phase          string
-	phaseStart     time.Time
-	started        time.Time
-	firstMusic     bool
-	failStreak     int
-	lastFailure    string
-	curTrack       *engine.Track
-	prevTrack      *engine.Track
+	// display: the level (songs nobody has taken) and its music, and
+	// the same plus the in-memory prefetch as songs and seconds.
+	bufLevel        int
+	bufLevelSeconds float64
+	bufTracks       int
+	bufSeconds      float64
+	bufPlans        int
+	bufPlanSeconds  float64
+	lastGen         time.Duration
+	exporting       string
+	phase           string
+	phaseStart      time.Time
+	started         time.Time
+	firstMusic      bool
+	failStreak      int
+	lastFailure     string
+	curTrack        *engine.Track
+	prevTrack       *engine.Track
 	// engineBusy mirrors whether a generation cycle currently holds the
 	// graphics card; the lyric writer works only while it is free.
 	engineBusy atomic.Bool

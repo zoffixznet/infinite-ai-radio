@@ -50,7 +50,7 @@ func TestTelemetryRowsAsleepEngine(t *testing.T) {
 	}
 	s.RAMAvailable = s.RAMTotal - s.RAMUsed
 	st := withSample(s)
-	st.StoreLevel, st.StoreTarget = 72, 72
+	st.StoreLevel, st.StoreSeconds, st.WakeBelow, st.StoreTarget = 151, 8*3600+50*60, 93, 172
 	rows := telemetryRows(st)
 
 	if got := rowText(t, rows, "ram"); !strings.Contains(got, "all 16.00 GiB / 32.00 GiB") {
@@ -60,8 +60,9 @@ func TestTelemetryRowsAsleepEngine(t *testing.T) {
 		t.Errorf("vram row reads %q", got)
 	}
 	// The whole point of phased generation: nothing of ours resident,
-	// and the row says why nothing is being made.
-	if got := rowText(t, rows, "models"); got != "none - engine asleep: the store is full" {
+	// and the row says why nothing is being made - what is in store,
+	// and the mark it must fall under before the engine wakes.
+	if got := rowText(t, rows, "models"); got != "none - engine asleep: 151 songs in store, 8h50m of music; wakes below 93" {
 		t.Errorf("models row should report the engine asleep and why, reads %q", got)
 	}
 }
@@ -78,11 +79,15 @@ func TestModelRowSaysWhyTheEngineIsAsleep(t *testing.T) {
 		st   player.Status
 		want string
 	}{
-		{"store full", player.Status{Telemetry: sample(), StoreLevel: 72, StoreTarget: 72},
-			"none - engine asleep: the store is full"},
-		{"waiting out the clock", player.Status{Telemetry: sample(), StoreLevel: 9, StoreTarget: 72, NextBatchIn: 12 * time.Minute},
+		{"stocked", player.Status{Telemetry: sample(), StoreLevel: 151, StoreSeconds: 8*3600 + 50*60, WakeBelow: 93, StoreTarget: 172},
+			"none - engine asleep: 151 songs in store, 8h50m of music; wakes below 93"},
+		// At the mark exactly the store is stocked; a clock left over
+		// from the climb is not what ends the sleep, and is not shown.
+		{"stocked at the mark", player.Status{Telemetry: sample(), StoreLevel: 93, StoreSeconds: 5 * 3600, WakeBelow: 93, StoreTarget: 172, NextBatchIn: 12 * time.Minute},
+			"none - engine asleep: 93 songs in store, 5h00m of music; wakes below 93"},
+		{"waiting out the clock", player.Status{Telemetry: sample(), StoreLevel: 9, WakeBelow: 93, StoreTarget: 172, NextBatchIn: 12 * time.Minute},
 			"none - engine asleep: next batch due in 12m"},
-		{"about to wake", player.Status{Telemetry: sample(), StoreLevel: 9, StoreTarget: 72, RampBatch: 20},
+		{"about to wake", player.Status{Telemetry: sample(), StoreLevel: 9, WakeBelow: 93, StoreTarget: 172, RampBatch: 20},
 			"none - engine asleep"},
 	} {
 		if got := rowText(t, telemetryRows(tc.st), "models"); got != tc.want {
@@ -99,7 +104,7 @@ func TestModelRowNamesTheWriterWhileItWrites(t *testing.T) {
 		VRAMUsed: 6 << 30, WriterBusy: true, WriterName: "llama-server", WriterVRAM: 5900 << 20,
 		Procs: []telemetry.GPUProc{{PID: 3001, Name: "llama-server", VRAM: 5900 << 20, Writer: true}},
 	}
-	st := player.Status{Telemetry: s, Vocal: true, WordsmithWant: 10, WordsmithWrote: 4, StoreLevel: 9, StoreTarget: 72}
+	st := player.Status{Telemetry: s, Vocal: true, WordsmithWant: 10, WordsmithWrote: 4, StoreLevel: 9, WakeBelow: 93, StoreTarget: 172}
 	rows := telemetryRows(st)
 	if got := rowText(t, rows, "models"); got != "the writer (llama-server 5.76 GiB)" {
 		t.Errorf("models row reads %q", got)
@@ -122,7 +127,7 @@ func TestModelRowNamesTheWriterWhileItWrites(t *testing.T) {
 	}
 	// So is a wordsmith round the sampler has not caught up with yet.
 	quiet := &telemetry.Sample{Taken: time.Now(), RAMTotal: 32 << 30, GPUPresent: true, VRAMTotal: 12 << 30}
-	round := player.Status{Telemetry: quiet, WordsmithWant: 10, Vocal: true, StoreLevel: 72, StoreTarget: 72}
+	round := player.Status{Telemetry: quiet, WordsmithWant: 10, Vocal: true, StoreLevel: 151, WakeBelow: 93, StoreTarget: 172}
 	if got := rowText(t, telemetryRows(round), "models"); strings.Contains(got, "asleep") {
 		t.Errorf("a wordsmith round reads as asleep: %q", got)
 	}
@@ -208,7 +213,7 @@ func TestTelemetryRowsNamesWhatElseHoldsTheCard(t *testing.T) {
 		},
 	}
 	st := withSample(s)
-	st.StoreLevel, st.StoreTarget = 72, 72
+	st.StoreLevel, st.WakeBelow, st.StoreTarget = 151, 93, 172
 	rows := telemetryRows(st)
 
 	// Nothing is being made: the engine really is asleep, and the rows
