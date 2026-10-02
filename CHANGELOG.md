@@ -17,7 +17,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing unheard is on the device and the radio has nothing new for
   it, and a song heard is never downloaded again while the radio still
   lists it. A steer, which starts the store over, clears the memory,
-  as does emptying the device.
+  as does emptying the device. The songs already on your phone the
+  first time it runs this version count as heard, so it takes new
+  songs at once rather than replaying that bank first. The memory
+  names each song by the fingerprint of its bytes as well as its id,
+  so a new song the radio makes under an id an old one had is taken
+  rather than mistaken for the old one; it is shared by every tab of
+  the page, so a tab the browser thawed cannot wipe out what another
+  tab heard meanwhile; and a song the browser refused to start - as
+  it does on a reload until you tap - is not counted as heard, so the
+  tap starts that song rather than the one after it.
 - A phone whose bank was full of heard songs never took the new ones
   the radio had made: it counted every banked song after the playing
   one as "ahead", saw a full bank, and replayed instead; skipping
@@ -45,7 +54,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "unchanged" instead of sending the list again, which with the engine
   asleep on a stocked store is most of the day. On a phone checking
   every ten seconds beside a song download, a 120 KB listing was the
-  difference between a list that landed and one that timed out.
+  difference between a list that landed and one that timed out. A
+  list the connection cuts short is asked for again whole rather than
+  taken as received, the twenty seconds cover the whole list rather
+  than its first byte, and a phone waiting for the radio's very first
+  song keeps asking every two seconds through the "unchanged" answers.
 
 ## [2.1.0] - 2026-09-25
 

@@ -521,7 +521,10 @@ wakes a tab it had put to sleep - so a bank of songs heard days ago
 counts as nothing ahead, the next new song is taken at once, and a
 heard song is replayed only when nothing unheard is on the device and
 the radio has nothing new to give; the device-bank line says so when
-that is the case. The listing the phone checks every ten seconds
+that is the case. That memory is shared by every tab of the page,
+names each song by the fingerprint of its bytes rather than its id
+alone, and counts the songs already on the phone the first time it
+keeps one as heard. The listing the phone checks every ten seconds
 carries names, lengths and hashes only, is compressed, and when
 nothing has changed the radio answers "unchanged" rather than sending
 it again, so the check costs next to nothing beside a song download.

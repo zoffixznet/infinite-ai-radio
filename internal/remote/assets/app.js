@@ -535,20 +535,44 @@
   // context, so the songs skipped in the old one can never come back,
   // and the list is emptied with them. It is bounded all the same.
   var maxTossed = 300;
-  (function loadTossed() {
+  // tossedStored reads the list as storage has it.
+  function tossedStored() {
     var saved = store.get("iar.tossed", {});
+    var out = {};
     Object.keys(saved || {}).forEach(function (id) {
       var rec = saved[id];
-      if (!rec || typeof rec !== "object") return;
-      pf.tossed[id] = rec;
+      if (rec && typeof rec === "object") out[id] = rec;
     });
-  })();
-  function saveTossed() { store.set("iar.tossed", pf.tossed); }
+    return out;
+  }
+  function loadTossed() { pf.tossed = tossedStored(); }
+  loadTossed();
+  // saveTossed writes what this page and every other page of the
+  // site have skipped: storage joined with this page's memory, the
+  // later skip of a song winning, bounded oldest first. Two tabs of
+  // the page each write the list - the browser freezes a tab and
+  // thaws it later with the memory it froze with - and a write of one
+  // tab's memory alone over the other's lost the other's skips.
+  function saveTossed() {
+    var merged = tossedStored();
+    Object.keys(pf.tossed).forEach(function (id) {
+      var mine = pf.tossed[id];
+      var theirs = merged[id];
+      if (!theirs || (theirs.at || 0) < (mine.at || 0)) merged[id] = mine;
+    });
+    var ids = Object.keys(merged);
+    if (ids.length > maxTossed) {
+      ids.sort(function (a, b) { return (merged[a].at || 0) - (merged[b].at || 0); });
+      ids.slice(0, ids.length - maxTossed).forEach(function (old) { delete merged[old]; });
+    }
+    pf.tossed = merged;
+    store.set("iar.tossed", merged);
+  }
   // clearTossed forgets every skipped song: the context they belonged
   // to is gone.
   function clearTossed() {
     pf.tossed = {};
-    saveTossed();
+    store.set("iar.tossed", {});
   }
 
   // The heard list outlives a reload too. A phone's browser reloads
@@ -560,41 +584,89 @@
   // steer starts a context whose songs can never be ones already
   // heard, and the list is emptied with it - and bounded, oldest
   // first, so a phone that listens for months does not keep every id
-  // it ever played.
+  // it ever played. Each entry names the song by the hash of its
+  // bytes as well as by id: a store emptied without a steer starts
+  // its count over, so a song made next week wears the id of one
+  // heard last week, and by id alone the new song read as heard and
+  // was never taken.
   var maxHeard = 600;
+  // heardMark reads one entry as stored: when the song started here,
+  // and the hash of what played. An entry that is a bare time was
+  // written by an earlier page and names the song by id alone.
+  function heardMark(v) {
+    if (typeof v === "number" && v > 0) return { at: v, hash: "" };
+    if (v && typeof v === "object" && typeof v.at === "number" && v.at > 0) {
+      return { at: v.at, hash: typeof v.hash === "string" ? v.hash : "" };
+    }
+    return null;
+  }
   function loadHeard() {
     var saved = store.get("iar.heard", {});
     var out = {};
     Object.keys(saved || {}).forEach(function (id) {
-      var at = saved[id];
-      if (typeof at === "number" && at > 0) out[id] = at;
+      var mark = heardMark(saved[id]);
+      if (mark) out[id] = mark;
     });
     return out;
   }
-  function saveHeard() { store.set("iar.heard", pf.seen); }
+  // heardMerged is the list as this page and every other page of the
+  // site know it: storage joined with this page's memory, the later
+  // hearing of a song winning. Two tabs of the page each write the
+  // list - the browser freezes a tab and thaws it later with the
+  // memory it froze with, while a fresh tab listens on - and a write
+  // of one tab's memory alone over the other's wiped out everything
+  // the other had heard, which came back as unheard, counted as songs
+  // ahead, and was replayed before anything new. What this page
+  // heard before another tab emptied the list is let go: that was a
+  // steer or a flush, and the hearings it threw away are not this
+  // page's to bring back.
+  function heardMerged() {
+    var merged = loadHeard();
+    var cleared = store.get("iar.heardcleared", 0);
+    if (typeof cleared !== "number") cleared = 0;
+    Object.keys(pf.seen).forEach(function (id) {
+      var mine = pf.seen[id];
+      if (mine.at < cleared) return;
+      var theirs = merged[id];
+      if (!theirs || theirs.at < mine.at) merged[id] = mine;
+    });
+    return merged;
+  }
+  // saveHeard adopts a list, bounded oldest first, and writes it.
+  function saveHeard(seen) {
+    var ids = Object.keys(seen);
+    if (ids.length > maxHeard) {
+      ids.sort(function (a, b) { return seen[a].at - seen[b].at; });
+      ids.slice(0, ids.length - maxHeard).forEach(function (old) { delete seen[old]; });
+    }
+    pf.seen = seen;
+    store.set("iar.heard", seen);
+  }
   // clearHeard forgets every song heard: the context they belonged to
   // is gone, or the listener has emptied the device to start over.
+  // The moment is kept so another tab's older memory stays forgotten.
   function clearHeard() {
-    pf.seen = {};
-    saveHeard();
+    store.set("iar.heardcleared", Date.now());
+    saveHeard({});
   }
-  // pfMarkHeard records that a song started playing here, now.
-  function pfMarkHeard(id) {
+  // pfMarkHeard records that a song started playing here, now, and
+  // what it was.
+  function pfMarkHeard(id, hash) {
     if (!id) return;
-    pf.seen[id] = Date.now();
-    var ids = Object.keys(pf.seen);
-    if (ids.length > maxHeard) {
-      ids.sort(function (a, b) { return pf.seen[a] - pf.seen[b]; });
-      ids.slice(0, ids.length - maxHeard).forEach(function (old) { delete pf.seen[old]; });
-    }
-    saveHeard();
+    var seen = heardMerged();
+    seen[id] = { at: Date.now(), hash: hash || "" };
+    saveHeard(seen);
   }
-  // pfUnhear takes one song off the heard list: it was skipped, or
-  // the id now names a different song.
+  // pfUnhear takes one song off the heard list: it was skipped, it
+  // never made a sound, or the id now names a different song.
   function pfUnhear(id) {
-    if (!id || !pf.seen[id]) return;
+    if (!id) return;
+    var had = !!pf.seen[id];
     delete pf.seen[id];
-    saveHeard();
+    var seen = heardMerged();
+    if (!had && !seen[id]) return;
+    delete seen[id];
+    saveHeard(seen);
   }
   pf.seen = loadHeard();
   // pfTossed answers for one listing row or banked record. The title
@@ -856,11 +928,23 @@
   // Songs the listener pressed Next on stay gone: the file survived the
   // reload, the decision has to survive it too.
   function pfAdoptRecords(recs) {
+    // A bank from before the page kept a heard list - the first time
+    // a page that keeps one reads the bank of a device that already
+    // has songs - counts as heard. Nothing in it can be told from a
+    // replay, and a device that had banked and listened for days was
+    // playing heard songs, so reading it as unheard was the very
+    // thing the list is for: the bank counted as songs ahead, and
+    // nothing new was taken until enough of it had been played past.
+    // The list exists from this reading on, whether the bank was
+    // empty or not, so a song banked later and not yet played is not
+    // marked the next time the bank is read.
+    var seed = store.get("iar.heard", null) === null;
     (recs || []).forEach(function (rec) {
       if (pfTossed(rec.id, rec.title)) {
         idbReq(idbStore("readwrite")["delete"](rec.id))["catch"](function () {});
         return;
       }
+      if (seed) pfMarkHeard(rec.id, rec.hash || "");
       if (!pf.have[rec.id]) {
         // epoch left undefined: a listing that still names the song
         // restamps it as current, and one that does not leaves it as
@@ -870,6 +954,7 @@
         pf.have[rec.id] = { url: URL.createObjectURL(rec.blob), prompt: rec.prompt, title: rec.title, subtitle: rec.subtitle, dur: rec.dur, lyrics: rec.lyrics || "", hash: rec.hash || "" };
       }
     });
+    if (seed) saveHeard(heardMerged());
   }
 
   function startBuffered() {
@@ -981,6 +1066,10 @@
   // with a song download several megabytes long, and a listing cut off
   // at eight seconds behind one of those read as the radio being gone.
   var queueFetchTimeout = 20000;
+  // firstTrackPollMs is how often a device waiting for the radio's
+  // very first song asks for the listing: much faster than the
+  // regular check, so the song is noticed within seconds of landing.
+  var firstTrackPollMs = 2000;
 
   function pfAbortQueue() {
     if (!pf.queueCtrl) return;
@@ -997,6 +1086,11 @@
     var ctrl = new AbortController();
     pf.queueCtrl = ctrl;
     var deadline = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, queueFetchTimeout);
+    // settled gives up the slot and the deadline. It runs once the
+    // body is in hand, not once the headers are: run on the headers,
+    // the deadline bounded only how long the radio took to start
+    // answering, a body trickling in over a bad link had no limit at
+    // all, and the next check started a second listing beside it.
     var settled = function () {
       clearTimeout(deadline);
       if (pf.queueCtrl === ctrl) pf.queueCtrl = null;
@@ -1012,102 +1106,48 @@
     var reqHeaders = {};
     if (pf.queueTag) reqHeaders["If-None-Match"] = pf.queueTag;
     fetch(url, { signal: ctrl.signal, headers: reqHeaders }).then(function (r) {
-      settled();
       if (r.ok || r.status === 304) pf.skipped = Math.max(0, pf.skipped - skipped);
       if (r.status === 401 || r.status === 403) {
+        settled();
         stopBuffered("session expired - reload this page and log in again", "bad");
         $("conn").textContent = "logged out";
         return null;
       }
       // Unchanged: the rows held are the listing, and this was contact.
-      if (r.status === 304) return { unchanged: true };
-      if (r.ok) pf.queueTag = (r.headers && r.headers.get("ETag")) || "";
-      return r.json();
+      if (r.status === 304) {
+        settled();
+        return { unchanged: true };
+      }
+      if (!r.ok) throw new Error("listing " + r.status);
+      // The tag travels with the body and is adopted with it, once
+      // the rows it names are the rows held. Adopted here, on the
+      // headers, a body the link then cut short left the device
+      // holding the tag of a listing it never received: every later
+      // check sent that tag, the radio answered "unchanged", and a
+      // fresh tab sat on an empty list for as long as the store stood
+      // still - with the engine asleep, all day.
+      var tag = (r.headers && r.headers.get("ETag")) || "";
+      return r.json().then(function (body) {
+        settled();
+        return { tag: tag, body: body };
+      });
     }).then(function (q) {
       if (!q || !pfLive()) return;
       pf.offline = false;
-      if (q.unchanged) {
-        pfShowMinutes();
-        pfEnsureDownloads();
-        return;
-      }
-      var first = pf.epoch < 0;
-      if (!first && q.epoch !== pf.epoch) {
-        pfEpochChanged(q.epoch);
-      }
-      pf.epoch = q.epoch;
-      // A song the listener pressed Next on never comes back, however
-      // long the radio keeps offering it.
-      pf.rows = (q.tracks || []).filter(function (row) { return !pfTossed(row.id, row.title); });
-      // A banked song and a listed row can come to share an id. The
-      // phased buffer names its files by epoch and sequence, and a
-      // buffer emptied without a steer starts the count over, so a song
-      // consumed last week can be handed its name back. Hashes and
-      // lengths do not collide: a stored copy that disagrees with the
-      // row now wearing its id is a different song, these bytes have
-      // no further claim on that row, and neither does the hearing.
-      pf.rows.forEach(function (row) {
-        var rec = pf.have[row.id];
-        if (!rec || row.id === pf.playingId) return;
-        var sameHash = !rec.hash || !row.hash || rec.hash === row.hash;
-        var sameLength = !rec.dur || !row.duration_s || Math.abs(rec.dur - row.duration_s) < 1;
-        if (!sameHash || !sameLength) { pfForget(row.id); pfUnhear(row.id); }
-      });
-      // Stamp the current epoch onto the records this listing still
-      // names. The rest are songs the radio has let go - which is
-      // what every banked song becomes, and what they were downloaded
-      // for. They used to be deleted here, so reopening the page threw
-      // away the hours banked for the flight. They stay, and they stay
-      // without an epoch of their own: that is what retires them at the
-      // next steer, because a listener who changes the sound does not
-      // want the old one back, and one who merely reopened the page
-      // does.
-      pf.rows.forEach(function (row) {
-        var rec = pf.have[row.id];
-        if (rec && rec.epoch === undefined) rec.epoch = q.epoch;
-      });
-      // Remember durations for the banked-minutes display.
-      pf.rows.forEach(function (row) {
-        if (pf.have[row.id] && !pf.have[row.id].dur) pf.have[row.id].dur = row.duration_s;
-      });
-      // A song is named where its words are written, so the name a
-      // listing carries never changes on its own. When it does change,
-      // somebody renamed that song deliberately - adopt it, in the
-      // record, in the store, and on the lock screen if that song is
-      // the one playing.
-      pf.rows.forEach(function (row) {
-        var rec = pf.have[row.id];
-        if (!rec || !row.title) return;
-        // Somebody renamed a song, not swapped one: a copy of different
-        // bytes is an id collision, and taking the new name onto it
-        // would put the new song's name over the old song's sound.
-        if (rec.hash && row.hash && rec.hash !== row.hash) return;
-        if (rec.title === row.title && rec.subtitle === row.subtitle) return;
-        rec.title = row.title;
-        rec.subtitle = row.subtitle;
-        idbReq(idbStore("readonly").get(row.id)).then(function (stored) {
-          if (!stored) return;
-          stored.title = row.title;
-          stored.subtitle = row.subtitle;
-          return idbReq(idbStore("readwrite").put(stored));
-        })["catch"](function () {});
-        if (row.id === pf.playingId) {
-          lastNow = rec.title || rec.prompt || "buffered track";
-          msArtist = "Track " + (pf.played || 0) + (rec.subtitle ? " \u00b7 " + rec.subtitle : "");
-          paintNow();
-          applyMediaMetadata();
-          pfStatus();
-        }
-      });
+      if (!q.unchanged) pfTakeListing(q.body || {}, q.tag);
       pfShowMinutes();
       pfEnsureDownloads();
       // While waiting for the very first track, poll the listing much
-      // faster than the regular interval.
+      // faster than the regular interval - after "unchanged" as after
+      // the whole listing. An empty store's listing has a tag like any
+      // other, and with the fast check re-armed only on the path that
+      // read a body, the second check, answered "unchanged", was the
+      // last fast one: the first song was noticed on the slow timer.
       if (pf.wantPlay && !pf.playingId && pf.rows.length === 0 && !pf.fetchTimer) {
         pf.fetchTimer = setTimeout(function () {
           pf.fetchTimer = null;
           pfRefreshQueue();
-        }, 2000);
+        }, firstTrackPollMs);
       }
     })["catch"](function () {
       // An abort this page asked for - the player stopping, a flush
@@ -1139,6 +1179,93 @@
     });
   }
 
+  // pfTakeListing adopts a listing the radio sent whole, under the
+  // tag that names it: the rows, the context they belong to, and what
+  // they say about the songs banked and heard here.
+  function pfTakeListing(q, tag) {
+    var first = pf.epoch < 0;
+    if (!first && q.epoch !== pf.epoch) {
+      pfEpochChanged(q.epoch);
+    }
+    pf.epoch = q.epoch;
+    // A song the listener pressed Next on never comes back, however
+    // long the radio keeps offering it.
+    pf.rows = (q.tracks || []).filter(function (row) { return !pfTossed(row.id, row.title); });
+    // A heard song and a listed row can come to share an id. The
+    // phased buffer names its files by epoch and sequence, and a
+    // buffer emptied without a steer starts the count over, so a song
+    // heard last week can see its name handed to a song made today.
+    // The hearing was of certain bytes: a row wearing the id over
+    // other bytes is a different song, unheard here, and it is taken
+    // like any other - banked or not. By id alone, a device that had
+    // heard the first hundred songs of one store never took the first
+    // hundred of the next, and replayed its bank over a store of new
+    // songs saying nothing new was to be had.
+    pf.rows.forEach(function (row) {
+      var mark = pf.seen[row.id];
+      if (mark && mark.hash && row.hash && mark.hash !== row.hash) pfUnhear(row.id);
+    });
+    // A banked copy is held to the same account, by its hash and its
+    // length: a stored copy that disagrees with the row now wearing
+    // its id is a different song, these bytes have no further claim
+    // on that row, and neither does the hearing.
+    pf.rows.forEach(function (row) {
+      var rec = pf.have[row.id];
+      if (!rec || row.id === pf.playingId) return;
+      var sameHash = !rec.hash || !row.hash || rec.hash === row.hash;
+      var sameLength = !rec.dur || !row.duration_s || Math.abs(rec.dur - row.duration_s) < 1;
+      if (!sameHash || !sameLength) { pfForget(row.id); pfUnhear(row.id); }
+    });
+    // Stamp the current epoch onto the records this listing still
+    // names. The rest are songs the radio has let go - which is
+    // what every banked song becomes, and what they were downloaded
+    // for. They used to be deleted here, so reopening the page threw
+    // away the hours banked for the flight. They stay, and they stay
+    // without an epoch of their own: that is what retires them at the
+    // next steer, because a listener who changes the sound does not
+    // want the old one back, and one who merely reopened the page
+    // does.
+    pf.rows.forEach(function (row) {
+      var rec = pf.have[row.id];
+      if (rec && rec.epoch === undefined) rec.epoch = q.epoch;
+    });
+    // Remember durations for the banked-minutes display.
+    pf.rows.forEach(function (row) {
+      if (pf.have[row.id] && !pf.have[row.id].dur) pf.have[row.id].dur = row.duration_s;
+    });
+    // A song is named where its words are written, so the name a
+    // listing carries never changes on its own. When it does change,
+    // somebody renamed that song deliberately - adopt it, in the
+    // record, in the store, and on the lock screen if that song is
+    // the one playing.
+    pf.rows.forEach(function (row) {
+      var rec = pf.have[row.id];
+      if (!rec || !row.title) return;
+      // Somebody renamed a song, not swapped one: a copy of different
+      // bytes is an id collision, and taking the new name onto it
+      // would put the new song's name over the old song's sound.
+      if (rec.hash && row.hash && rec.hash !== row.hash) return;
+      if (rec.title === row.title && rec.subtitle === row.subtitle) return;
+      rec.title = row.title;
+      rec.subtitle = row.subtitle;
+      idbReq(idbStore("readonly").get(row.id)).then(function (stored) {
+        if (!stored) return;
+        stored.title = row.title;
+        stored.subtitle = row.subtitle;
+        return idbReq(idbStore("readwrite").put(stored));
+      })["catch"](function () {});
+      if (row.id === pf.playingId) {
+        lastNow = rec.title || rec.prompt || "buffered track";
+        msArtist = "Track " + (pf.played || 0) + (rec.subtitle ? " · " + rec.subtitle : "");
+        paintNow();
+        applyMediaMetadata();
+        pfStatus();
+      }
+    });
+    // The rows held are now the listing this tag names.
+    pf.queueTag = tag || "";
+  }
+
   // pfEpochChanged: steering changed what comes next. Abort the
   // in-flight download, drop everything from the old context except the
   // playing track, forget the songs skipped in it, and switch to the
@@ -1164,7 +1291,7 @@
     // kept, the one playing, has been heard all the same, so the end
     // of it is not an occasion to start it over.
     clearHeard();
-    if (pf.playingId) pfMarkHeard(pf.playingId);
+    if (pf.playingId) pfMarkHeard(pf.playingId, pf.have[pf.playingId] ? pf.have[pf.playingId].hash : "");
     // The listener asked for a new setting; a held loop would transplant
     // onto the first new-context track and repeat it forever. The server
     // breaks its loop on any context change - the device does the same.
@@ -1429,7 +1556,7 @@
     }
     if (pf.playingId && pf.playingId !== id) pf.prevId = pf.playingId;
     pf.playingId = id;
-    pfMarkHeard(id);
+    pfMarkHeard(id, rec.hash);
     if (el.src !== rec.url) {
       el.src = rec.url;
     } else if (el.ended || el.currentTime > 0) {
@@ -1465,6 +1592,12 @@
       pfPreloadNext();
       pfEnsureDownloads();
     })["catch"](function (e) {
+      // No sound was made, so nothing was heard: the mark set when the
+      // song was picked comes off. Left on, and kept in storage, the
+      // tap that follows a refused start passed this song over for
+      // good - one unplayed song lost to every reload the browser
+      // refused to start by itself.
+      pfUnhear(id);
       if (e && e.name === "NotAllowedError") {
         // The browser will not let a page make sound until it has seen
         // a gesture. Downloaded tracks stay banked; only playback stops.

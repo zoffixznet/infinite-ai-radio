@@ -16,12 +16,18 @@ import (
 // the JSON the script prints into out.
 //
 // The network is what the test makes it: net.rows is the radio's
-// listing ("A*" marks a taken song), net.tag its ETag, net.queueDown
-// refuses the listing, net.stateDown refuses the poll, net.trackDown
-// refuses song downloads. Every url fetched lands in calls, every
-// song the page started playing in played, and every record written
-// to the device's store in puts. Date.now ticks once per call so two
-// songs are never heard in the same instant.
+// listing ("A*" marks a taken song), net.tag its ETag, net.hashes
+// overrides a song's hash, net.queueDown refuses the listing,
+// net.queueHold never answers it, net.bodyFail cuts its body off
+// after the headers, net.bodyHold keeps the body back until
+// net.release(), net.stateDown refuses the poll, net.trackDown
+// refuses song downloads and net.trackHold keeps them back until
+// net.release(). playRefuse makes the next play() refuse with it.
+// Every url fetched lands in calls, every song the page started
+// playing in played, and every record written to the device's store
+// in puts. Date.now ticks once per call so two songs are never heard
+// in the same instant. Storage (kv) outlives reload(), as the
+// browser's does.
 func phoneBank(t *testing.T, script string, out any) {
 	t.Helper()
 	node, err := exec.LookPath("node")
@@ -35,15 +41,21 @@ func phoneBank(t *testing.T, script string, out any) {
 	src := string(raw)
 	var fns []string
 	for _, name := range []string{"pfTossed", "pfPlayable", "pfListed", "pfAhead", "pfReady", "pfNewRow",
-		"pfNothingNew", "pfNextDownload", "pfNextId", "loadHeard", "saveHeard", "clearHeard", "pfMarkHeard",
-		"pfUnhear", "pfAbortQueue", "pfRefreshQueue", "pfEpochChanged", "pfEnsureDownloads", "pfPlay",
-		"pfStatus", "poll"} {
+		"pfNothingNew", "pfNextDownload", "pfNextId", "heardMark", "loadHeard", "heardMerged", "saveHeard",
+		"clearHeard", "pfMarkHeard", "pfUnhear", "tossedStored", "loadTossed", "saveTossed", "clearTossed", "pfToss",
+		"pfAdoptRecords", "pfAbortQueue", "pfRefreshQueue", "pfTakeListing", "pfEpochChanged",
+		"pfEnsureDownloads", "pfPlay", "pfStatus", "poll"} {
 		fns = append(fns, jsFunction(t, src, name))
 	}
-	// The cap on the heard list is the app's own number, not a copy.
+	// The caps on the heard and toss lists are the app's own numbers,
+	// not copies.
 	capLine := regexp.MustCompile(`var maxHeard = \d+;`).FindString(src)
 	if capLine == "" {
 		t.Fatal("app.js does not declare maxHeard")
+	}
+	tossCapLine := regexp.MustCompile(`var maxTossed = \d+;`).FindString(src)
+	if tossCapLine == "" {
+		t.Fatal("app.js does not declare maxTossed")
 	}
 	harness := `
 var window = { AbortController: AbortController };
@@ -55,7 +67,8 @@ var store = {
   set: function (k, v) { kv[k] = JSON.stringify(v); }
 };
 ` + capLine + `
-var queueFetchTimeout = 30, trackFetchTimeout = 200, warmDepth = 3, pfStallMs = 8000;
+` + tossCapLine + `
+var queueFetchTimeout = 30, trackFetchTimeout = 200, warmDepth = 3, pfStallMs = 8000, firstTrackPollMs = 20;
 var pollFails = 0, pollOkAt = 0, pollStaleMs = 5000;
 var depthNow = 3;
 var resumePending = false, autoStarting = false, pfPlayFails = 0, maxPlayFails = 3;
@@ -68,16 +81,20 @@ function pfShowMinutes() {}
 function pfLive() { return pf.active || pf.warm; }
 function pfDepth() { return depthNow; }
 function pfForget(id) { delete pf.have[id]; }
-function clearTossed() { pf.tossed = {}; store.set("iar.tossed", {}); }
 var puts = [];
 function idbStore() { return { put: function (rec) { puts.push(rec); return {}; }, get: function () { return {}; }, "delete": function () { return {}; }, getAll: function () { return {}; }, clear: function () { return {}; } }; }
 function idbReq() { return Promise.resolve(null); }
 var URL = { createObjectURL: function (blob) { return "blob:" + (blob && blob.id || "x"); }, revokeObjectURL: function () {} };
 var played = [];
+var playRefuse = null;
 var els = [];
 function pfEl(i) {
   if (!els[i]) els[i] = { src: "", ended: false, currentTime: 0, loop: false, onended: null, ontimeupdate: null,
-    play: function () { played.push(pf.playingId); return Promise.resolve(); } };
+    play: function () {
+      played.push(pf.playingId);
+      if (playRefuse) { var e = playRefuse; playRefuse = null; return Promise.reject(e); }
+      return Promise.resolve();
+    } };
   return els[i];
 }
 function quiet() {}
@@ -100,7 +117,11 @@ function renderLyrics() {}
 function renderLyricsGen() {}
 function renderLanguages() {}
 function pfSetLoop() { pf.loop = false; }
-var net = { epoch: 1, tag: '"1-1"', rows: [], queueDown: false, queueHold: false, stateDown: false, trackDown: false, lastTag: null };
+var net = { epoch: 1, tag: '"1-1"', rows: [], hashes: {}, queueDown: false, queueHold: false, bodyFail: false, bodyHold: false,
+  stateDown: false, trackDown: false, trackHold: false, held: [], lastTag: null };
+// release lets every answer held back go out.
+net.release = function () { var h = net.held; net.held = []; h.forEach(function (go) { go(); }); };
+function hashOf(id) { return net.hashes[id] || "h-" + id; }
 var calls = [];
 function headersOf(h) { return { get: function (k) { return h[k] || null; } }; }
 function reply(status, body, h) {
@@ -109,31 +130,45 @@ function reply(status, body, h) {
     blob: function () { return Promise.resolve({ id: body && body.id, size: 1000 }); } };
 }
 function refuse() { return Promise.reject(new TypeError("Failed to fetch")); }
+// hold answers when net.release() is called, or refuses when the
+// request is aborted, whichever comes first.
+function hold(signal) {
+  return new Promise(function (resolve, reject) {
+    net.held.push(resolve);
+    if (signal) signal.addEventListener("abort", function () { var e = new Error("aborted"); e.name = "AbortError"; reject(e); });
+  });
+}
 function fetch(url, opts) {
   var u = String(url);
+  var signal = opts && opts.signal;
   calls.push(u);
   if (u.indexOf("/state") === 0) {
     return net.stateDown ? refuse() : Promise.resolve(reply(200, { epoch: net.epoch, session: "s", saved_ids: [] }));
   }
   if (u.indexOf("/api/queue") === 0) {
     if (net.queueDown) return refuse();
-    if (net.queueHold) return new Promise(function (resolve, reject) {
-      opts.signal.addEventListener("abort", function () { var e = new Error("aborted"); e.name = "AbortError"; reject(e); });
-    });
+    if (net.queueHold) return hold(signal);
     net.lastTag = (opts && opts.headers && opts.headers["If-None-Match"]) || null;
     if (net.lastTag && net.lastTag === net.tag) return Promise.resolve(reply(304, null, { ETag: net.tag }));
     var tracks = net.rows.map(function (r) {
-      return { id: r.id, title: "Song " + r.id, duration_s: 100, taken: r.taken, url: "/queue/" + r.id + ".mp3", hash: "h-" + r.id };
+      return { id: r.id, title: "Song " + r.id, duration_s: 100, taken: r.taken, url: "/queue/" + r.id + ".mp3", hash: hashOf(r.id) };
     });
-    return Promise.resolve(reply(200, { epoch: net.epoch, tracks: tracks }, { ETag: net.tag }));
+    var body = { epoch: net.epoch, tracks: tracks };
+    var r = reply(200, body, { ETag: net.tag });
+    // The headers landed; the body is what the link does to it.
+    if (net.bodyFail) r.json = function () { return Promise.reject(new TypeError("terminated")); };
+    else if (net.bodyHold) r.json = function () { return hold(signal).then(function () { return body; }); };
+    return Promise.resolve(r);
   }
   if (/\.mp3$/.test(u)) {
     if (net.trackDown) return refuse();
-    return Promise.resolve(reply(200, { id: u.replace(/^\/queue\//, "").replace(/\.mp3$/, "") }));
+    var song = reply(200, { id: u.replace(/^\/queue\//, "").replace(/\.mp3$/, "") });
+    if (net.trackHold) return hold(signal).then(function () { return song; });
+    return Promise.resolve(song);
   }
   if (/\.json$/.test(u)) {
     var id = u.replace(/^\/queue\//, "").replace(/\.json$/, "");
-    return Promise.resolve(reply(200, { id: id, prompt: "words of " + id, lyrics: "la la", hash: "h-" + id }));
+    return Promise.resolve(reply(200, { id: id, prompt: "words of " + id, lyrics: "la la", hash: hashOf(id) }));
   }
   return refuse();
 }
@@ -149,20 +184,30 @@ var pf;
 function reload() {
   pf = { active: true, warm: false, db: null, epoch: -1, rows: [], have: {}, playingId: null, prevId: null,
     els: [null, null], cur: 0, ctrl: null, queueCtrl: null, queueTag: "", fetchTimer: null, queueTimer: null,
-    offline: false, seen: loadHeard(), wrapped: false, wantPlay: false, loop: false, storeFull: false,
+    offline: false, seen: {}, wrapped: false, wantPlay: false, loop: false, storeFull: false,
     tossed: {}, bad: {}, playWhy: "", lastAdvance: 0, nudged: false, skipped: 0, switchOnDownload: false };
-  els = [];
+  loadTossed();
+  pf.seen = loadHeard();
+  els = []; playRefuse = null;
   calls = []; played = []; puts = []; statuses = [];
 }
 function bank(list) {
   list.split(/\s+/).filter(Boolean).forEach(function (id) {
-    pf.have[id] = { url: "blob:" + id, title: "Song " + id, dur: 100, hash: "h-" + id, prompt: "" };
+    pf.have[id] = { url: "blob:" + id, title: "Song " + id, dur: 100, hash: hashOf(id), prompt: "" };
+  });
+}
+// records are what the device's store hands back on a reload.
+function records(list) {
+  return list.split(/\s+/).filter(Boolean).map(function (id) {
+    return { id: id, blob: { id: id }, title: "Song " + id, dur: 100, hash: hashOf(id), prompt: "", saved: Date.now() };
   });
 }
 function downloaded() {
   return calls.filter(function (u) { return /\.mp3$/.test(u); }).map(function (u) { return u.replace(/^\/queue\//, "").replace(/\.mp3$/, ""); });
 }
+function listingCalls() { return calls.filter(function (u) { return u.indexOf("/api/queue") === 0; }).length; }
 function heardStored() { return Object.keys(store.get("iar.heard", {})).sort(); }
+function tossedKeys() { return Object.keys(store.get("iar.tossed", {})).sort(); }
 function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 ` + strings.Join(fns, "\n") + `
 var out = {};
@@ -290,8 +335,10 @@ wait(10).then(function () {
 
 // Out of reach of the radio a phone whose bank is all heard replays
 // it, and says so. The moment the radio is back the first new song is
-// taken, the replay playing is not cut short, the new song is what
-// plays next, and the "nothing new" note goes.
+// taken, and while it is on its way the status line says 0 ahead
+// without the "nothing new" note - something new is coming; the
+// replay playing is not cut short, the new song is what plays next,
+// and the note stays gone.
 func TestPhoneReplaysOnlyUntilSomethingNewLands(t *testing.T) {
 	var got struct {
 		Offline      bool     `json:"offline"`
@@ -299,6 +346,9 @@ func TestPhoneReplaysOnlyUntilSomethingNewLands(t *testing.T) {
 		Wrapped      bool     `json:"wrapped"`
 		NothingNew   bool     `json:"nothingNew"`
 		Status       string   `json:"status"`
+		WrappedMid   bool     `json:"wrappedMid"`
+		NothingMid   bool     `json:"nothingMid"`
+		StatusMid    string   `json:"statusMid"`
 		Downloaded   []string `json:"downloaded"`
 		Played       []string `json:"played"`
 		Next         string   `json:"next"`
@@ -326,7 +376,16 @@ wait(20).then(function () {
   poll();
   return wait(10);
 }).then(function () {
+  // The listing lands and F's download starts; it is held back so
+  // the status line can be read while the new song is on its way.
+  net.trackHold = true;
   pfRefreshQueue();
+  return wait(20);
+}).then(function () {
+  out.wrappedMid = pf.wrapped;
+  out.nothingMid = pfNothingNew();
+  statuses = []; pfStatus(); out.statusMid = statuses.join(" | ");
+  net.trackHold = false; net.release();
   return wait(60);
 }).then(function () {
   out.downloaded = downloaded();
@@ -344,6 +403,10 @@ wait(20).then(function () {
 	}
 	if !strings.Contains(got.Status, "offline") {
 		t.Errorf("status out of reach = %q, want it to say offline", got.Status)
+	}
+	if !got.WrappedMid || got.NothingMid || !strings.Contains(got.StatusMid, "0 ahead") || strings.Contains(got.StatusMid, "nothing new") {
+		t.Errorf("with F on its way: wrapped %v, nothing new %v, status %q; want a replay, something new coming, and 0 ahead without the replay note",
+			got.WrappedMid, got.NothingMid, got.StatusMid)
 	}
 	if join(got.Downloaded) != "F" {
 		t.Errorf("with the radio back the phone took %v, want F", got.Downloaded)
@@ -512,27 +575,444 @@ wait(10).then(function () {
 }
 
 // The pieces that are not lifted into node are checked at the seams:
-// every song start is written to the heard list, a skip and a flush
-// take from it, and the device-bank note follows the same rule as the
-// status line.
+// every song start is written to the heard list with the song's hash,
+// a start the browser refused is taken back off it, a skip and a
+// flush take from it, and the device-bank note and the status line
+// follow the same rule for the replay note.
 func TestPhoneHeardListIsWiredThroughPlaySkipAndFlush(t *testing.T) {
 	raw, err := os.ReadFile("assets/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	for fn, want := range map[string]string{
-		"pfPlay":         "pfMarkHeard(id)",
-		"pfToss":         "pfUnhear(id)",
-		"pfJumpLive":     "clearHeard()",
-		"pfEpochChanged": "clearHeard()",
-		"pfShowMinutes":  "pfNothingNew()",
+	for fn, wants := range map[string][]string{
+		"pfPlay":         {"pfMarkHeard(id, rec.hash)", "pfUnhear(id)"},
+		"pfToss":         {"pfUnhear(id)"},
+		"pfJumpLive":     {"clearHeard()"},
+		"pfEpochChanged": {"clearHeard()"},
+		"pfShowMinutes":  {"pfNothingNew()"},
+		"pfStatus":       {"pfNothingNew()"},
 	} {
-		if !strings.Contains(jsFunction(t, src, fn), want) {
-			t.Errorf("%s does not call %s", fn, want)
+		for _, want := range wants {
+			if !strings.Contains(jsFunction(t, src, fn), want) {
+				t.Errorf("%s does not call %s", fn, want)
+			}
 		}
 	}
-	if strings.Contains(jsFunction(t, src, "pfRefreshQueue"), "row.prompt") {
-		t.Errorf("pfRefreshQueue still reads a prompt off the listing, which no longer carries one")
+	for _, fn := range []string{"pfRefreshQueue", "pfTakeListing"} {
+		if strings.Contains(jsFunction(t, src, fn), "row.prompt") {
+			t.Errorf("%s still reads a prompt off the listing, which no longer carries one", fn)
+		}
+	}
+}
+
+// A listing's tag names the rows it came with, so it is adopted with
+// them and not before. The headers of a listing land and the link
+// cuts the body off: the device holds no rows, so it holds no tag,
+// and the next check asks for the whole listing again. Adopted on the
+// headers, the tag had every later check answered "unchanged" over
+// rows the device never received - on a fresh tab, none - for as
+// long as the store stood still, which with the engine asleep is all
+// day. The deadline covers the body too, and the slot is held until
+// the body is in: a body that stalls is cut, not left hanging beside
+// the next check.
+func TestPhoneAdoptsAListingTagOnlyWithItsRows(t *testing.T) {
+	var got struct {
+		RowsCut      int      `json:"rowsCut"`
+		TagCut       string   `json:"tagCut"`
+		SentTag      *string  `json:"sentTag"`
+		Rows         int      `json:"rows"`
+		Tag          string   `json:"tag"`
+		Downloaded   []string `json:"downloaded"`
+		InFlight     int      `json:"inFlight"`
+		HeldCtrl     bool     `json:"heldCtrl"`
+		RowsStalled  int      `json:"rowsStalled"`
+		TagStalled   string   `json:"tagStalled"`
+		SentTagAfter *string  `json:"sentTagAfter"`
+		RowsAfter    int      `json:"rowsAfter"`
+		TagAfter     string   `json:"tagAfter"`
+	}
+	phoneBank(t, `
+listing("A* B C"); net.tag = '"1-7"';
+reload(); depthNow = 1; pollOkAt = Date.now();
+// The headers land; the body is cut off.
+net.bodyFail = true;
+pfRefreshQueue();
+wait(20).then(function () {
+  out.rowsCut = pf.rows.length;
+  out.tagCut = pf.queueTag;
+  net.bodyFail = false; calls = []; net.lastTag = "never asked";
+  pfRefreshQueue();
+  return wait(20);
+}).then(function () {
+  out.sentTag = net.lastTag;
+  out.rows = pf.rows.length;
+  out.tag = pf.queueTag;
+  out.downloaded = downloaded();
+  // The store changes, and the body of the new listing stalls. A
+  // second check meanwhile does not start a second listing.
+  net.tag = '"1-8"'; listing("A* B C D"); net.bodyHold = true; calls = [];
+  pfRefreshQueue();
+  pfRefreshQueue();
+  return wait(10);
+}).then(function () {
+  out.inFlight = listingCalls();
+  out.heldCtrl = !!pf.queueCtrl;
+  // The deadline cuts the stalled body.
+  return wait(queueFetchTimeout + 20);
+}).then(function () {
+  out.rowsStalled = pf.rows.length;
+  out.tagStalled = pf.queueTag;
+  net.bodyHold = false; net.release(); calls = [];
+  pfRefreshQueue();
+  return wait(20);
+}).then(function () {
+  out.sentTagAfter = net.lastTag;
+  out.rowsAfter = pf.rows.length;
+  out.tagAfter = pf.queueTag;
+  finish();
+});
+`, &got)
+	if got.RowsCut != 0 || got.TagCut != "" {
+		t.Fatalf("after a listing whose body was cut off: %d rows under tag %q; want none, and no tag to hold", got.RowsCut, got.TagCut)
+	}
+	if got.SentTag != nil {
+		t.Errorf("the check after a cut-off body sent If-None-Match %q; want no tag, so the listing comes whole", *got.SentTag)
+	}
+	if got.Rows != 3 || got.Tag != `"1-7"` || len(got.Downloaded) == 0 {
+		t.Errorf("the check after a cut-off body gave %d rows under %q and took %v; want 3 rows under \"1-7\" and a download", got.Rows, got.Tag, got.Downloaded)
+	}
+	if got.InFlight != 1 || !got.HeldCtrl {
+		t.Errorf("with a listing's body still coming, %d listings were in flight (slot held %v); want 1, held", got.InFlight, got.HeldCtrl)
+	}
+	if got.RowsStalled != 3 || got.TagStalled != `"1-7"` {
+		t.Errorf("after a stalled body was cut: %d rows under %q; want the 3 rows held, under their own tag \"1-7\"", got.RowsStalled, got.TagStalled)
+	}
+	if got.SentTagAfter == nil || *got.SentTagAfter != `"1-7"` || got.RowsAfter != 4 || got.TagAfter != `"1-8"` {
+		sent := "<none>"
+		if got.SentTagAfter != nil {
+			sent = *got.SentTagAfter
+		}
+		t.Errorf("the next check sent %s and got %d rows under %q; want the held tag \"1-7\", 4 rows, \"1-8\"", sent, got.RowsAfter, got.TagAfter)
+	}
+}
+
+// A song the browser refused to start - which it does on a reload
+// until the page has seen a tap - made no sound and was not heard.
+// The mark set when it was picked comes off, so the tap that follows
+// starts that song rather than passing it over for good. A copy that
+// would not play is not heard either: the device moves on to the
+// next unheard song, and the bad copy stays off the list.
+func TestPhoneDoesNotCountARefusedStartAsHeard(t *testing.T) {
+	var got struct {
+		Heard         []string `json:"heard"`
+		Status        string   `json:"status"`
+		Next          string   `json:"next"`
+		Ready         int      `json:"ready"`
+		HeardAfterBad []string `json:"heardAfterBad"`
+		Bad           bool     `json:"bad"`
+		PlayingAfter  string   `json:"playingAfter"`
+	}
+	phoneBank(t, `
+listing("F* G* H*");
+reload(); bank("F G H"); depthNow = 0;
+var refused = new Error("play() failed because the user didn't interact with the document first.");
+refused.name = "NotAllowedError";
+playRefuse = refused;
+pfPlay("F");
+wait(10).then(function () {
+  out.heard = heardStored();
+  out.status = statuses.join(" | ");
+  // The tap: the bank starts over from what is unheard.
+  pf.active = true; pf.playingId = null;
+  out.next = pfNextId(null);
+  out.ready = pfReady();
+  // A copy that will not play: the device moves on to F, the unheard one.
+  playRefuse = new Error("The media resource was not suitable.");
+  pfPlay("G");
+  return wait(10);
+}).then(function () {
+  out.heardAfterBad = heardStored();
+  out.bad = !!pf.bad.G;
+  out.playingAfter = pf.playingId;
+  finish();
+});
+`, &got)
+	if len(got.Heard) != 0 || !strings.Contains(got.Status, "tap play") {
+		t.Errorf("after the browser refused to start F: heard %v, status %q; want nothing heard and a word about the tap", got.Heard, got.Status)
+	}
+	if got.Next != "F" || got.Ready != 3 {
+		t.Errorf("on the tap the bank starts with %q and counts %d ready; want F, the song never heard, and 3", got.Next, got.Ready)
+	}
+	if join(got.HeardAfterBad) != "F" || !got.Bad || got.PlayingAfter != "F" {
+		t.Errorf("after G's copy refused to play: heard %v, G bad %v, playing %q; want only F heard, G marked bad, and F playing", got.HeardAfterBad, got.Bad, got.PlayingAfter)
+	}
+}
+
+// Two tabs of the page share one heard list. A tab the browser froze
+// and later thawed writes with a stale memory; its write adds what it
+// heard to what the other tab heard rather than wiping that out, and
+// it learns the other's hearings as it goes. A skip holds against the
+// skipping tab's own later writes; a steer in one tab empties the
+// list for both, and what the other tab heard before the steer stays
+// gone when it writes again. The toss list is shared the same way.
+func TestPhoneTabsShareOneHeardList(t *testing.T) {
+	var got struct {
+		BLoaded        []string `json:"bLoaded"`
+		Stored         []string `json:"stored"`
+		AKnows         []string `json:"aKnows"`
+		AfterUnhear    []string `json:"afterUnhear"`
+		AfterClear     []string `json:"afterClear"`
+		AfterStale     []string `json:"afterStale"`
+		Reloaded       []string `json:"reloaded"`
+		Tossed         []string `json:"tossed"`
+		TossedReloaded []string `json:"tossedReloaded"`
+	}
+	phoneBank(t, `
+// Tab A hears three songs.
+reload(); var A = pf;
+["s1", "s2", "s3"].forEach(function (id) { pfMarkHeard(id, "h-" + id); });
+// Tab B opens, reads them, and hears two more.
+reload(); var B = pf;
+out.bLoaded = Object.keys(pf.seen).sort();
+pfMarkHeard("s4", "h-s4"); pfMarkHeard("s5", "h-s5");
+// Tab A, thawed with the memory it froze with, hears another.
+pf = A; pfMarkHeard("s6", "h-s6");
+out.stored = heardStored();
+out.aKnows = Object.keys(pf.seen).sort();
+// A skips s2, then hears s7: the skip holds.
+pfUnhear("s2"); pfMarkHeard("s7", "h-s7");
+out.afterUnhear = heardStored();
+// B steers: the list is emptied. A, still holding its old memory, hears s8.
+pf = B; pf.epoch = 1; pfEpochChanged(2);
+out.afterClear = heardStored();
+pf = A; pfMarkHeard("s8", "h-s8");
+out.afterStale = heardStored();
+// A fresh tab reads the one list.
+reload();
+out.reloaded = Object.keys(pf.seen).sort();
+// Tosses: each tab skips a song of its own.
+pf = A; pfToss("x1", "Song x1");
+pf = B; pfToss("x2", "Song x2");
+out.tossed = tossedKeys();
+reload();
+out.tossedReloaded = Object.keys(pf.tossed).sort();
+finish();
+`, &got)
+	if join(got.BLoaded) != "s1 s2 s3" {
+		t.Fatalf("a second tab read %v as heard, want s1 s2 s3", got.BLoaded)
+	}
+	if join(got.Stored) != "s1 s2 s3 s4 s5 s6" || join(got.AKnows) != "s1 s2 s3 s4 s5 s6" {
+		t.Errorf("after the thawed tab wrote: storage %v, its memory %v; want s1 to s6 in both - nothing the other tab heard is lost", got.Stored, got.AKnows)
+	}
+	if join(got.AfterUnhear) != "s1 s3 s4 s5 s6 s7" {
+		t.Errorf("after the tab unheard s2 and heard s7: %v, want s1 s3 s4 s5 s6 s7", got.AfterUnhear)
+	}
+	if len(got.AfterClear) != 0 || join(got.AfterStale) != "s8" || join(got.Reloaded) != "s8" {
+		t.Errorf("after a steer in one tab: %v; after the other wrote with its old memory: %v; a fresh tab read %v; want nothing, s8, s8",
+			got.AfterClear, got.AfterStale, got.Reloaded)
+	}
+	if join(got.Tossed) != "x1 x2" || join(got.TossedReloaded) != "x1 x2" {
+		t.Errorf("two tabs each skipped a song: storage %v, a fresh tab read %v; want x1 x2 in both", got.Tossed, got.TossedReloaded)
+	}
+}
+
+// A bank from before the page kept a heard list counts as heard: the
+// first time such a bank is read, every song in it is marked, so the
+// device takes new songs at once rather than replaying the bank from
+// the top until enough of it has gone by. The list exists from then
+// on, so songs banked afterwards and not yet played are not marked
+// the next time the bank is read - with an empty bank as much as a
+// full one.
+func TestPhoneCountsABankOlderThanItsMemoryAsHeard(t *testing.T) {
+	var got struct {
+		KeyBefore     bool     `json:"keyBefore"`
+		Seeded        []string `json:"seeded"`
+		HashKept      string   `json:"hashKept"`
+		First         string   `json:"first"`
+		Wrapped       bool     `json:"wrapped"`
+		Ahead         int      `json:"ahead"`
+		Downloaded    []string `json:"downloaded"`
+		Later         []string `json:"later"`
+		KeyAfterEmpty bool     `json:"keyAfterEmpty"`
+		EmptyThen     []string `json:"emptyThen"`
+	}
+	phoneBank(t, `
+listing("A* B* C* D* E* F G H");
+reload(); depthNow = 3;
+out.keyBefore = "iar.heard" in kv;
+pfAdoptRecords(records("A B C D E"));
+out.seeded = heardStored();
+out.hashKept = pf.seen.A ? pf.seen.A.hash : "";
+var first = pfNextId(null);
+out.first = first; out.wrapped = pf.wrapped;
+pfPlay(first);
+pfRefreshQueue();
+wait(80).then(function () {
+  out.ahead = pfAhead();
+  out.downloaded = downloaded();
+  // The list exists now: a song banked since and not played is not heard.
+  reload(); depthNow = 3;
+  pfAdoptRecords(records("A B C D E F"));
+  out.later = heardStored();
+  // A page whose first bank is empty remembers from then on.
+  kv = {}; reload();
+  pfAdoptRecords([]);
+  out.keyAfterEmpty = "iar.heard" in kv;
+  pfAdoptRecords(records("G"));
+  out.emptyThen = heardStored();
+  finish();
+});
+`, &got)
+	if got.KeyBefore {
+		t.Fatal("the heard list existed before the bank was read")
+	}
+	if join(got.Seeded) != "A B C D E" || got.HashKept != "h-A" {
+		t.Errorf("reading a bank older than the heard list marked %v (A's hash %q); want A B C D E, with their hashes", got.Seeded, got.HashKept)
+	}
+	if !got.Wrapped || got.First != "A" {
+		t.Errorf("the first pick was %q (wrapped %v); want a replay of A", got.First, got.Wrapped)
+	}
+	if got.Ahead != 3 || join(got.Downloaded) != "F G H" {
+		t.Errorf("ahead = %d after taking %v; want 3 and F G H - the first new songs, at once", got.Ahead, got.Downloaded)
+	}
+	if join(got.Later) != "A B C D E" {
+		t.Errorf("a later reading of the bank left the heard list at %v, want A B C D E - F was banked unheard", got.Later)
+	}
+	if !got.KeyAfterEmpty || len(got.EmptyThen) != 0 {
+		t.Errorf("a page that first read an empty bank: list kept %v, later marked %v; want the list kept and nothing marked", got.KeyAfterEmpty, got.EmptyThen)
+	}
+}
+
+// Ids are reissued: a store emptied without a steer starts its count
+// over, so a song made next week wears the id of one heard last week.
+// The heard list keeps each song's hash, and a listed song whose hash
+// is not the one heard under its id is unheard - banked or not - so
+// the new song is taken. The songs that are what they were stay heard.
+func TestPhoneUnhearsAnIdReissuedToADifferentSong(t *testing.T) {
+	var got struct {
+		HeardBefore []string `json:"heardBefore"`
+		HeardAfter  []string `json:"heardAfter"`
+		Downloaded  []string `json:"downloaded"`
+		Ahead       int      `json:"ahead"`
+		Ready       int      `json:"ready"`
+		AHash       string   `json:"aHash"`
+	}
+	phoneBank(t, `
+listing("A* B* C* D* E*");
+reload(); bank("A B C D E"); depthNow = 0;
+["A", "B", "C", "D", "E"].forEach(function (id) { pfPlay(id); });
+wait(10).then(function () {
+  // The bank was trimmed to D and E; the store was emptied and
+  // refilled, A to C made anew under the same ids, D and E kept.
+  reload(); bank("D E"); depthNow = 3;
+  net.hashes = { A: "h2-A", B: "h2-B", C: "h2-C" };
+  listing("A B C D* E*");
+  out.heardBefore = heardStored();
+  pfRefreshQueue();
+  return wait(80);
+}).then(function () {
+  out.heardAfter = heardStored();
+  out.downloaded = downloaded();
+  out.ahead = pfAhead();
+  out.ready = pfReady();
+  out.aHash = pf.have.A ? pf.have.A.hash : "";
+  finish();
+});
+`, &got)
+	if join(got.HeardBefore) != "A B C D E" {
+		t.Fatalf("heard before the store was refilled: %v, want A B C D E", got.HeardBefore)
+	}
+	if join(got.HeardAfter) != "D E" {
+		t.Errorf("after the listing reissued A B C to new songs the heard list is %v, want D E", got.HeardAfter)
+	}
+	if join(got.Downloaded) != "A B C" || got.AHash != "h2-A" {
+		t.Errorf("the phone took %v (A's hash %q); want A B C, the new songs, under their new hashes", got.Downloaded, got.AHash)
+	}
+	if got.Ahead != 3 || got.Ready != 3 {
+		t.Errorf("ahead = %d, ready = %d; want 3 and 3 - the new songs count, the heard ones do not", got.Ahead, got.Ready)
+	}
+}
+
+// A song heard here is never taken again while the radio lists it,
+// even once the bank has let it go: the radio's take of a song
+// already taken is nothing, and the download would be a repeat. With
+// nothing playing the downloader reads the listing from the top,
+// which is where the heard-and-trimmed songs are.
+func TestPhoneNeverTakesASongItHeardButNoLongerHolds(t *testing.T) {
+	var got struct {
+		Downloaded []string `json:"downloaded"`
+		NewRow     string   `json:"newRow"`
+	}
+	phoneBank(t, `
+listing("A* B* C* D* E* F G");
+reload(); bank("A B C D E"); depthNow = 0;
+["A", "B", "C", "D", "E"].forEach(function (id) { pfPlay(id); });
+wait(10).then(function () {
+  // The bank was trimmed to C D E; the heard list outlives the trim.
+  reload(); bank("C D E"); depthNow = 3;
+  var row = pfNewRow();
+  out.newRow = row ? row.id : "";
+  pfRefreshQueue();
+  return wait(80);
+}).then(function () {
+  out.downloaded = downloaded();
+  finish();
+});
+`, &got)
+	if join(got.Downloaded) != "F G" {
+		t.Errorf("with A and B heard but no longer held the phone took %v, want F G and never A or B", got.Downloaded)
+	}
+}
+
+// A device waiting for the radio's very first song asks for the
+// listing every couple of seconds rather than every ten. An empty
+// store's listing has a tag like any other, so the fast checks are
+// answered "unchanged" - and the next fast check is armed all the
+// same, until a song lands and plays.
+func TestPhoneKeepsAskingFastForItsFirstSong(t *testing.T) {
+	var got struct {
+		Armed      bool     `json:"armed"`
+		FirstRows  int      `json:"firstRows"`
+		Calls      int      `json:"calls"`
+		SentTag    string   `json:"sentTag"`
+		Rearmed    bool     `json:"rearmed"`
+		CallsAfter int      `json:"callsAfter"`
+		Rows       int      `json:"rows"`
+		Played     []string `json:"played"`
+	}
+	phoneBank(t, `
+listing(""); net.tag = '"1-0"';
+reload(); depthNow = 3; pf.wantPlay = true;
+pfRefreshQueue();
+wait(10).then(function () {
+  out.armed = !!pf.fetchTimer;
+  out.firstRows = pf.rows.length;
+  return wait(firstTrackPollMs + 10);
+}).then(function () {
+  out.calls = listingCalls();
+  out.sentTag = net.lastTag;
+  out.rearmed = !!pf.fetchTimer;
+  // The radio's first song lands.
+  net.tag = '"1-1"'; listing("A");
+  return wait(firstTrackPollMs + 40);
+}).then(function () {
+  out.callsAfter = listingCalls();
+  out.rows = pf.rows.length;
+  out.played = played.slice();
+  finish();
+});
+`, &got)
+	if !got.Armed || got.FirstRows != 0 {
+		t.Fatalf("after an empty listing: fast check armed %v, %d rows; want armed and none", got.Armed, got.FirstRows)
+	}
+	if got.Calls < 2 || got.SentTag != `"1-0"` {
+		t.Fatalf("the fast check made %d listings in all and sent %q; want a second one, with the tag held", got.Calls, got.SentTag)
+	}
+	if !got.Rearmed {
+		t.Errorf("after the fast check was answered unchanged no further fast check was armed")
+	}
+	if got.CallsAfter < 3 || got.Rows != 1 || join(got.Played) != "A" {
+		t.Errorf("once a song landed: %d listings, %d rows, played %v; want a third check, the row, and A playing", got.CallsAfter, got.Rows, got.Played)
 	}
 }
