@@ -498,8 +498,9 @@
     fetchTimer: null,
     queueTimer: null,
     offline: false,
-    seen: {},        // ids already heard in this context, so Next moves on
+    seen: {},        // id -> when it was heard here, so Next moves on; kept in storage
     wrapped: false,  // the last pick came back round to something heard
+    queueTag: "",    // the ETag of the listing held, for the radio to answer "unchanged" to
     wantPlay: false, // start playback as soon as anything is stored
     loop: false,     // repeat the playing track on this device
     storeFull: false,// the device refused to store a downloaded track
@@ -549,6 +550,53 @@
     pf.tossed = {};
     saveTossed();
   }
+
+  // The heard list outlives a reload too. A phone's browser reloads
+  // the page by itself when it wakes a tab it had put to sleep, and a
+  // list kept in memory alone came back empty every time: the bank
+  // read as unheard from the top, the songs heard days before played
+  // again, and nothing new was taken because the heard bank counted
+  // as songs ahead. Like the toss list it is tied to the sound - a
+  // steer starts a context whose songs can never be ones already
+  // heard, and the list is emptied with it - and bounded, oldest
+  // first, so a phone that listens for months does not keep every id
+  // it ever played.
+  var maxHeard = 600;
+  function loadHeard() {
+    var saved = store.get("iar.heard", {});
+    var out = {};
+    Object.keys(saved || {}).forEach(function (id) {
+      var at = saved[id];
+      if (typeof at === "number" && at > 0) out[id] = at;
+    });
+    return out;
+  }
+  function saveHeard() { store.set("iar.heard", pf.seen); }
+  // clearHeard forgets every song heard: the context they belonged to
+  // is gone, or the listener has emptied the device to start over.
+  function clearHeard() {
+    pf.seen = {};
+    saveHeard();
+  }
+  // pfMarkHeard records that a song started playing here, now.
+  function pfMarkHeard(id) {
+    if (!id) return;
+    pf.seen[id] = Date.now();
+    var ids = Object.keys(pf.seen);
+    if (ids.length > maxHeard) {
+      ids.sort(function (a, b) { return pf.seen[a] - pf.seen[b]; });
+      ids.slice(0, ids.length - maxHeard).forEach(function (old) { delete pf.seen[old]; });
+    }
+    saveHeard();
+  }
+  // pfUnhear takes one song off the heard list: it was skipped, or
+  // the id now names a different song.
+  function pfUnhear(id) {
+    if (!id || !pf.seen[id]) return;
+    delete pf.seen[id];
+    saveHeard();
+  }
+  pf.seen = loadHeard();
   // pfTossed answers for one listing row or banked record. The title
   // rides along with the id: ids restart with the radio, names do not,
   // so a name that no longer matches means this is a different song
@@ -579,7 +627,7 @@
     saveTossed();
     pfForget(id);
     pf.rows = pf.rows.filter(function (row) { return row.id !== id; });
-    delete pf.seen[id];
+    pfUnhear(id);
   }
   // pfPlayable reports whether a banked song is worth picking: not one
   // the listener skipped, and not one whose copy on this device has
@@ -706,7 +754,12 @@
     if (!pf.active) return;
     setText($("devcount"), n + " song" + (n === 1 ? "" : "s") + " on this device (~" + fmtSpan(pfBankSeconds()) + ")");
     var note = "";
-    if (pf.wrapped) note = "replaying earlier songs, nothing new yet";
+    // A replay is the fallback, not the plan: while a new song can
+    // still be taken the note says it is coming, and only once nothing
+    // new is to be had - the radio out of reach, or its store with
+    // nothing this device has not heard - does it say so.
+    if (pf.wrapped && pfNothingNew()) note = "replaying earlier songs, nothing new yet";
+    else if (pf.wrapped) note = "nothing unheard banked yet - new songs are on their way";
     else if (pf.storeFull) note = "no room left on this device - these play now but are not saved";
     setText($("devnote"), note);
   }
@@ -729,51 +782,72 @@
   }
 
   // pfReady is how many songs this device could play after the one it
-  // is playing: the upcoming ones it has downloaded AND the ones the
-  // radio has since let go, which sound no different out of a phone in
-  // a tunnel. pfAhead answers a narrower question - how far ahead of
-  // the listing the downloader has got - and is what the downloader is
-  // steered by; this is what the listener is told, because a device
-  // saying "0 ahead" over fifty banked songs is the same lie as one
-  // saying it is waiting for the radio.
+  // is playing that it has not heard: the upcoming ones it has
+  // downloaded AND the ones the radio has since let go, which sound no
+  // different out of a phone in a tunnel. pfAhead answers a narrower
+  // question - how far ahead of the listing the downloader has got -
+  // and is what the downloader is steered by; this is what the
+  // listener is told, because a device saying "0 ahead" over fifty
+  // banked songs is the same lie as one saying it is waiting for the
+  // radio. Heard songs are in neither count: a bank of them is a
+  // replay waiting to happen, not music ahead.
   function pfReady() {
     var n = 0;
     Object.keys(pf.have).forEach(function (id) {
-      if (id === pf.playingId) return;
+      if (id === pf.playingId || pf.seen[id]) return;
       if (pfPlayable(id, pf.have[id].title)) n++;
     });
     return n;
   }
 
   // pfAhead counts the listed songs after the one playing that this
-  // device holds. The listing is the radio's store in the order the
-  // songs were made, so "after" is simply further down it; a playing
-  // song the radio has let go leaves every listed song ahead.
+  // device holds and has not heard. The listing is the radio's store
+  // in the order the songs were made, so "after" is simply further
+  // down it; a playing song the radio has let go leaves every listed
+  // song ahead. Counting heard songs here is how a phone with a bank
+  // of them sat on "56 ahead" and never took the hundred new songs in
+  // the store.
   function pfAhead() {
     var n = 0;
     var passed = !pfListed(pf.playingId);
     pf.rows.forEach(function (row) {
       if (row.id === pf.playingId) { passed = true; return; }
-      if (passed && pf.have[row.id]) n++;
+      if (passed && pf.have[row.id] && !pf.seen[row.id] && pfPlayable(row.id, row.title)) n++;
     });
     return n;
   }
 
-  // pfNextDownload is the row worth fetching next, or null when there is
-  // none or enough is held already: the first row after the one playing
-  // that this device neither holds nor has thrown away. A device that
-  // is playing nothing starts at the top of the listing, which is the
-  // oldest song the radio still keeps - what the other listeners have
-  // already heard comes first, and only past that does the device take
-  // songs nobody has taken yet.
-  function pfNextDownload(depth, starving) {
-    var next = null;
+  // pfNewRow is the first listed song after the one playing that this
+  // device neither holds, has heard, nor has thrown away: what a
+  // download would bring that is new to this listener, or null. A
+  // device that is playing nothing starts at the top of the listing,
+  // which is the oldest song the radio still keeps - what the other
+  // listeners have already heard comes first, and only past that does
+  // the device take songs nobody has taken yet. A song heard here is
+  // never taken again, however long the radio keeps it: the radio's
+  // take of a song already taken is nothing, and the download was a
+  // repeat.
+  function pfNewRow() {
     var passed = !pfListed(pf.playingId);
     for (var i = 0; i < pf.rows.length; i++) {
       var row = pf.rows[i];
       if (row.id === pf.playingId) { passed = true; continue; }
-      if (passed && !pf.have[row.id] && !pfTossed(row.id, row.title)) { next = row; break; }
+      if (passed && !pf.have[row.id] && !pf.seen[row.id] && !pfTossed(row.id, row.title)) return row;
     }
+    return null;
+  }
+
+  // pfNothingNew reports that a replay is all there is: nothing unheard
+  // is banked, and nothing new can be taken - the radio is out of reach,
+  // or its listing holds nothing this device has not heard.
+  function pfNothingNew() {
+    return pfReady() === 0 && (pf.offline || !pfNewRow());
+  }
+
+  // pfNextDownload is the row worth fetching next, or null when there is
+  // none or enough is held already.
+  function pfNextDownload(depth, starving) {
+    var next = pfNewRow();
     if (!next) return null;
     return (pfAhead() >= depth && !starving) ? null : next;
   }
@@ -898,13 +972,15 @@
     })["catch"](function () { pf.warm = false; });
   }
 
-  // queueFetchTimeout bounds one listing request. A listing is a small
-  // thing that either lands promptly or is not coming, and the link a
-  // phone wakes onto is often up without carrying anything - a stale
-  // route, a captive portal, one bar in a valley. There fetch neither
+  // queueFetchTimeout bounds one listing request. The link a phone
+  // wakes onto is often up without carrying anything - a stale route,
+  // a captive portal, one bar in a valley. There fetch neither
   // resolves nor rejects, so without a deadline the device waits on it
-  // for ever and never reaches the answer it already has at home.
-  var queueFetchTimeout = 8000;
+  // for ever and never reaches the answer it already has at home. The
+  // deadline is generous all the same: the listing shares the link
+  // with a song download several megabytes long, and a listing cut off
+  // at eight seconds behind one of those read as the radio being gone.
+  var queueFetchTimeout = 20000;
 
   function pfAbortQueue() {
     if (!pf.queueCtrl) return;
@@ -929,18 +1005,32 @@
     // radio counts it as consumed and brings its next batch forward.
     var skipped = pf.skipped;
     var url = "/api/queue" + (skipped > 0 ? "?skipped=" + Math.round(skipped) : "");
-    fetch(url, { signal: ctrl.signal }).then(function (r) {
+    // The listing held is named by the tag the radio gave it, so a
+    // store that has not changed - which, with the engine asleep on a
+    // stocked store, is most of the day - is answered with a word
+    // rather than the whole list again.
+    var reqHeaders = {};
+    if (pf.queueTag) reqHeaders["If-None-Match"] = pf.queueTag;
+    fetch(url, { signal: ctrl.signal, headers: reqHeaders }).then(function (r) {
       settled();
-      if (r.ok) pf.skipped = Math.max(0, pf.skipped - skipped);
+      if (r.ok || r.status === 304) pf.skipped = Math.max(0, pf.skipped - skipped);
       if (r.status === 401 || r.status === 403) {
         stopBuffered("session expired - reload this page and log in again", "bad");
         $("conn").textContent = "logged out";
         return null;
       }
+      // Unchanged: the rows held are the listing, and this was contact.
+      if (r.status === 304) return { unchanged: true };
+      if (r.ok) pf.queueTag = (r.headers && r.headers.get("ETag")) || "";
       return r.json();
     }).then(function (q) {
       if (!q || !pfLive()) return;
       pf.offline = false;
+      if (q.unchanged) {
+        pfShowMinutes();
+        pfEnsureDownloads();
+        return;
+      }
       var first = pf.epoch < 0;
       if (!first && q.epoch !== pf.epoch) {
         pfEpochChanged(q.epoch);
@@ -952,16 +1042,16 @@
       // A banked song and a listed row can come to share an id. The
       // phased buffer names its files by epoch and sequence, and a
       // buffer emptied without a steer starts the count over, so a song
-      // consumed last week can be handed its name back. Descriptions
-      // and lengths do not collide: a stored copy that disagrees with
-      // the row now wearing its id is a different song, and these bytes
-      // have no further claim on that row.
+      // consumed last week can be handed its name back. Hashes and
+      // lengths do not collide: a stored copy that disagrees with the
+      // row now wearing its id is a different song, these bytes have
+      // no further claim on that row, and neither does the hearing.
       pf.rows.forEach(function (row) {
         var rec = pf.have[row.id];
         if (!rec || row.id === pf.playingId) return;
-        var samePrompt = !rec.prompt || !row.prompt || rec.prompt === row.prompt;
+        var sameHash = !rec.hash || !row.hash || rec.hash === row.hash;
         var sameLength = !rec.dur || !row.duration_s || Math.abs(rec.dur - row.duration_s) < 1;
-        if (!samePrompt || !sameLength) pfForget(row.id);
+        if (!sameHash || !sameLength) { pfForget(row.id); pfUnhear(row.id); }
       });
       // Stamp the current epoch onto the records this listing still
       // names. The rest are songs the radio has let go - which is
@@ -988,11 +1078,10 @@
       pf.rows.forEach(function (row) {
         var rec = pf.have[row.id];
         if (!rec || !row.title) return;
-        // Somebody renamed a song, not swapped one: a copy describing
-        // different music is an id collision, and taking the new name
-        // onto it would put the new song's name over the old song's
-        // sound.
-        if (rec.prompt && row.prompt && rec.prompt !== row.prompt) return;
+        // Somebody renamed a song, not swapped one: a copy of different
+        // bytes is an id collision, and taking the new name onto it
+        // would put the new song's name over the old song's sound.
+        if (rec.hash && row.hash && rec.hash !== row.hash) return;
         if (rec.title === row.title && rec.subtitle === row.subtitle) return;
         rec.title = row.title;
         rec.subtitle = row.subtitle;
@@ -1028,17 +1117,22 @@
       var ours = pf.queueCtrl === ctrl;
       settled();
       if (!pfLive() || !ours) return;
-      // Offline: keep playing what is stored; the interval retries.
-      // A listing that timed out on a link too poor to carry it counts
-      // as offline exactly like a refused one - the device is on its
-      // own either way, and it says so rather than waiting in silence.
-      pf.offline = true;
+      // Keep playing what is stored; the interval retries. Offline
+      // means the radio cannot be reached, which is the poll's word:
+      // a listing that failed while the radio was answering its polls
+      // a moment ago is a slow listing, not a radio out of reach, and
+      // calling it offline put "offline" on the screen beside a
+      // connection line saying "connected". A listing that failed with
+      // nothing answered for a while is the device on its own, and it
+      // says so rather than waiting in silence.
+      if (Date.now() - pollOkAt > pollStaleMs) pf.offline = true;
       if (!pf.active) return; // the background bank has nothing to play
       if (!pf.playingId) {
         pf.wantPlay = true;
         var id = pfNextId(null);
         if (id) pfPlay(id);
-        else pfState("offline - waiting for stored tracks", "bad");
+        else if (pf.offline) pfState("offline - waiting for stored tracks", "bad");
+        else pfStatus();
       } else {
         pfStatus();
       }
@@ -1066,7 +1160,11 @@
       }
     });
     pf.switchOnDownload = true;
-    pf.seen = {};
+    // The old context's hearings are gone with its songs; the one song
+    // kept, the one playing, has been heard all the same, so the end
+    // of it is not an occasion to start it over.
+    clearHeard();
+    if (pf.playingId) pfMarkHeard(pf.playingId);
     // The listener asked for a new setting; a held loop would transplant
     // onto the first new-context track and repeat it forever. The server
     // breaks its loop on any context change - the device does the same.
@@ -1119,26 +1217,29 @@
     // can actually empty. Left to the browser's cache there is a
     // second copy nothing here controls, and a flushed bank refills
     // from it instantly - even with the radio switched off.
-    var lyrics = "";
+    var lyrics = "", prompt = "";
     fetch(row.url, { signal: ctrl.signal, cache: "no-store" }).then(function (r) {
       if (r.status === 401 || r.status === 403) { throw { auth: true }; }
       if (!r.ok) { throw new Error("track " + r.status); }
       return r.blob();
     }).then(function (blob) {
-      // The words come separately: the listing is kept small by leaving
-      // them out, and a song is worth having even if they never arrive.
+      // The words and the description come separately: the listing is
+      // kept small by leaving them out, and a song is worth having
+      // even if they never arrive.
       return fetch(row.url.replace(/\.mp3$/, ".json"), { signal: ctrl.signal, cache: "no-store" })
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (song) { if (song && song.lyrics) lyrics = song.lyrics; return blob; },
-          function () { return blob; });
+        .then(function (song) {
+          if (song) { lyrics = song.lyrics || ""; prompt = song.prompt || ""; }
+          return blob;
+        }, function () { return blob; });
     }).then(function (blob) {
       // The deadline covers the body too. Cleared on the headers, it
       // bounded only how long the radio took to start answering, and a
       // song trickling in at a byte a second held the slot for ever.
       clearTimeout(deadline);
       if (pf.ctrl === ctrl) pf.ctrl = null;
-      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: lyrics, hash: row.hash || "" };
-      idbReq(idbStore("readwrite").put({ id: row.id, prompt: row.prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: lyrics, hash: row.hash || "", blob: blob, saved: Date.now() }))
+      pf.have[row.id] = { url: URL.createObjectURL(blob), prompt: prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: lyrics, hash: row.hash || "" };
+      idbReq(idbStore("readwrite").put({ id: row.id, prompt: prompt, title: row.title, subtitle: row.subtitle, epoch: pf.epoch, dur: row.duration_s, lyrics: lyrics, hash: row.hash || "", blob: blob, saved: Date.now() }))
         .then(function () { pf.storeFull = false; })
         ["catch"](function () {
           // Out of room on the device: the song plays from memory this
@@ -1328,7 +1429,7 @@
     }
     if (pf.playingId && pf.playingId !== id) pf.prevId = pf.playingId;
     pf.playingId = id;
-    pf.seen[id] = true;
+    pfMarkHeard(id);
     if (el.src !== rec.url) {
       el.src = rec.url;
     } else if (el.ended || el.currentTime > 0) {
@@ -1485,7 +1586,7 @@
     try {
       idbReq(idbStore("readwrite").clear())["catch"](function () {});
     } catch (e) {}
-    pf.seen = {};
+    clearHeard();
     pf.wrapped = false;
     pf.storeFull = false;
     if (pf.loop) pfSetLoop(false, true);
@@ -1649,9 +1750,11 @@
         pfState("this device will not play its songs" +
           (pf.playWhy ? " (" + pf.playWhy + ")" : "") + " - press play to try again", "bad");
       } else if (!banked) {
-        pfState(pf.offline
-          ? "nothing on this device and the radio is unreachable"
-          : "waiting for the radio to send a song…", pf.offline ? "bad" : "");
+        // With the radio answering and no listing in hand yet, what is
+        // being waited on is the song list, and the line says that
+        // rather than blaming a radio that is right there.
+        var waiting = pf.rows.length ? "waiting for the radio to send a song…" : "loading the radio's song list…";
+        pfState(pf.offline ? "nothing on this device and the radio is unreachable" : waiting, pf.offline ? "bad" : "");
       } else {
         // Songs are on the device and not one of them may be played:
         // each has been skipped, or has already refused to start.
@@ -1688,7 +1791,10 @@
       return;
     }
     var extra = pf.offline ? " · offline, playing banked tracks" : "";
-    if (!pf.offline && pf.wrapped) extra = " · replaying stored tracks, nothing new yet";
+    // The replay note is for a replay with nothing coming: while a new
+    // song can still be taken the count says 0 ahead and the next
+    // listing or download changes that.
+    if (!pf.offline && pf.wrapped && pfNothingNew()) extra = " · replaying stored tracks, nothing new yet";
     if (pf.loop) extra += " · looping this track";
     pfState("playing · " + pfReady() + " ahead" + extra, pf.offline ? "bad" : "good");
     pfShowMinutes();
@@ -2703,9 +2809,12 @@
     }).then(function (s) {
       if (!s) return;
       pollFails = 0;
+      pollOkAt = Date.now();
+      // Proof the radio is reachable: the device is not offline,
+      // whatever one slow listing said, and whatever a dead patch
+      // swallowed can go now.
+      pf.offline = false;
       setText($("conn"), "connected");
-      // Proof the radio is reachable: whatever a dead patch swallowed
-      // can go now.
       if (saveQueue.length) flushSaveQueue();
       // Every change to the sound branches the session, so the name in
       // the status line is also how the station list learns that what
@@ -2751,6 +2860,11 @@
     });
   }
   var pollFails = 0;
+  // pollOkAt is when the radio last answered a poll; a listing that
+  // fails within pollStaleMs of it - two polls and a breath - is a slow
+  // listing, not a radio out of reach.
+  var pollOkAt = 0;
+  var pollStaleMs = 5000;
   // radioUnreachable is the same fact the connection line reports, and
   // it takes three failed polls - about six seconds - rather than one,
   // because mobile data drops the odd request on a good day and a mark

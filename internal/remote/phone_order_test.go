@@ -72,7 +72,7 @@ func TestPhoneKeepsItsPlaceInTheStore(t *testing.T) {
 	}
 	src := string(raw)
 	var fns []string
-	for _, name := range []string{"pfTossed", "pfPlayable", "pfListed", "pfAhead", "pfNextDownload", "pfNextId"} {
+	for _, name := range []string{"pfTossed", "pfPlayable", "pfListed", "pfAhead", "pfNewRow", "pfNextDownload", "pfNextId"} {
 		fns = append(fns, jsFunction(t, src, name))
 	}
 	harness := `

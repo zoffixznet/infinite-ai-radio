@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"iar/internal/audio"
@@ -50,7 +51,22 @@ type Store struct {
 	// directory drop the index instead, and the next reader rebuilds it.
 	songs  map[string]*trackMeta
 	loaded bool
+	// version counts every change to what a listing would show: a song
+	// put, taken, trimmed, dropped or renamed, and every bulk sweep.
+	// A client that holds a listing under one version can be told
+	// "unchanged" instead of being sent the listing again. In memory
+	// only: it starts over with the process, and whoever hands it out
+	// is expected to qualify it with something that does not.
+	version atomic.Uint64
 }
+
+// Version reports how many changes the store's listing has been
+// through since the process started. Two equal versions of the same
+// store bracket a span in which no listing differed.
+func (s *Store) Version() uint64 { return s.version.Load() }
+
+// changed records one change to what a listing would show.
+func (s *Store) changed() { s.version.Add(1) }
 
 // New returns a store rooted at dir (created on first use). quality is
 // the MP3 VBR quality for rendered songs (0 best..9 smallest).
@@ -481,6 +497,7 @@ func (s *Store) PutTrack(ctx context.Context, epoch, seq int, t *engine.Track) (
 	s.mu.Lock()
 	s.load()
 	s.songs[base] = &meta
+	s.changed()
 	s.mu.Unlock()
 	return hash, nil
 }
@@ -557,6 +574,7 @@ func (s *Store) load() {
 func (s *Store) invalidate() {
 	s.loaded = false
 	s.songs = nil
+	s.changed()
 }
 
 // TrackPath returns the MP3 of a rendered song still on disk, for
@@ -605,6 +623,7 @@ func (s *Store) Take(epoch int, base string) bool {
 	if err := s.writeMeta(base, m); err != nil {
 		s.log.Warn("taken mark not written", "event", "buffer_take_failed", "file", base, "error", err.Error())
 	}
+	s.changed()
 	return true
 }
 
@@ -630,6 +649,9 @@ func (s *Store) Trim(epoch, keep int) (dropped int) {
 		delete(s.songs, base)
 		dropped++
 	}
+	if dropped > 0 {
+		s.changed()
+	}
 	return dropped
 }
 
@@ -644,6 +666,7 @@ func (s *Store) DropTrack(epoch int, base string) {
 	os.Remove(filepath.Join(s.tracksDir(), base+".json"))
 	os.Remove(filepath.Join(s.tracksDir(), base+".mp3"))
 	delete(s.songs, base)
+	s.changed()
 }
 
 // Next returns the first song of the epoch after the named one, in the
@@ -735,6 +758,7 @@ func (s *Store) SetTitle(epoch int, base, title, subtitle string) bool {
 	if err := s.writeMeta(base, m); err != nil {
 		return false
 	}
+	s.changed()
 	return true
 }
 

@@ -73,6 +73,18 @@ func (o *Orchestrator) QueueTracks() (int, []QueueTrack) {
 	return epoch, out
 }
 
+// QueueVersion counts the changes the store's listing has been through
+// since the radio started (see trackbuffer.Store.Version). Read it
+// before QueueTracks: a listing read first could go out named by a
+// version newer than itself, and a client holding it would then be
+// told "unchanged" over a store that had moved on.
+func (o *Orchestrator) QueueVersion() uint64 {
+	if o.Buffer == nil {
+		return 0
+	}
+	return o.Buffer.Version()
+}
+
 // Song describes one song a client holds or is offered, with its
 // lyrics: from the store while the song is there, from the songbook
 // once it has gone. ok is false for a song the radio never made.

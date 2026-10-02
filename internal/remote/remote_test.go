@@ -164,6 +164,8 @@ type fakeCtl struct {
 	deleted   []string
 	uploads   []upload
 	skipped   float64
+	// version is the store's change count the listing is tagged with.
+	version uint64
 	// storedT1, when set, is a file on disk that t-1 is served from.
 	storedT1 string
 	// phase, when set, is the startup phase the status reports, with
@@ -350,6 +352,19 @@ func (f *fakeCtl) QueueTracks() (int, []player.QueueTrack) {
 		{ID: "t-1", Prompt: "dark techno, driving", Title: "Dark Techno", Subtitle: "driving", Seconds: 2, Hash: "hash-of-t-1"},
 		{ID: "t-2", Prompt: "dark techno, deeper", Title: "Deep Descent", Subtitle: "deeper", Seconds: 2},
 	}
+}
+
+func (f *fakeCtl) QueueVersion() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.version
+}
+
+// bump records a change to the store, as a take or a new song would.
+func (f *fakeCtl) bump() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.version++
 }
 
 func (f *fakeCtl) Song(id string) (player.QueueTrack, string, bool) {

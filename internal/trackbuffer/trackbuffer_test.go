@@ -439,3 +439,53 @@ func TestTheRungMarkerSurvivesARestartAndGoesWithAWipe(t *testing.T) {
 		t.Fatalf("after a wipe the store is on rung %d, want 0", got)
 	}
 }
+
+// The version counts every change a listing would show - a song put,
+// taken, trimmed, dropped or renamed, and a bulk sweep - and nothing
+// else: a take of a song already taken, a trim that drops nothing and
+// a listing read leave it where it was.
+func TestVersionCountsEveryChangeToTheListing(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	s := New(t.TempDir(), 9, nil)
+	if v := s.Version(); v != 0 {
+		t.Fatalf("a fresh store is at version %d, want 0", v)
+	}
+	at := func(step string, want uint64) {
+		t.Helper()
+		if v := s.Version(); v != want {
+			t.Fatalf("after %s the version is %d, want %d", step, v, want)
+		}
+	}
+	for seq := 1; seq <= 3; seq++ {
+		track := &engine.Track{ID: "t-" + string(rune('0'+seq)), Prompt: "song",
+			Samples: make([]int16, audio.SampleRate*audio.Channels/4)}
+		if _, err := s.PutTrack(context.Background(), 0, seq, track); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at("three puts", 3)
+	s.List(0)
+	s.Level(0)
+	at("reading the listing", 3)
+	s.Take(0, "e00000000-00000001")
+	at("a take", 4)
+	s.Take(0, "e00000000-00000001")
+	at("taking a taken song again", 4)
+	s.Take(0, "e00000007-00000001")
+	at("taking a song of another epoch", 4)
+	s.Trim(0, 5)
+	at("a trim that drops nothing", 4)
+	s.Take(0, "e00000000-00000002")
+	s.Trim(0, 1)
+	at("a take and a trim that drops one", 6)
+	s.SetTitle(0, "e00000000-00000003", "Named", "by hand")
+	at("a rename", 7)
+	s.SetTitle(0, "e00000000-00000009", "Nothing", "")
+	at("renaming a song that is not there", 7)
+	s.DropTrack(0, "e00000000-00000003")
+	at("a drop", 8)
+	s.DropAll()
+	at("a sweep of everything", 9)
+}

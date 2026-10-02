@@ -6,6 +6,47 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Songs you had already heard on your phone - some of them saved -
+  played again, from the top of the bank, every time the page
+  reloaded, which a phone's browser does by itself when it wakes a
+  tab it had put to sleep. The phone kept what it had heard in memory
+  alone, so a reload read the whole bank as unheard. It now remembers
+  what it has heard across reloads, a song is replayed only when
+  nothing unheard is on the device and the radio has nothing new for
+  it, and a song heard is never downloaded again while the radio still
+  lists it. A steer, which starts the store over, clears the memory,
+  as does emptying the device.
+- A phone whose bank was full of heard songs never took the new ones
+  the radio had made: it counted every banked song after the playing
+  one as "ahead", saw a full bank, and replayed instead; skipping
+  shrank the bank without a top-up. "Ahead" now means songs not yet
+  heard, so a phone coming back to a store of new songs starts
+  downloading them at once and plays the first one as soon as the song
+  playing ends; the "N ahead" in the status line counts the same way.
+- The status line said "offline" when one request for the song list
+  was slow, while the radio was answering every other call and the
+  connection line said "connected". Offline now means the radio cannot
+  be reached: a poll it answers clears the mark, a listing that fails
+  while the radio is answering does not set it, a listing is given
+  twenty seconds rather than eight, and a phone that has no song list
+  yet says the list is loading rather than that the radio is away.
+- A banked song is told apart from a different song that has come to
+  wear its id by the hash of its bytes, which the listing carries,
+  rather than by its description, which it no longer does.
+
+### Changed
+
+- The radio's song list is a fraction of its former size. Each song's
+  description travels with the song itself, read once when the song is
+  taken, rather than with every listing; the list is compressed on
+  its way to the phone; and when nothing has changed the radio answers
+  "unchanged" instead of sending the list again, which with the engine
+  asleep on a stocked store is most of the day. On a phone checking
+  every ten seconds beside a song download, a 120 KB listing was the
+  difference between a list that landed and one that timed out.
+
 ## [2.1.0] - 2026-09-25
 
 ### Changed

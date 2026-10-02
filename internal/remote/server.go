@@ -55,6 +55,11 @@ type Controls interface {
 	CurrentName() string
 	Status() player.Status
 	QueueTracks() (int, []player.QueueTrack)
+	// QueueVersion counts the changes the store's listing has been
+	// through since the radio started; read before QueueTracks, it
+	// names the listing so a client can be told when nothing changed
+	// (see player.Orchestrator.QueueVersion).
+	QueueVersion() uint64
 	// Song describes one song, with its lyrics, from the store or the
 	// songbook (see player.Orchestrator.Song).
 	Song(id string) (player.QueueTrack, string, bool)
@@ -115,6 +120,11 @@ type Server struct {
 	acctLimit *accounts.Limiter
 	tmpl      *template.Template
 	flashes   *flashStore
+	// boot stamps this process into the listing's ETag. The store's
+	// version counter starts over with the process, so without it a
+	// radio restarted onto the same store could hand out a tag a phone
+	// already holds for a different listing.
+	boot string
 
 	// Addrs are the addresses actually listening; TailnetIP is the
 	// detected Tailscale address ("" when absent).
@@ -173,6 +183,7 @@ func newServer(cfg Config, ctl Controls, log *slog.Logger) (*Server, error) {
 		acctLimit: accounts.NewLimiter(loginAttempts, loginWindow),
 		tmpl:      tmpl,
 		flashes:   newFlashStore(),
+		boot:      strconv.FormatInt(time.Now().UnixNano(), 36),
 	}, nil
 }
 

@@ -2,6 +2,9 @@ package remote
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,13 +18,16 @@ import (
 	"iar/internal/player"
 )
 
-// queueTrackJSON is one song in the store, as the listing offers it.
-// The lyrics are not here - a listing of a hundred songs would carry
-// a hundred lyric sheets ten times a minute - but at the song's own
-// JSON route, which a client reads once, when it takes the song.
+// queueTrackJSON is one song in the store, as the listing offers it:
+// what a client needs to place the song, name it and take it, and
+// nothing it reads only once. The lyrics and the description are at
+// the song's own JSON route, which a client reads when it takes the
+// song. A listing of two hundred songs went out with every description
+// in it ten times a minute, uncompressed, over the same link a song
+// download was on; at a few hundred characters a description that was
+// most of the listing, and most of what made it time out.
 type queueTrackJSON struct {
 	ID        string  `json:"id"`
-	Prompt    string  `json:"prompt"`
 	Title     string  `json:"title,omitempty"`
 	Subtitle  string  `json:"subtitle,omitempty"`
 	DurationS float64 `json:"duration_s"`
@@ -31,13 +37,15 @@ type queueTrackJSON struct {
 	// URL is the authenticated, range-capable MP3 route for the song.
 	URL string `json:"url"`
 	// Hash is the SHA-256 of the MP3 the URL serves, when the radio
-	// recorded one; the page sends it back to save from its own copy.
+	// recorded one; the page sends it back to save from its own copy,
+	// and reads a banked copy's identity off it.
 	Hash string `json:"hash,omitempty"`
 }
 
 // songJSON is one song with everything a client shows about it.
 type songJSON struct {
 	queueTrackJSON
+	Prompt string `json:"prompt"`
 	Lyrics string `json:"lyrics,omitempty"`
 }
 
@@ -49,12 +57,19 @@ type queueJSON struct {
 
 func rowJSON(t player.QueueTrack) queueTrackJSON {
 	return queueTrackJSON{
-		ID: t.ID, Prompt: t.Prompt, Title: t.Title, Subtitle: t.Subtitle,
+		ID: t.ID, Title: t.Title, Subtitle: t.Subtitle,
 		DurationS: t.Seconds, Taken: t.Taken,
 		URL: "/queue/" + url.PathEscape(t.ID) + ".mp3", Hash: t.Hash,
 	}
 }
 
+// handleQueueList serves the store's listing under a tag that names
+// its contents - the steering epoch and the store's change count,
+// qualified by this process - so a client that sends the tag back is
+// told the listing is unchanged rather than sent it again, and gzipped
+// for a client that takes it compressed. With the engine asleep on a
+// stocked store the listing is the same for hours at a time, and a
+// phone checks it every ten seconds.
 func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	// Every check for new songs carries the seconds skipped with Next
 	// since the last one; skipping is faster consumption, and the
@@ -62,22 +77,66 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request, u accou
 	if v, err := strconv.ParseFloat(r.URL.Query().Get("skipped"), 64); err == nil && v > 0 && v < 24*60*60 {
 		s.ctl.ReportSkipped(v)
 	}
+	// The version before the listing: read the other way round, a
+	// change between the two would name the older listing with the
+	// newer tag, and the client holding it would be told "unchanged"
+	// over a store that had moved on.
+	version := s.ctl.QueueVersion()
 	epoch, tracks := s.ctl.QueueTracks()
+	etag := fmt.Sprintf(`"%d-%d-%s"`, epoch, version, s.boot)
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Vary", "Accept-Encoding")
+	if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	out := queueJSON{Epoch: epoch, Tracks: []queueTrackJSON{}}
 	for _, t := range tracks {
 		out.Tracks = append(out.Tracks, rowJSON(t))
 	}
-	writeJSON(w, http.StatusOK, out)
+	body, err := json.Marshal(out)
+	if err != nil {
+		http.Error(w, "listing unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if acceptsGzip(r) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		gz := gzip.NewWriter(w)
+		gz.Write(body)
+		gz.Close()
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(body)
 }
 
-// handleQueueSong serves one song's details, lyrics included.
+// acceptsGzip reports whether the client takes a gzipped body: an
+// Accept-Encoding naming gzip with a non-zero weight.
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		coding, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		if strings.TrimSpace(coding) != "gzip" {
+			continue
+		}
+		q := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(params), "q="))
+		return params == "" || (q != "0" && q != "0.0" && q != "0.00" && q != "0.000")
+	}
+	return false
+}
+
+// handleQueueSong serves one song's details: its description and
+// lyrics, with the listing row's fields, so a client that has taken
+// the song has everything it shows about it.
 func (s *Server) handleQueueSong(w http.ResponseWriter, r *http.Request, id string) {
 	row, lyrics, ok := s.ctl.Song(id)
 	if !ok {
 		http.Error(w, "no such song", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, songJSON{queueTrackJSON: rowJSON(row), Lyrics: lyrics})
+	writeJSON(w, http.StatusOK, songJSON{queueTrackJSON: rowJSON(row), Prompt: row.Prompt, Lyrics: lyrics})
 }
 
 // handleQueueTrack serves one listed track as MP3 with Range

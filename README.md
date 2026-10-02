@@ -512,10 +512,19 @@ failing quietly). That one choice governs your saved songs as well, so
 
 The radio's store lists every song it holds in the order they were
 made, the ones other listeners have already taken first. A phone takes
-the songs it lacks, in that order: a fresh one starts with what the
-others have already heard and works forward, so it only makes the
-radio generate once it has caught up. Taking a song is what tells the
-radio to make more.
+the songs it lacks and has not heard, in that order: a fresh one starts
+with what the others have already heard and works forward, so it only
+makes the radio generate once it has caught up. Taking a song is what
+tells the radio to make more. The phone remembers what it has heard
+across reloads - a phone's browser reloads a page by itself when it
+wakes a tab it had put to sleep - so a bank of songs heard days ago
+counts as nothing ahead, the next new song is taken at once, and a
+heard song is replayed only when nothing unheard is on the device and
+the radio has nothing new to give; the device-bank line says so when
+that is the case. The listing the phone checks every ten seconds
+carries names, lengths and hashes only, is compressed, and when
+nothing has changed the radio answers "unchanged" rather than sending
+it again, so the check costs next to nothing beside a song download.
 
 Play starts from the songs that are already there. The device makes
 sound out of its own bank first and asks the radio what is coming next
@@ -524,7 +533,9 @@ on a signal that has gone, and on the worse kind that is present and
 carries nothing. Songs the radio's store has since let go of stay
 banked and stay playable, and reopening the page keeps them; steering the radio
 somewhere new retires them, because that is the moment you have said
-you want something else.
+you want something else. "Offline" in the status line means the radio
+itself cannot be reached - one slow song-list check does not count,
+and the connection line and the status line agree.
 
 The Next button skips only on that device; other listeners and the
 machine keep their own place. Next also means *not this one*: the
