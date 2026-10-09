@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-10-09
+
 ### Fixed
 
 - Pausing from the car stopped the phone's player outright: the pause
@@ -594,7 +596,8 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.2...HEAD
+[2.1.2]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/zoffixznet/infinite-ai-radio/compare/v1.3.2...v2.0.0
