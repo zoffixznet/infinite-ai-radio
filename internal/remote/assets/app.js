@@ -400,7 +400,10 @@
       mediaPlaybackState("playing");
       applyMediaMetadata();
       pfStatus();
-    })["catch"](function () {
+    })["catch"](function (e) {
+      // The listener's own pause landing before the first sound is
+      // not the output failing again: the pause has the device.
+      if (pf.paused && e && e.name === "AbortError") return;
       resumePending = true;
       streamState("tap play to resume", "bad");
     });
@@ -501,6 +504,7 @@
     queueCtrl: null, // AbortController of the in-flight listing request
     fetchTimer: null,
     queueTimer: null,
+    cueTimer: null,  // the next song's start, held back while the trouble beeps sound
     offline: false,
     seen: {},        // id -> when it was heard here, so Next moves on; kept in storage
     wrapped: false,  // the last pick came back round to something heard
@@ -510,6 +514,10 @@
     // its element, where it was, and the same button carries on with
     // it. The bank goes on filling meanwhile.
     paused: false,
+    // startSeq counts the starts, so a start still opening its store
+    // when the device is stopped - or started again - can tell it has
+    // been overtaken and leave the store's answer alone.
+    startSeq: 0,
     // resumeAt is the place to start the next song picked at, when a
     // page comes back to a song it was in the middle of.
     resumeAt: null,
@@ -985,9 +993,17 @@
     pf.playWhy = "";
     setPlayButton(true);
     pfState("starting this device's songs…", "");
+    // The store takes a moment to answer, and a tap in that moment
+    // may stop the device - or stop it and start it again. The answer
+    // belongs to the start that asked: a stopped device must not
+    // start playing when it lands, and a restarted one must not play
+    // twice.
+    var seq = ++pf.startSeq;
+    var overtaken = function () { return !pf.active || pf.startSeq !== seq; };
     dbReady()
       .then(function () { return idbReq(idbStore("readonly").getAll()); })
       .then(function (recs) {
+        if (overtaken()) return;
         pfAdoptRecords(recs);
         pf.wantPlay = true;
         pfShowMinutes();
@@ -1012,6 +1028,7 @@
         pf.queueTimer = setInterval(function () { pfRefreshQueue(); }, 10000);
       })
       .catch(function () {
+        if (overtaken()) return;
         // No usable storage: nothing can play here.
         pf.active = false;
         pf.wantPlay = false;
@@ -1036,6 +1053,7 @@
     pfAbortQueue();
     if (pf.fetchTimer) { clearTimeout(pf.fetchTimer); pf.fetchTimer = null; }
     if (pf.queueTimer) { clearInterval(pf.queueTimer); pf.queueTimer = null; }
+    if (pf.cueTimer) { clearTimeout(pf.cueTimer); pf.cueTimer = null; }
     pf.els.forEach(function (el, i) {
       if (el) {
         el.onended = null;
@@ -1071,14 +1089,16 @@
     var el = pf.playingId ? pf.els[pf.cur] : null;
     // Nothing is playing yet - the device is waiting on its store or
     // the radio - so there is nothing to hold; the honest answer to
-    // the tap is the stop it has always been.
-    if (!el || !el.src) { stopListening("stopped"); return; }
+    // the tap is the stop it has always been. The gap between two
+    // songs, with the trouble beeps sounding, is not that: the next
+    // song is held at its top when the beeps end.
+    if (!pf.cueTimer && (!el || !el.src)) { stopListening("stopped"); return; }
     pf.paused = true;
     // The listener's own pause is the one the car's play command and
     // the page coming back resume; a system pause waiting underneath
     // it is not a reason to start sound while the listener is talking.
     resumePending = false;
-    quiet(el);
+    if (el) quiet(el);
     pfSavePosition(true);
     store.set("iar.paused", true);
     store.set("iar.wasplaying", false);
@@ -1112,7 +1132,13 @@
       mediaPlaybackState("playing");
       applyMediaMetadata();
       pfStatus();
-    })["catch"](function () {
+    })["catch"](function (e) {
+      // A pause pressed again before the resume made its first sound
+      // interrupts the play, which the browser reports as a failure.
+      // It is the listener's pause, already written down and said;
+      // painting a red "tap play to resume" over it would call their
+      // own tap an error.
+      if (pf.paused && e && e.name === "AbortError") return;
       pf.paused = true;
       store.set("iar.paused", true);
       store.set("iar.wasplaying", false);
@@ -1698,7 +1724,11 @@
     return pf.els[pf.cur];
   });
 
-  function pfPlay(id) {
+  // pfPlay starts the song on the current element. With hold set the
+  // song is picked, named and held at its top without a sound: that is
+  // a pause that landed in the gap between two songs, which the next
+  // song honours rather than undoes.
+  function pfPlay(id, hold) {
     var rec = pf.have[id];
     if (!rec) {
       pf.playingId = null;
@@ -1707,9 +1737,12 @@
       return;
     }
     pf.wantPlay = false;
+    // A song started by hand in the gap between two songs is the song;
+    // the one the beeps were going to start is not started after it.
+    if (pf.cueTimer) { clearTimeout(pf.cueTimer); pf.cueTimer = null; }
     // Starting a song is playing: a pause held over the last one ends
     // here, whichever control asked for this one.
-    pfUnpause();
+    if (!hold) pfUnpause();
     var el = pfEl(pf.cur);
     // Exactly one element ever produces audio: silence and disarm the
     // other one before starting, so a skipped track can neither keep
@@ -1745,28 +1778,29 @@
       updateSeek(el);
       pfSavePosition();
     };
+    if (hold) {
+      // Paused at its top: everything the song's start would have
+      // said is said now, and the resume makes the sound.
+      pfStarted(id, rec);
+      return;
+    }
     el.play().then(function () {
-      autoStarting = false;
-      disarmGestureStart();
-      pfPlayFails = 0;
-      pf.playWhy = "";
-      pfSavePosition(true);
-      pfStatus();
-      pf.played = (pf.played || 0) + 1;
-      lastNow = rec.title || rec.prompt || "buffered track";
-      msArtist = "Track " + pf.played + (rec.subtitle ? " · " + rec.subtitle : "");
-      paintNow();
-      applyMediaMetadata();
-      mediaPlaybackState("playing");
-      updateSaveButtons(null);
-      pfPreloadNext();
-      pfEnsureDownloads();
+      pfStarted(id, rec);
+      // A pause landing in the instant the sound was due has the
+      // element already; the lock screen was told so and keeps it.
+      if (!pf.paused) mediaPlaybackState("playing");
     })["catch"](function (e) {
       // A pause pressed in the instant between picking the song and
       // its first sound interrupts the start, which the browser
       // reports as a failure. It is the listener's pause: the song
-      // stays picked, and the resume plays it.
-      if (pf.paused && pf.playingId === id && e && e.name === "AbortError") return;
+      // stays picked, and the resume plays it - and it is named, the
+      // next one staged and the place written, exactly as a song that
+      // had sounded would be, or the whole of it would play under the
+      // last song's name.
+      if (pf.paused && pf.playingId === id && e && e.name === "AbortError") {
+        pfStarted(id, rec);
+        return;
+      }
       // No sound was made, so nothing was heard: the mark set when the
       // song was picked comes off. Left on, and kept in storage, the
       // tap that follows a refused start passed this song over for
@@ -1808,6 +1842,29 @@
       pfState("that song would not start (" + why + ") - trying the next one", "bad");
       pfEnsureDownloads();
     });
+  }
+  // pfStarted is the bookkeeping of a song's start: the song is named
+  // on the page and the lock screen, counted, its place written, the
+  // next one staged and the downloads kept going. It runs when the
+  // song's first sound is made, and just the same when a pause held
+  // the song at the instant that sound was due - a song is the one
+  // playing from the moment it is picked, sound or no sound, and what
+  // the page and the car show has to say so.
+  function pfStarted(id, rec) {
+    autoStarting = false;
+    disarmGestureStart();
+    pfPlayFails = 0;
+    pf.playWhy = "";
+    pfSavePosition(true);
+    pfStatus();
+    pf.played = (pf.played || 0) + 1;
+    lastNow = rec.title || rec.prompt || "buffered track";
+    msArtist = "Track " + pf.played + (rec.subtitle ? " · " + rec.subtitle : "");
+    paintNow();
+    applyMediaMetadata();
+    updateSaveButtons(null);
+    pfPreloadNext();
+    pfEnsureDownloads();
   }
   // maxPlayFails bounds how many songs in a row may refuse before the
   // device stops working through its bank looking for one that starts.
@@ -1852,7 +1909,18 @@
       var ms = playTroubleCue();
       if (ms) {
         pf.cur = 1 - pf.cur;
-        setTimeout(function () { pfPlay(nextId); }, ms);
+        // A pause pressed while the beeps sound is a pause: the next
+        // song is picked and held at its top for the resume, rather
+        // than started over the pause. A pause that was already on
+        // when this advance was asked for - Next while paused - means
+        // "something else", and the next song plays as it does without
+        // the beeps.
+        var pausedBefore = pf.paused;
+        if (pf.cueTimer) clearTimeout(pf.cueTimer);
+        pf.cueTimer = setTimeout(function () {
+          pf.cueTimer = null;
+          pfPlay(nextId, pf.paused && !pausedBefore);
+        }, ms);
         return;
       }
     }

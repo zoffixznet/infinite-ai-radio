@@ -14,6 +14,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hand. The car's pause is now a pause - the song stays where it is,
   the car keeps showing it as paused, and the car's play button
   carries it on. The car's stop button is still the full stop.
+- A second tap on the phone's big button while it was still opening
+  its songs stopped the player, and then the song started anyway once
+  the songs were in hand - music on a phone whose button said Play and
+  whose status said stopped. The stop now wins, and a phone stopped
+  and started again in that moment plays once.
 
 ### Changed
 
@@ -21,7 +26,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Stop. Pausing keeps the song on the phone at the place you paused
   it, with the bank still filling behind it, and Play carries the same
   song on from that place - from the page, the lock screen or the car.
-  Pressing stop and then play used to start a different song.
+  Pressing stop and then play used to start a different song. A pause
+  pressed in the instant before a song's first sound, or while the
+  trouble beeps sound between two songs, holds that song at its top,
+  named and ready, and Play starts it.
 - The phone remembers which song it is on and how far into it, so a
   page that comes back - reloaded by a tap, or by a browser that put
   the tab to sleep and woke it - carries on in the same song from

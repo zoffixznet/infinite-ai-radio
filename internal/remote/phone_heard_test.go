@@ -44,7 +44,7 @@ func phoneBank(t *testing.T, script string, out any) {
 		"pfNothingNew", "pfNextDownload", "pfNextId", "heardMark", "loadHeard", "heardMerged", "saveHeard",
 		"clearHeard", "pfMarkHeard", "pfUnhear", "tossedStored", "loadTossed", "saveTossed", "clearTossed", "pfToss",
 		"pfAdoptRecords", "pfAbortQueue", "pfRefreshQueue", "pfTakeListing", "pfEpochChanged",
-		"pfEnsureDownloads", "pfPlay", "pfStatus", "poll"} {
+		"pfEnsureDownloads", "pfPlay", "pfStarted", "pfStatus", "poll"} {
 		fns = append(fns, jsFunction(t, src, name))
 	}
 	// The caps on the heard and toss lists are the app's own numbers,

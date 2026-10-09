@@ -547,7 +547,9 @@ the lock screen or the car. The phone writes down which song it is on
 and how far into it every few seconds, so a page that comes back -
 reloaded by a tap, or by a browser that put the tab to sleep and woke
 it - carries on in the same song rather than starting the next one;
-reloaded while paused, it stays paused until you press Play. Next
+reloaded while paused, it stays paused until you press Play. A pause
+pressed while the trouble beeps sound between two songs holds the next
+song at its top, named and ready for Play. Next
 while paused plays the next song. A song that ends or is skipped takes
 its place with it, and one that has since left the phone gives way to
 the next, with a word about it.

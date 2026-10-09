@@ -2645,8 +2645,21 @@ func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 	// the report: the listing landing in a few seconds, and a whole
 	// song downloaded before the first note, are both waits the device
 	// has no business making anyone sit through.
-	w.click("#play") // pause
-	waitFor(t, 20*time.Second, "the device to fall silent", func() bool { return sounding() == 0 })
+	//
+	// The main button is a pause, and play after a pause carries the
+	// kept element on without asking the radio anything - which is not
+	// the start this half is about. The car's stop is the full stop:
+	// the elements go, and the next press is a start that has to open
+	// the store and pick a song with the listing six seconds away. The
+	// song's place goes too, so the start is from the top of a song and
+	// the first note is measured as sound made, not a place seeked to.
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "stop"})); return true;`, nil)
+	waitFor(t, 20*time.Second, "the device to stop", func() bool {
+		var gone bool
+		w.exec(`return !document.getElementById('bufaudio0') && !document.getElementById('bufaudio1');`, &gone)
+		return gone
+	})
+	w.exec(`localStorage.removeItem('iar.position'); return true;`, nil)
 	w.exec(`window.__slowQueue = 6000;
 		window.fetch = function (url, opts) {
 			var real = window.__realFetch;
