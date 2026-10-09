@@ -2274,6 +2274,159 @@ func TestRealBrowserAutoResume(t *testing.T) {
 	}
 }
 
+// TestRealBrowserPauseKeepsTheSong: the main button is a pause. The
+// owner paused a good song to talk to someone and play started a
+// different one, because the button was a stop that tore the player
+// down; and the car's pause button reached the page as that same
+// stop, which ended the session the car was showing, so the car could
+// not resume. Now a pause - from the page or from the car - keeps the
+// song on its element where it was, the lock screen is told it is
+// paused rather than gone, and play carries the same song on from
+// that place; a reload while paused does not start by itself and
+// comes back to the same song at the same place on one press; and
+// the car's stop is still the full stop.
+func TestRealBrowserPauseKeepsTheSong(t *testing.T) {
+	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
+	sinkName, _ := nullSink(t)
+	sb, fe := startMusicSandbox(t)
+	// Long enough that nothing ends of its own accord while the pauses
+	// below are being measured.
+	fe.setTrackSeconds(60)
+	driver := startGeckodriver(t, sinkName)
+	w := newWebDriver(t, driver)
+	loginAdmin(t, w, sb.base)
+
+	// player reads the device's player: the element holding the song
+	// (the one furthest into its file - the staged next song sits at
+	// zero), the button, the lock screen and the status line.
+	type playerState struct {
+		ID      string  `json:"id"`
+		Src     string  `json:"src"`
+		Time    float64 `json:"t"`
+		Paused  bool    `json:"paused"`
+		Label   string  `json:"label"`
+		Session string  `json:"session"`
+		Meta    string  `json:"meta"`
+		Pill    string  `json:"pill"`
+		Now     string  `json:"now"`
+	}
+	player := func() playerState {
+		var s playerState
+		w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];
+			var el=null;
+			for (var i=0;i<2;i++) { if (a[i] && a[i].src && (!el || a[i].currentTime > el.currentTime)) el=a[i]; }
+			var ms=navigator.mediaSession;
+			return {id: el ? el.id : '', src: el ? el.src : '', t: el ? el.currentTime : -1, paused: el ? el.paused : true,
+				label: document.getElementById('playlabel').textContent,
+				session: ms ? ms.playbackState : '',
+				meta: (ms && ms.metadata) ? ms.metadata.title : '',
+				pill: document.getElementById('streamstate').textContent,
+				now: document.getElementById('now').textContent};`, &s)
+		return s
+	}
+	// paused waits for the pause to land and checks that it kept the
+	// song: same element, same file, no rewind, the lock screen told
+	// "paused" with the song still named, the button now a Play.
+	paused := func(how string, before playerState) playerState {
+		var s playerState
+		waitFor(t, 10*time.Second, how+" to pause the song", func() bool {
+			s = player()
+			return s.Paused && s.Session == "paused" && s.Label == "Play"
+		})
+		if s.ID != before.ID || s.Src != before.Src || s.Time < before.Time-0.1 {
+			t.Fatalf("%s changed the song: before %s %q at %.1fs, after %s %q at %.1fs", how, before.ID, before.Src, before.Time, s.ID, s.Src, s.Time)
+		}
+		if !strings.HasPrefix(s.Pill, "paused") {
+			t.Fatalf("%s: the status line says %q, want it to start with \"paused\"", how, s.Pill)
+		}
+		if s.Meta == "" {
+			t.Fatalf("%s: the lock screen lost the song's name", how)
+		}
+		// A pause holds: nothing resumes it on its own, and nothing
+		// tears the element down.
+		time.Sleep(3 * time.Second)
+		held := player()
+		if !held.Paused || held.ID != s.ID || held.Src != s.Src || held.Time != s.Time {
+			t.Fatalf("%s did not hold: three seconds on the song is %s %q at %.1fs paused=%v (was %s at %.1fs)", how, held.ID, held.Src, held.Time, held.Paused, s.ID, s.Time)
+		}
+		return held
+	}
+	// resumed waits for play to carry the same song on from where it
+	// was paused: same element, same file, the clock going on from at
+	// least that place, the lock screen told "playing", a Pause button.
+	resumed := func(how string, at playerState) {
+		var s playerState
+		waitFor(t, 15*time.Second, how+" to carry the song on", func() bool {
+			s = player()
+			return !s.Paused && s.Session == "playing" && s.Label == "Pause" && s.Time > at.Time
+		})
+		if s.ID != at.ID || s.Src != at.Src {
+			t.Fatalf("%s started a different song: paused %s %q, playing %s %q", how, at.ID, at.Src, s.ID, s.Src)
+		}
+		if s.Time < at.Time || s.Time > at.Time+10 {
+			t.Fatalf("%s went on from %.1fs, not from the %.1fs it was paused at", how, s.Time, at.Time)
+		}
+	}
+
+	// --- the page's own button ---
+	w.click("#play")
+	var playing playerState
+	waitFor(t, 60*time.Second, "a song a few seconds in", func() bool {
+		playing = player()
+		return !playing.Paused && playing.Time > 2
+	})
+	if playing.Label != "Pause" {
+		t.Fatalf("the main button reads %q while a song plays, want Pause", playing.Label)
+	}
+	w.click("#play")
+	at := paused("the main button", playing)
+	w.click("#play")
+	resumed("the main button", at)
+
+	// --- the car's buttons ---
+	playing = player()
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "pause"})); return true;`, nil)
+	at = paused("the car's pause", playing)
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "play"})); return true;`, nil)
+	resumed("the car's play", at)
+
+	// --- a reload while paused ---
+	playing = player()
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "pause"})); return true;`, nil)
+	at = paused("the pause before the reload", playing)
+	w.navigate(sb.base + "/")
+	waitFor(t, 20*time.Second, "the reloaded page", func() bool {
+		var ready bool
+		w.exec(`return !!document.getElementById('play');`, &ready)
+		return ready
+	})
+	time.Sleep(3 * time.Second)
+	cold := player()
+	if !cold.Paused || cold.Label != "Play" {
+		t.Fatalf("a page reloaded while paused started by itself: %+v", cold)
+	}
+	if !strings.Contains(cold.Pill, "paused") {
+		t.Fatalf("a page reloaded while paused says %q, want it to say it is paused", cold.Pill)
+	}
+	w.click("#play")
+	var back playerState
+	waitFor(t, 30*time.Second, "the same song from where it was", func() bool {
+		back = player()
+		return !back.Paused && back.Now == at.Now && back.Time >= at.Time-0.5
+	})
+	if back.Time > at.Time+15 {
+		t.Fatalf("after the reload the song came back at %.1fs, not near the %.1fs it was paused at", back.Time, at.Time)
+	}
+	t.Logf("reloaded while paused at %.1fs of %q; one press brought it back at %.1fs", at.Time, at.Now, back.Time)
+
+	// --- the car's stop is the full stop ---
+	w.exec(`document.dispatchEvent(new CustomEvent("iar:msaction", {detail: "stop"})); return true;`, nil)
+	waitFor(t, 10*time.Second, "the car's stop to end playback", func() bool {
+		s := player()
+		return s.ID == "" && s.Session == "none" && s.Label == "Play"
+	})
+}
+
 // seedChunk writes one more saved song into a sandbox's library, so a
 // test can be about which of two songs a control acts on.
 func seedChunk(t *testing.T, sb *sandbox, tag, file, title string, seconds int) {
@@ -2421,7 +2574,7 @@ func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 		return len(banked()) >= 2
 	})
 
-	// The reported trigger: the device is stopped, and the tab is
+	// The reported trigger: the device is paused, and the tab is
 	// reloaded while the listener is away - so the page comes back
 	// knowing nothing but what is in the store.
 	w.click("#play")
@@ -2492,8 +2645,8 @@ func TestRealBrowserBankPlaysBeforeTheRadioAnswers(t *testing.T) {
 	// the report: the listing landing in a few seconds, and a whole
 	// song downloaded before the first note, are both waits the device
 	// has no business making anyone sit through.
-	w.click("#play") // stop
-	waitFor(t, 20*time.Second, "the device to stop", func() bool { return sounding() == 0 })
+	w.click("#play") // pause
+	waitFor(t, 20*time.Second, "the device to fall silent", func() bool { return sounding() == 0 })
 	w.exec(`window.__slowQueue = 6000;
 		window.fetch = function (url, opts) {
 			var real = window.__realFetch;

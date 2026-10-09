@@ -45,8 +45,6 @@
 
   --danger: #A6291F;
   --danger: light-dark(#A6291F, #F08A80);
-  --danger-press: #8A1F17;
-  --danger-press: light-dark(#8A1F17, #D0665C);
   --danger-ink: #FFFFFF;
   --danger-ink: light-dark(#FFFFFF, #2A0D0A);
   --danger-fill: #FBEAE7;
@@ -526,9 +524,7 @@ details.grp > summary .chip { margin-left: auto; min-height: 34px; padding: 0 va
   background: var(--accent); color: var(--accent-ink);
 }
 .tbtn.main .glyph svg { width: 30px; height: 30px; }
-.tbtn.main.playing { background: var(--danger); color: var(--danger-ink); }
 .tbtn.main.is-pressed, .tbtn.main:active { background: var(--accent-press); }
-.tbtn.main.playing.is-pressed, .tbtn.main.playing:active { background: var(--danger-press); }
 /* Saved is a state, not a disabled control: the heart fills and the
    label changes, and the button stays the same size so nothing moves. */
 /* A toggled loop reads as "on" from across the room: accent icon in an

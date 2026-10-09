@@ -540,6 +540,18 @@ you want something else. "Offline" in the status line means the radio
 itself cannot be reached - one slow song-list check does not count,
 and the connection line and the status line agree.
 
+The big button is Play and Pause. A pause keeps the song: it stays on
+the phone at the place you paused it, the bank keeps filling behind
+it, and Play carries the same song on from that place - from the page,
+the lock screen or the car. The phone writes down which song it is on
+and how far into it every few seconds, so a page that comes back -
+reloaded by a tap, or by a browser that put the tab to sleep and woke
+it - carries on in the same song rather than starting the next one;
+reloaded while paused, it stays paused until you press Play. Next
+while paused plays the next song. A song that ends or is skipped takes
+its place with it, and one that has since left the phone gives way to
+the next, with a word about it.
+
 The Next button skips only on that device; other listeners and the
 machine keep their own place. Next also means *not this one*: the
 skipped song is deleted from the device and never downloaded or played
@@ -617,7 +629,11 @@ still shows the version it was served.
 
 The page publishes media-session metadata, so lock screens, Bluetooth
 displays and car interfaces show the song's title and genre line with
-working play, pause and next buttons. When the radio itself cannot be
+working play, pause and next buttons. Pause there is the same pause as
+on the page: the song stays where it is, the car keeps showing it as
+paused, and the car's play button carries it on - so a car can start
+the music again without the phone in hand. The car's stop button is
+the full stop. When the radio itself cannot be
 reached, the song's name is prefixed there with `[X]`: a phone playing
 out of its own bank looks exactly like one the radio is still feeding,
 right up to the moment the bank runs out, and a car screen has room to
@@ -638,9 +654,12 @@ Two car conveniences live under Settings, remembered per device:
   player, previous keeps its normal meaning.
 - **Resume when the car reconnects.** When the car turns off, playback
   pauses and resumes by itself when the car asks to play again - never
-  on a timer, so a phone in a pocket stays silent. Hands-free resume
-  may need Android Auto's "Automatically resume media" setting, and
-  after a long stop the phone's battery management can require one tap.
+  on a timer, so a phone in a pocket stays silent. A pause you pressed
+  yourself is not resumed this way: the car reconnecting leaves it
+  paused until you, or the car's play button, carry it on. Hands-free
+  resume may need Android Auto's "Automatically resume media" setting,
+  and after a long stop the phone's battery management can require one
+  tap.
 
 ### Saved songs
 

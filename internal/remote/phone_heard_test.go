@@ -108,6 +108,9 @@ function pfTrimStore() {}
 function disarmGestureStart() {}
 function armGestureStart() {}
 function stopBuffered(msg) { pf.active = false; statuses.push("stopped: " + msg); }
+function pfUnpause() {}
+function pfSavePosition() {}
+function pfClearPosition() {}
 function loggedOut() {}
 function flushSaveQueue() {}
 function loadSessions() {}

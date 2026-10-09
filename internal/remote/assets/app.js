@@ -17,7 +17,6 @@
     "3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z";
   var icon = {
     play: SVG + 'fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
-    stop: SVG + 'fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>',
     pause: SVG + 'fill="currentColor"><rect x="7" y="5" width="3.6" height="14" rx="1.4"/>' +
       '<rect x="13.4" y="5" width="3.6" height="14" rx="1.4"/></svg>',
     next: SVG + 'fill="currentColor"><path d="M6 18l8.5-6L6 6v12z"/><rect x="16" y="6" width="2.4" height="12" rx="1.2"/></svg>',
@@ -344,13 +343,14 @@
     dot.className = "signal" + (on ? " " + on : "");
   }
   // setPlayButton renders intent, not readiness: while the device is
-  // still opening its store the button already says Stop, because that
-  // is what tapping it does. The status line carries the honest state.
+  // still opening its store the button already says Pause, because
+  // that is what tapping it does. The status line carries the honest
+  // state. It is a pause, not a stop: the song stays on the device
+  // where it was, and the same button carries on with it.
   function setPlayButton(on) {
-    playBtn.classList.toggle("playing", !!on);
-    $("playglyph").innerHTML = on ? icon.stop : icon.play;
-    $("playlabel").textContent = on ? "Stop" : "Play";
-    playBtn.setAttribute("aria-label", on ? "Stop listening" : "Play");
+    setHTML($("playglyph"), on ? icon.pause : icon.play);
+    setText($("playlabel"), on ? "Pause" : "Play");
+    setAttr(playBtn, "aria-label", on ? "Pause" : "Play");
   }
   // The saved player's main button carries an aria-label, which wins
   // over the caption inside it - so the name a screen reader announces
@@ -465,13 +465,17 @@
   // pending system pause (toggle permitting), otherwise treat it as a
   // connectivity nudge.
   function onVisible() {
-    if (document.hidden) return;
+    // Going out of sight is when a tab is put to sleep and reloaded
+    // later: the song's place is written down now rather than at the
+    // next few-second mark.
+    if (document.hidden) { pfSavePosition(true); return; }
     flushSaveQueue();
     if (resumePending && carResume) { tryResume(); return; }
     retryNow();
   }
   document.addEventListener("visibilitychange", onVisible);
   document.addEventListener("resume", onVisible);
+  window.addEventListener("pagehide", function () { pfSavePosition(true); });
   if (navigator.connection && navigator.connection.addEventListener) {
     navigator.connection.addEventListener("change", retryNow);
   }
@@ -502,6 +506,14 @@
     wrapped: false,  // the last pick came back round to something heard
     queueTag: "",    // the ETag of the listing held, for the radio to answer "unchanged" to
     wantPlay: false, // start playback as soon as anything is stored
+    // paused is the listener's own pause: the playing song is kept on
+    // its element, where it was, and the same button carries on with
+    // it. The bank goes on filling meanwhile.
+    paused: false,
+    // resumeAt is the place to start the next song picked at, when a
+    // page comes back to a song it was in the middle of.
+    resumeAt: null,
+    posSavedAt: 0,   // when the song's position was last written down
     loop: false,     // repeat the playing track on this device
     storeFull: false,// the device refused to store a downloaded track
     // warm is the background bank: downloading upcoming songs without
@@ -961,6 +973,8 @@
     if (pf.active) return;
     pf.active = true;
     pf.warm = false;
+    pf.paused = false;
+    pf.resumeAt = null;
     // The listener has asked for sound from this moment, not from
     // whenever the store and the radio have finished answering.
     pf.wantPlay = true;
@@ -984,7 +998,14 @@
         // starts on the tap, whether the radio answers in a second, in
         // a minute, or not at all. Asking first is how a bank built
         // for a dead zone stayed silent in one.
-        var ready = pfNextId(null);
+        // The song this device was in the middle of comes first, from
+        // where it was: a pause, a reload, a car reopening the page
+        // all come back to it. Only with it gone does the pick move
+        // on, and then it says so.
+        var at = pfResumeTarget();
+        var ready = at && at.id ? at.id : pfNextId(null);
+        if (at && at.id) pf.resumeAt = at;
+        else if (at && at.gone && ready) setStatus(stateEl, "the song you were on is no longer on this device - playing the next one", "warn");
         if (ready) pfPlay(ready);
         pfRefreshQueue();
         if (pf.queueTimer) clearInterval(pf.queueTimer);
@@ -1000,10 +1021,17 @@
       });
   }
 
+  // stopBuffered is the full stop: everything the device was doing
+  // ends, and the song's place is all that is kept, so that whatever
+  // starts it again - a tap after a refused autoplay, the car, a
+  // reload - carries on with the same song.
   function stopBuffered(msg, cls) {
     pf.active = false;
+    pf.paused = false;
+    pf.resumeAt = null;
     resumePending = false;
     store.set("iar.wasplaying", false);
+    store.set("iar.paused", false);
     if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
     pfAbortQueue();
     if (pf.fetchTimer) { clearTimeout(pf.fetchTimer); pf.fetchTimer = null; }
@@ -1027,6 +1055,137 @@
     // Nobody is listening to the radio's bank now, which is exactly
     // when the background one may want to take over.
     syncWarm();
+  }
+
+  // ---- pause and resume ---------------------------------------------
+  // A pause is not a stop. The song stays on its element at the place
+  // it reached, the device keeps its bank filling to its depth, and
+  // the lock screen and the car keep a paused player they can start
+  // again - stopping tore all of that down, so a pause from the car
+  // ended the session the car was holding, and play from the page
+  // started a different song. The pause is written to storage, so a
+  // page that is reloaded while paused does not start by itself and
+  // comes back to the same song.
+  function pauseBuffered() {
+    if (!pf.active || pf.paused) return;
+    var el = pf.playingId ? pf.els[pf.cur] : null;
+    // Nothing is playing yet - the device is waiting on its store or
+    // the radio - so there is nothing to hold; the honest answer to
+    // the tap is the stop it has always been.
+    if (!el || !el.src) { stopListening("stopped"); return; }
+    pf.paused = true;
+    // The listener's own pause is the one the car's play command and
+    // the page coming back resume; a system pause waiting underneath
+    // it is not a reason to start sound while the listener is talking.
+    resumePending = false;
+    quiet(el);
+    pfSavePosition(true);
+    store.set("iar.paused", true);
+    store.set("iar.wasplaying", false);
+    setPlayButton(false);
+    mediaPlaybackState("paused");
+    applyMediaMetadata();
+    pfStatus();
+  }
+  // resumeBuffered carries on: the paused element plays from where it
+  // was, and a device that is not running - the page was reloaded
+  // while paused, or stopped - starts, which comes back to the song
+  // it was on through the place kept for it.
+  function resumeBuffered() {
+    if (!pf.active) { startListening(); return; }
+    if (!pf.paused) return;
+    var el = pf.playingId ? pf.els[pf.cur] : null;
+    var rec = pf.playingId ? pf.have[pf.playingId] : null;
+    pfUnpause();
+    if (!el || !rec || el.src !== rec.url) {
+      // The song went from under the pause; the next one is wanted.
+      pf.playingId = null;
+      pf.wantPlay = true;
+      pfEnsureDownloads();
+      return;
+    }
+    // The clock the status line checks starts again now, or the
+    // minutes spent paused read as a song that has stalled.
+    pf.lastAdvance = Date.now();
+    pf.nudged = false;
+    el.play().then(function () {
+      mediaPlaybackState("playing");
+      applyMediaMetadata();
+      pfStatus();
+    })["catch"](function () {
+      pf.paused = true;
+      store.set("iar.paused", true);
+      store.set("iar.wasplaying", false);
+      setPlayButton(false);
+      streamState("tap play to resume", "bad");
+    });
+  }
+  // pfUnpause takes the pause off, for a resume and for the actions
+  // that mean "play something else" - a skip, a flush - which are not
+  // ones to leave the device paused on a song it no longer holds.
+  function pfUnpause() {
+    if (!pf.paused) return;
+    pf.paused = false;
+    store.set("iar.paused", false);
+    store.set("iar.wasplaying", true);
+    setPlayButton(true);
+  }
+
+  // ---- the place in the song ---------------------------------------
+  // The playing song and how far into it the device is are written
+  // down every few seconds and at every pause, so a page that comes
+  // back - after a reload, a tab the browser put to sleep and woke,
+  // the car reopening it - carries on in the same song from where it
+  // was rather than starting the next one. A song that ends, is
+  // skipped or is flushed takes its place with it.
+  var positionEveryMs = 4000;
+  function pfSavePosition(force) {
+    var el = pf.playingId ? pf.els[pf.cur] : null;
+    if (!el) return;
+    var now = Date.now();
+    if (!force && now - pf.posSavedAt < positionEveryMs) return;
+    pf.posSavedAt = now;
+    store.set("iar.position", { id: pf.playingId, t: el.currentTime || 0 });
+  }
+  function pfClearPosition() {
+    pf.posSavedAt = 0;
+    store.set("iar.position", null);
+  }
+  // pfResumeTarget names the song to start on and where in it: the
+  // one the place remembers, while it is still on the device and may
+  // be played. A remembered song that is gone - trimmed, steered
+  // away, skipped from another tab - is reported as gone, once.
+  function pfResumeTarget() {
+    var pos = store.get("iar.position", null);
+    if (!pos || !pos.id) return null;
+    var rec = pf.have[pos.id];
+    if (!rec || !pfPlayable(pos.id, rec.title)) {
+      pfClearPosition();
+      return { gone: true };
+    }
+    return { id: pos.id, t: pos.t > 0 ? pos.t : 0 };
+  }
+  // pfSeekTo moves an element to a place in its song, clamped to the
+  // song's length once that is known. Before the metadata the length
+  // is unknown: the place is set now, which the browser holds as the
+  // position to start from, and set again, clamped, when the length
+  // lands - a place past the end would otherwise start a song at its
+  // last instant and end it.
+  function pfSeekTo(el, t) {
+    var apply = function () {
+      var d = el.duration;
+      var at = t;
+      if (isFinite(d) && d > 0) at = Math.min(t, Math.max(0, d - 1));
+      try { el.currentTime = at; } catch (e) {}
+    };
+    if (isFinite(el.duration) && el.duration > 0) { apply(); return; }
+    try { el.currentTime = t; } catch (e) {}
+    if (typeof el.addEventListener !== "function") return;
+    var once = function () {
+      el.removeEventListener("loadedmetadata", once);
+      apply();
+    };
+    el.addEventListener("loadedmetadata", once);
   }
 
   // syncWarm starts and stops the background bank. It follows the
@@ -1378,10 +1537,13 @@
       pfTrimStore();
       pfShowMinutes();
       // The first song of a new setting is worth cutting the current
-      // one short for.
+      // one short for - unless the listener has paused, which is not
+      // a moment to start sound. The old setting's other songs are
+      // already gone, so this one is simply what plays when the
+      // paused song is resumed and ends.
       if (pf.active && pf.switchOnDownload) {
         pf.switchOnDownload = false;
-        pfPlay(row.id);
+        if (pf.paused) { pfPreloadNext(); pfStatus(); } else pfPlay(row.id);
       } else if (pf.wantPlay && !pf.playingId) {
         pfPlay(row.id);
       } else {
@@ -1545,6 +1707,9 @@
       return;
     }
     pf.wantPlay = false;
+    // Starting a song is playing: a pause held over the last one ends
+    // here, whichever control asked for this one.
+    pfUnpause();
     var el = pfEl(pf.cur);
     // Exactly one element ever produces audio: silence and disarm the
     // other one before starting, so a skipped track can neither keep
@@ -1563,6 +1728,9 @@
       // Replaying a staged or finished element needs a rewind.
       try { el.currentTime = 0; } catch (e) {}
     }
+    // A song the device was in the middle of carries on from there.
+    if (pf.resumeAt && pf.resumeAt.id === id && pf.resumeAt.t > 0) pfSeekTo(el, pf.resumeAt.t);
+    pf.resumeAt = null;
     el.loop = pf.loop;
     // The clock the status line is checked against starts now: it is
     // reasonable for a song to take a moment to get going, and
@@ -1575,12 +1743,14 @@
       pf.lastAdvance = Date.now();
       pf.nudged = false;
       updateSeek(el);
+      pfSavePosition();
     };
     el.play().then(function () {
       autoStarting = false;
       disarmGestureStart();
       pfPlayFails = 0;
       pf.playWhy = "";
+      pfSavePosition(true);
       pfStatus();
       pf.played = (pf.played || 0) + 1;
       lastNow = rec.title || rec.prompt || "buffered track";
@@ -1592,6 +1762,11 @@
       pfPreloadNext();
       pfEnsureDownloads();
     })["catch"](function (e) {
+      // A pause pressed in the instant between picking the song and
+      // its first sound interrupts the start, which the browser
+      // reports as a failure. It is the listener's pause: the song
+      // stays picked, and the resume plays it.
+      if (pf.paused && pf.playingId === id && e && e.name === "AbortError") return;
       // No sound was made, so nothing was heard: the mark set when the
       // song was picked comes off. Left on, and kept in storage, the
       // tap that follows a refused start passed this song over for
@@ -1661,6 +1836,8 @@
       out.onended = null;
       quiet(out);
     }
+    // The song is over; there is no place in it to come back to.
+    pfClearPosition();
     var nextId = pfNextId(pf.playingId);
     if (!nextId) {
       pfState(pf.offline ? "offline - waiting for stored tracks" : "buffering next track…", "bad");
@@ -1695,6 +1872,10 @@
   function pfJumpLive() {
     if (!pf.active) return;
     buzz();
+    // Emptying the device is asking for fresh songs, which is asking
+    // to hear them: a pause does not outlive the song it held.
+    pfUnpause();
+    pfClearPosition();
     // Stop the audio first. Both elements: the staged one holds the
     // next song and would otherwise play on happily through a flush.
     pf.els.forEach(function (el) {
@@ -1742,6 +1923,10 @@
     if (now - lastManualSkip < 700 || !pf.active) return;
     lastManualSkip = now;
     if (pf.loop) pfSetLoop(false, true);
+    // Next means "not this one", paused or not: the song goes, its
+    // place with it, and what follows plays.
+    pfUnpause();
+    pfClearPosition();
     var tossId = pf.playingId;
     var rec = tossId ? pf.have[tossId] : null;
     // Picked before the song is thrown away, so what follows is the
@@ -1870,6 +2055,15 @@
     // A system pause is waiting on a tap; the line that says so must
     // not be painted over by the poll's "playing".
     if (resumePending) return;
+    // The listener's pause is its own state, said as such - and said
+    // before the stall check below, which would otherwise read the
+    // minutes spent paused as a song that has stopped and prod it
+    // into playing.
+    if (pf.paused) {
+      pfState("paused · " + pfReady() + " ahead", "");
+      pfShowMinutes();
+      return;
+    }
     // Nothing playing is its own state, and saying "playing" through it
     // is how a silent radio looks like a working one - after a flush
     // with the machine unreachable, or after a skip with nothing left
@@ -1963,18 +2157,24 @@
 
   function startListening() {
     store.set("iar.wasplaying", true);
+    store.set("iar.paused", false);
     startBuffered();
   }
   function stopListening(msg) {
     if (pf.active) stopBuffered(msg === undefined ? "stopped" : msg, "");
   }
 
+  // The main button is Play and Pause. While a song plays it pauses
+  // it; while the song is paused, or nothing is running, it plays -
+  // the paused song from where it was, and otherwise whatever the
+  // device is on. The full stop is the car's stop button and the
+  // paths that genuinely end playback.
   playBtn.addEventListener("click", function () {
     autoStarting = false;
     disarmGestureStart();
     if (resumePending) { tryResume(); return; }
-    if (pf.active) {
-      stopListening("stopped");
+    if (pf.active && !pf.paused) {
+      pauseBuffered();
       return;
     }
     // Inside the gesture, before the wait: the player has to open its
@@ -1982,8 +2182,8 @@
     // anything, and on a slow connection that wait outlives the tap
     // that authorised the sound. The tap-anywhere path has always
     // primed the elements here; the play button never did.
-    primeAudio();
-    startListening();
+    if (!pf.active) primeAudio();
+    resumeBuffered();
   });
 
   // The loop button repeats what this listener is hearing, on this
@@ -2096,10 +2296,12 @@
   function msAction(action) {
     switch (action) {
       case "play":
-        if (mode === "live") { if (!tryResume()) startListening(); } else savedPlay();
+        if (mode === "live") { if (!tryResume()) resumeBuffered(); } else savedPlay();
         break;
       case "pause":
-        if (mode === "live") stopListening("stopped"); else savedAudio.pause();
+        // The car's pause is a pause: the song and the session it is
+        // shown in are kept, and the car's play carries on with it.
+        if (mode === "live") pauseBuffered(); else savedAudio.pause();
         break;
       case "stop":
         if (mode === "live") stopListening("stopped"); else savedAudio.pause();
@@ -3713,5 +3915,9 @@
     } else {
       startListening();
     }
+  } else if (mode === "live" && idbSupported && store.get("iar.paused", false)) {
+    // Paused when the page went away: it stays paused, on the same
+    // song, and the one button carries on with it.
+    streamState("paused - tap play to carry on where you were", "");
   }
 })();

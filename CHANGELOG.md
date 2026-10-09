@@ -6,6 +6,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Pausing from the car stopped the phone's player outright: the pause
+  button on the car's screen ended the session the car was showing,
+  so the car could neither resume nor reconnect without the phone in
+  hand. The car's pause is now a pause - the song stays where it is,
+  the car keeps showing it as paused, and the car's play button
+  carries it on. The car's stop button is still the full stop.
+
+### Changed
+
+- The big button on the phone is Play and Pause rather than Play and
+  Stop. Pausing keeps the song on the phone at the place you paused
+  it, with the bank still filling behind it, and Play carries the same
+  song on from that place - from the page, the lock screen or the car.
+  Pressing stop and then play used to start a different song.
+- The phone remembers which song it is on and how far into it, so a
+  page that comes back - reloaded by a tap, or by a browser that put
+  the tab to sleep and woke it - carries on in the same song from
+  where it was rather than starting the next one. Reloaded while
+  paused, it stays paused and says so until you press Play. A song
+  that has since left the phone gives way to the next, with a word
+  about it.
+
 ## [2.1.1] - 2026-10-02
 
 ### Fixed
