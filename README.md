@@ -1023,7 +1023,11 @@ radio that comes back to a stocked store sleeps until the store falls
 under the mark and then makes a whole 80, as it would have without
 the restart. `restart` empties the store and puts the ladder back on
 its first rung without touching the session, and `iar buffer clear`
-does the same to a stopped radio.
+does the same to a stopped radio. The clearing on a new build has an
+escape hatch for builds that change nothing about the songs - a fix to
+the phone, say: with the radio stopped, `make keep-library` (or
+`iar buffer keep`) stamps the store as made by the build you are about
+to start, and that start adopts it, songs and all.
 
 Playing a song does not delete it from the store. The player takes
 it, which marks it as consumed and leaves it on disk for a player that

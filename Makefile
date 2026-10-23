@@ -41,6 +41,10 @@ build: ## Build the iar binary into the repo root
 run: build ## Build and run Infinite AI Radio (starts playback)
 	./$(BINARY)
 
+.PHONY: keep-library
+keep-library: build ## Stamp the song store as made by this build so the next start keeps it (stop the radio first)
+	./$(BINARY) buffer keep
+
 .PHONY: setup
 setup: build ## First-run setup: install the music engine and download models (resumable, no sudo)
 	./$(BINARY) setup

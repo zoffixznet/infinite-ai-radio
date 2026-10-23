@@ -6,6 +6,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `iar buffer keep`, and `make keep-library` to build and run it: with
+  the radio stopped, stamps the song store as made by the build about
+  to start, so a build that changes nothing about the songs keeps the
+  store instead of clearing it on its first start.
+
 ## [2.1.2] - 2026-10-09
 
 ### Fixed
