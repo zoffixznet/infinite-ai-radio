@@ -321,6 +321,13 @@ func (r *Remote) probe(ctx context.Context) string {
 	pid := r.st.PID
 	r.mu.Unlock()
 	if client == nil {
+		// No daemon has been asked for yet. A dormant remote - the way
+		// the player starts it - stays that way until a cycle or an
+		// export activates it; spawning here would put a process on
+		// the card for a store that is already stocked.
+		if !r.activeNow() {
+			return "hibernated"
+		}
 		r.ensureDaemon()
 		return "starting engine"
 	}
@@ -357,7 +364,9 @@ const otherClientFresh = 70 * time.Second
 
 // heartbeatLoop keeps the daemon alive while this client runs.
 func (r *Remote) heartbeatLoop(ctx context.Context) {
-	r.dir.Heartbeat()
+	if r.activeNow() {
+		r.dir.Heartbeat()
+	}
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 	for {

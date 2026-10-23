@@ -1247,3 +1247,23 @@ func TestEngineAwakeFollowsTheCycle(t *testing.T) {
 		t.Fatal("an engine put down reads awake")
 	}
 }
+
+// A radio that comes back to a stocked store with its engine asleep is
+// not "starting engine": nothing is due, so there is no startup phase
+// and the status line shows the player's own state. Take the store
+// under its mark and a start is due again.
+func TestASleepingEngineOnAStockedStoreIsNotStarting(t *testing.T) {
+	skipWithoutFFmpeg(t)
+	o, _ := idOrchestrator(t)
+	o.eng = &sleepingMock{}
+	o.cfg.Buffer.ReserveSongs = 1
+	o.cfg.Buffer.LowMinutes = 0
+	renderSong(t, o, 1, "t-1790000000000-0501")
+	if got := o.currentPhase(); got != "" {
+		t.Fatalf("asleep on a stocked store, the phase reads %q, want none", got)
+	}
+	o.Buffer.DropAll()
+	if got := o.currentPhase(); got != "starting engine" {
+		t.Fatalf("with the store empty, the phase reads %q", got)
+	}
+}

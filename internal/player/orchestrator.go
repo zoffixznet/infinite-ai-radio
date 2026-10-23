@@ -866,6 +866,7 @@ func (o *Orchestrator) currentPhase() string {
 	last := o.lastGood
 	writing := o.wordsmithWantNow > 0
 	vocal := o.sess.Vocal
+	epoch := o.epoch
 	o.mu.Unlock()
 	if o.eng == nil {
 		return "engine unavailable"
@@ -892,6 +893,12 @@ func (o *Orchestrator) currentPhase() string {
 				// operation, not a stuck startup.
 				if queued > 0 || last != nil || genCount > 0 {
 					return "playing"
+				}
+				// Asleep on a stocked store, with the player off: nothing
+				// is starting, and saying so would run a clock against
+				// an engine nobody asked for.
+				if o.Buffer != nil && !o.wantCycle(epoch) {
+					return ""
 				}
 				return "starting engine"
 			default:

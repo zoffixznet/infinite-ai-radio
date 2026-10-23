@@ -6,6 +6,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A radio starting on a stocked store no longer starts the engine. The
+  engine process was spawned a second after every start regardless of
+  the store, sat idle holding a slice of the card and a few gigabytes
+  of system memory, and the status line counted up "starting engine"
+  against it with the "longer than usual" warning, although nothing
+  was due. The engine is started when a batch or an export asks for
+  it, and a radio asleep on a stocked store says so.
+
 ## [2.1.3] - 2026-10-23
 
 ### Added
