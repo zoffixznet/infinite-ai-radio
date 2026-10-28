@@ -631,7 +631,11 @@ still shows the version it was served.
 
 The page publishes media-session metadata, so lock screens, Bluetooth
 displays and car interfaces show the song's title and genre line with
-working play, pause and next buttons. Pause there is the same pause as
+working play, pause and next buttons. The page also tells the browser
+the radio is a live stream, which is what decides whether a car offers
+seeking, so the car's buttons are previous and next rather than
+seek-back and seek-forward, which an endless radio could not answer;
+the saved-songs player stays seekable. Pause there is the same pause as
 on the page: the song stays where it is, the car keeps showing it as
 paused, and the car's play button carries it on - so a car can start
 the music again without the phone in hand. The car's stop button is

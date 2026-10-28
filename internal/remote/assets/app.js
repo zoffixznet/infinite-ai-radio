@@ -2317,6 +2317,7 @@
   function offlineMark() { return radioUnreachable() ? "[X] " : ""; }
   function applyMediaMetadata() {
     if (!("mediaSession" in navigator)) return;
+    syncMediaLiveness();
     var title = offlineMark() + saveMark() + (lastNow || "Infinite AI Radio");
     var artist = msArtist || "AI-generated stream";
     // Handing the lock screen the words it already shows still counts
@@ -2338,7 +2339,32 @@
   }
   function mediaPlaybackState(state) {
     if (!("mediaSession" in navigator)) return;
+    syncMediaLiveness();
     try { navigator.mediaSession.playbackState = state; } catch (e) {}
+  }
+  // The radio is a live stream, and the phone is told so. Chromium
+  // offers seeking - seek to, scrub, ten seconds back and forward -
+  // on every media session by default, whether or not the page
+  // handles any of it, and withholds it only from a session that
+  // declares a length without end. Android Auto has taken to drawing
+  // that default seek pair in place of previous and next, so the car
+  // showed two buttons nothing answered. The live player declares
+  // itself endless, which leaves the car the actions the page does
+  // handle; the saved player clears the declaration and keeps a
+  // seekable session. Handling the seeks instead would bring the
+  // buttons back: a handled action is offered whatever the length.
+  // Said once per change, since this runs on every poll, and a
+  // browser that refuses the declaration is asked no more often.
+  var mediaLive = null;
+  function syncMediaLiveness() {
+    if (!("mediaSession" in navigator) || typeof navigator.mediaSession.setPositionState !== "function") return;
+    var live = mode === "live";
+    if (live === mediaLive) return;
+    mediaLive = live;
+    try {
+      if (live) navigator.mediaSession.setPositionState({ duration: Infinity, playbackRate: 1, position: 0 });
+      else navigator.mediaSession.setPositionState();
+    } catch (e) {}
   }
 
   // Car ⏮ = save: an endless generated stream has no meaningful

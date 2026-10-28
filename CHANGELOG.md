@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- In the car, previous and next are back. The car had taken to showing
+  seek-back and seek-forward buttons in their place, and pressing
+  either did nothing: the phone's browser offers seeking on any player
+  that does not say it is a live stream, and that is what decides
+  which buttons the car is given. The radio now tells the browser it
+  is a live stream, so the car's buttons are the ones that work -
+  previous, which saves the song when that setting is on, and next,
+  which skips. The saved-songs player is still a seekable player, and
+  the lock screen is as it was.
+
 ## [2.1.4] - 2026-10-23
 
 ### Fixed
