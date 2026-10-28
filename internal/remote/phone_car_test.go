@@ -20,6 +20,15 @@ import (
 // attempt counted in positionCalls, and the actions with a handler
 // in handled(). The registration of the actions, which app.js does
 // at its top level, is lifted along with the functions.
+//
+// The whole of it runs inside one function, so the fake navigator is
+// a binding of that function's own: node 21 and later put a
+// navigator of their own on the global object, a getter with no
+// setter, and a top-level var of the same name in a -e script is
+// silently dropped against it, leaving the lifted functions looking
+// at node's navigator, which has no mediaSession, and recording
+// nothing. Anything thrown lands in out.errors, which fails the test;
+// the only line printed is the JSON.
 func phoneCar(t *testing.T, script string, out any) {
 	t.Helper()
 	node, err := exec.LookPath("node")
@@ -40,6 +49,11 @@ func phoneCar(t *testing.T, script string, out any) {
 		t.Fatal("app.js does not register its media-session actions where the harness expects them")
 	}
 	harness := `
+var out = { errors: [], done: false };
+function finish() { out.done = true; console.log(JSON.stringify(out)); process.exit(0); }
+process.on("uncaughtException", function (e) { out.errors.push(String(e && e.stack || e)); finish(); });
+setTimeout(function () { out.errors.push("the scenario never finished"); finish(); }, 5000);
+(function () {
 var mode = "live", carSave = true, lastNow = "", msArtist = "", lastMetaSig = "", mediaLive = null;
 var repeatOne = null, pf = { active: false }, savedAudio = { pause: function () {} };
 function tryResume() { return false; }
@@ -70,13 +84,26 @@ function handled() { return Object.keys(handlers).sort(); }
 ` + strings.Join(fns, "\n") + `
 ` + register + `
 syncPrevAction();
-var out = {};
-function finish() { console.log(JSON.stringify(out)); process.exit(0); }
-` + script
+` + script + `
+})();
+`
 	cmd := exec.Command(node, "-e", harness)
 	outRaw, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, outRaw)
+	}
+	var ran struct {
+		Errors []string `json:"errors"`
+		Done   bool     `json:"done"`
+	}
+	if err := json.Unmarshal(outRaw, &ran); err != nil {
+		t.Fatalf("harness output %q: %v", outRaw, err)
+	}
+	if len(ran.Errors) > 0 {
+		t.Fatalf("the scenario threw: %s", strings.Join(ran.Errors, "\n"))
+	}
+	if !ran.Done {
+		t.Fatalf("the scenario never finished; seen so far: %s", outRaw)
 	}
 	if err := json.Unmarshal(outRaw, out); err != nil {
 		t.Fatalf("harness output %q: %v", outRaw, err)
