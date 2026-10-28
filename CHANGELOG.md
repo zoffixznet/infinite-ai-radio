@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.5] - 2026-10-28
+
 ### Fixed
 
 - In the car, previous and next are back. The car had taken to showing
@@ -629,7 +631,8 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.4...HEAD
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.5...HEAD
+[2.1.5]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.1...v2.1.2
