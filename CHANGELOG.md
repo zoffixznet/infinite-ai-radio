@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.6] - 2026-10-29
+
 ### Changed
 
 - In the car, the progress bar is back, and the two buttons the car
@@ -657,7 +659,8 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.5...HEAD
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.6...HEAD
+[2.1.6]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.5...v2.1.6
 [2.1.5]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.2...v2.1.3
