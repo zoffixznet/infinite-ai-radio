@@ -364,13 +364,21 @@
   // ---- system-pause detection (car off, route loss) ----------------
   // Every intentional pause goes through quiet(), which marks the
   // element; a pause event WITHOUT the mark is the system's doing
-  // (Bluetooth route gone, car off). Then the element is kept exactly
-  // as-is - an intact paused element is what keeps the media
-  // notification alive and targetable - and playback resumes on an
-  // explicit signal: the car's play command, the page becoming
-  // visible, or a tap. Never on a timer (a timed play() would blast
-  // the phone speaker in a pocket).
-  var resumePending = false;
+  // (Bluetooth route gone, car off, headphones out). That pause is a
+  // pause like the listener's own: the song stays on its element at
+  // the place it reached - an intact paused element is what keeps the
+  // media notification alive and targetable - the pause is written to
+  // storage, and the lock screen and the car keep a paused player.
+  // What makes sound again is the one button or the car's play
+  // command, never the tab being looked at: that used to count as a
+  // signal, and was the radio starting out loud from a pocket in a
+  // shop because the phone came out after the car had gone. Never on
+  // a timer either (a timed play() would blast the phone speaker in
+  // a pocket).
+  //
+  // carResume is the setting under which a page opened again while
+  // the radio was playing - a reload, the car reopening it - carries
+  // on by itself; the cold start at the bottom reads it.
   var carResume = store.get("iar.carresume", true) !== false;
 
   function quiet(el) {
@@ -383,31 +391,16 @@
     if (el._appPause) { el._appPause = false; return; }
     if (el.ended) return;
     if (!pf.active || el !== pf.els[pf.cur]) return;
-    resumePending = true;
+    if (pf.paused) return;
+    pf.paused = true;
+    pf.systemPaused = true;
+    pfSavePosition(true);
+    store.set("iar.paused", true);
+    store.set("iar.wasplaying", false);
+    setPlayButton(false);
     mediaPlaybackState("paused");
     applyMediaMetadata();
-    streamState("audio output disconnected - tap play", "bad");
-  }
-
-  // tryResume plays the kept element in place: no re-setup, no rewind,
-  // no new timers.
-  function tryResume() {
-    if (!resumePending) return false;
-    var el = pf.els[pf.cur];
-    if (!el) { resumePending = false; return false; }
-    resumePending = false;
-    el.play().then(function () {
-      mediaPlaybackState("playing");
-      applyMediaMetadata();
-      pfStatus();
-    })["catch"](function (e) {
-      // The listener's own pause landing before the first sound is
-      // not the output failing again: the pause has the device.
-      if (pf.paused && e && e.name === "AbortError") return;
-      resumePending = true;
-      streamState("tap play to resume", "bad");
-    });
-    return true;
+    pfStatus();
   }
 
   // ---- blocked autoplay --------------------------------------------
@@ -459,21 +452,22 @@
   // on from the radio is asked for again at once rather than at the
   // next timer.
   function retryNow() {
-    if (!pf.active || resumePending) return;
+    if (!pf.active) return;
     pfRefreshQueue();
     pfEnsureDownloads();
   }
   window.addEventListener("online", retryNow);
-  // Becoming visible means the user is looking at the phone: resume a
-  // pending system pause (toggle permitting), otherwise treat it as a
-  // connectivity nudge.
+  // Becoming visible is a connectivity nudge and nothing more. It
+  // used to be a signal to carry on from a pause the device had
+  // taken, which is the radio starting out loud from a pocket in a
+  // shop because the phone came out after the car went away: a
+  // paused radio waits for the one button or the car's play command.
   function onVisible() {
     // Going out of sight is when a tab is put to sleep and reloaded
     // later: the song's place is written down now rather than at the
     // next few-second mark.
     if (document.hidden) { pfSavePosition(true); return; }
     flushSaveQueue();
-    if (resumePending && carResume) { tryResume(); return; }
     retryNow();
   }
   document.addEventListener("visibilitychange", onVisible);
@@ -510,10 +504,13 @@
     wrapped: false,  // the last pick came back round to something heard
     queueTag: "",    // the ETag of the listing held, for the radio to answer "unchanged" to
     wantPlay: false, // start playback as soon as anything is stored
-    // paused is the listener's own pause: the playing song is kept on
-    // its element, where it was, and the same button carries on with
-    // it. The bank goes on filling meanwhile.
+    // paused is a pause: the playing song is kept on its element,
+    // where it was, and the same button carries on with it. The bank
+    // goes on filling meanwhile. systemPaused says the device took it
+    // - the car went away, the headphones came out - rather than the
+    // listener, which the status line says.
     paused: false,
+    systemPaused: false,
     // startSeq counts the starts, so a start still opening its store
     // when the device is stopped - or started again - can tell it has
     // been overtaken and leave the store's answer alone.
@@ -1045,8 +1042,8 @@
   function stopBuffered(msg, cls) {
     pf.active = false;
     pf.paused = false;
+    pf.systemPaused = false;
     pf.resumeAt = null;
-    resumePending = false;
     store.set("iar.wasplaying", false);
     store.set("iar.paused", false);
     if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
@@ -1094,10 +1091,6 @@
     // song is held at its top when the beeps end.
     if (!pf.cueTimer && (!el || !el.src)) { stopListening("stopped"); return; }
     pf.paused = true;
-    // The listener's own pause is the one the car's play command and
-    // the page coming back resume; a system pause waiting underneath
-    // it is not a reason to start sound while the listener is talking.
-    resumePending = false;
     if (el) quiet(el);
     pfSavePosition(true);
     store.set("iar.paused", true);
@@ -1152,6 +1145,7 @@
   function pfUnpause() {
     if (!pf.paused) return;
     pf.paused = false;
+    pf.systemPaused = false;
     store.set("iar.paused", false);
     store.set("iar.wasplaying", true);
     setPlayButton(true);
@@ -1659,6 +1653,11 @@
       el.id = "bufaudio" + i;
       el.preload = "auto";
       el.addEventListener("pause", onSystemPause);
+      // The car's bar is told the song's length the moment it is
+      // known, and told the place again after a move the page did not
+      // make itself - a looping song's rewind to its top, most of all.
+      el.addEventListener("durationchange", function () { if (pf.els[pf.cur] === el) syncMediaPosition(); });
+      el.addEventListener("seeked", function () { if (pf.els[pf.cur] === el) syncMediaPosition(); });
       document.body.appendChild(el);
       pf.els[i] = el;
     }
@@ -1696,6 +1695,7 @@
         var el = seekable();
         if (!el || !isFinite(el.duration) || el.duration <= 0) return;
         try { el.currentTime = slider.value / 1000 * el.duration; } catch (e) {}
+        syncMediaPosition();
       });
     }
     return function (el, elapsedText, durationText) {
@@ -1856,6 +1856,7 @@
     pfPlayFails = 0;
     pf.playWhy = "";
     pfSavePosition(true);
+    syncMediaPosition();
     pfStatus();
     pf.played = (pf.played || 0) + 1;
     lastNow = rec.title || rec.prompt || "buffered track";
@@ -2120,15 +2121,12 @@
   });
 
   function pfStatus() {
-    // A system pause is waiting on a tap; the line that says so must
-    // not be painted over by the poll's "playing".
-    if (resumePending) return;
-    // The listener's pause is its own state, said as such - and said
-    // before the stall check below, which would otherwise read the
-    // minutes spent paused as a song that has stopped and prod it
-    // into playing.
+    // A pause is its own state, said as such - with a word on whose it
+    // was when the device took it - and said before the stall check
+    // below, which would otherwise read the minutes spent paused as a
+    // song that has stopped and prod it into playing.
     if (pf.paused) {
-      pfState("paused · " + pfReady() + " ahead", "");
+      pfState((pf.systemPaused ? "paused - audio output disconnected" : "paused") + " · " + pfReady() + " ahead", "");
       pfShowMinutes();
       return;
     }
@@ -2168,7 +2166,7 @@
     // intention, not a fact - so when the element that should be making
     // sound has not moved for a while, say so rather than reporting
     // "playing" over silence.
-    if (!resumePending && Date.now() - (pf.lastAdvance || 0) > pfStallMs) {
+    if (Date.now() - (pf.lastAdvance || 0) > pfStallMs) {
       if (!pf.nudged) {
         // One prod first: a phone waking from sleep sometimes just
         // needs asking again.
@@ -2177,7 +2175,9 @@
         if (stalled) {
           try {
             var again = stalled.play();
-            if (again && again["catch"]) again["catch"](function () {});
+            // A song that gets going again is behind where the car's
+            // bar had run on to; the place is told again.
+            if (again && again.then) again.then(function () { syncMediaPosition(); })["catch"](function () {});
           } catch (e) {}
         }
       }
@@ -2240,7 +2240,6 @@
   playBtn.addEventListener("click", function () {
     autoStarting = false;
     disarmGestureStart();
-    if (resumePending) { tryResume(); return; }
     if (pf.active && !pf.paused) {
       pauseBuffered();
       return;
@@ -2340,31 +2339,47 @@
   function mediaPlaybackState(state) {
     if (!("mediaSession" in navigator)) return;
     syncMediaLiveness();
+    // A song starting, pausing or carrying on is a moment the bar is
+    // told the place afresh; a stop has nothing to declare.
+    if (state !== "none") syncMediaPosition();
     try { navigator.mediaSession.playbackState = state; } catch (e) {}
   }
-  // The radio is a live stream, and the phone is told so. Chromium
-  // offers seeking - seek to, scrub, ten seconds back and forward -
-  // on every media session by default, whether or not the page
-  // handles any of it, and withholds it only from a session that
-  // declares a length without end. Android Auto has taken to drawing
-  // that default seek pair in place of previous and next, so the car
-  // showed two buttons nothing answered. The live player declares
-  // itself endless, which leaves the car the actions the page does
-  // handle; the saved player clears the declaration and keeps a
-  // seekable session. Handling the seeks instead would bring the
-  // buttons back: a handled action is offered whatever the length.
-  // Said once per change, since this runs on every poll, and a
-  // browser that refuses the declaration is asked no more often.
+  // The lock screen and the car draw a progress bar from what the page
+  // declares about the song - its length and the place in it - and the
+  // browser carries the place forward on its own while the song plays,
+  // so it is declared when a song starts, is paused, resumed or moved,
+  // and when its length lands, rather than on every tick. The browser
+  // refuses a length that is not a finite number, so nothing is
+  // declared until the length is known, and the place is kept within
+  // it. The saved player declares nothing of its own, and the radio's
+  // declaration is cleared when the saved player takes the session, or
+  // the saved song would be drawn under the radio song's bar - said
+  // once per change of mode, since this runs on every poll.
+  //
+  // The declaration is also what the car's buttons follow: the phone's
+  // browser offers seeking on every session whose length is not
+  // endless, and Android Auto draws that seek pair where previous and
+  // next were. The radio used to declare itself endless to be rid of
+  // the pair, which took the bar with it; now the pair is answered.
   var mediaLive = null;
   function syncMediaLiveness() {
     if (!("mediaSession" in navigator) || typeof navigator.mediaSession.setPositionState !== "function") return;
     var live = mode === "live";
     if (live === mediaLive) return;
     mediaLive = live;
-    try {
-      if (live) navigator.mediaSession.setPositionState({ duration: Infinity, playbackRate: 1, position: 0 });
-      else navigator.mediaSession.setPositionState();
-    } catch (e) {}
+    if (!live) { try { navigator.mediaSession.setPositionState(); } catch (e) {} }
+  }
+  function syncMediaPosition() {
+    if (!("mediaSession" in navigator) || typeof navigator.mediaSession.setPositionState !== "function") return;
+    if (mode !== "live" || !pf.active || !pf.playingId) return;
+    var el = pf.els[pf.cur];
+    if (!el) return;
+    var d = el.duration;
+    if (!isFinite(d) || d <= 0) return;
+    var at = el.currentTime || 0;
+    if (!isFinite(at) || at < 0) at = 0;
+    if (at > d) at = d;
+    try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: 1, position: at }); } catch (e) {}
   }
 
   // Car ⏮ = save: an endless generated stream has no meaningful
@@ -2386,11 +2401,15 @@
 
   // msAction routes every media-session action; the same dispatch is
   // reachable through the "iar:msaction" DOM event so scripted clients
-  // can drive the car controls.
-  function msAction(action) {
+  // can drive the car controls, with the action as a string or as an
+  // object naming it alongside its details.
+  function msAction(action, details) {
     switch (action) {
       case "play":
-        if (mode === "live") { if (!tryResume()) resumeBuffered(); } else savedPlay();
+        // The car's play carries on with the paused song in place,
+        // whoever paused it: the listener, the car, or the device when
+        // its output went away.
+        if (mode === "live") resumeBuffered(); else savedPlay();
         break;
       case "pause":
         // The car's pause is a pause: the song and the session it is
@@ -2400,35 +2419,83 @@
       case "stop":
         if (mode === "live") stopListening("stopped"); else savedAudio.pause();
         break;
+      // Android Auto draws fast-forward and rewind in the slot that
+      // previous and next had, and the icons cannot be relabelled: they
+      // say ten seconds, and on the radio the buttons do the radio's
+      // jobs - fast-forward skips, rewind saves - exactly as next and
+      // previous do from a headset or the lock screen. The saved
+      // player seeks by them, as the icons say.
       case "nexttrack":
+      case "seekforward":
         if (mode === "live") {
           // Same debounce/double-fire guards as the on-page control.
           if (pf.active) pfSkip();
-        } else {
+        } else if (action === "nexttrack") {
           repeatOne = null; updateLoopState(); step(1);
+        } else {
+          seekSaved(savedAudio.currentTime + seekOffset(details));
         }
         break;
       case "previoustrack":
-        if (mode === "live") { if (carSave) carSaveAction(); } else { repeatOne = null; updateLoopState(); step(-1); }
+      case "seekbackward":
+        if (mode === "live") {
+          if (carSave) carSaveAction();
+        } else if (action === "previoustrack") {
+          repeatOne = null; updateLoopState(); step(-1);
+        } else {
+          seekSaved(savedAudio.currentTime - seekOffset(details));
+        }
+        break;
+      case "seekto":
+        // The bar dragged, on the car or the lock screen.
+        if (!details || typeof details.seekTime !== "number" || !isFinite(details.seekTime)) break;
+        if (mode === "live") {
+          var el = pf.active && pf.playingId ? pf.els[pf.cur] : null;
+          if (el) { pfSeekTo(el, details.seekTime); syncMediaPosition(); }
+        } else {
+          seekSaved(details.seekTime);
+        }
         break;
     }
+  }
+  // seekOffset is how far a seek button moves the saved player: what
+  // the system asked for, and ten seconds - what the icons say - when
+  // it named no distance.
+  function seekOffset(details) {
+    var n = details && details.seekOffset;
+    return typeof n === "number" && isFinite(n) && n > 0 ? n : 10;
+  }
+  // seekSaved moves the saved player to a place in its song, kept
+  // within the song once its length is known.
+  function seekSaved(t) {
+    if (!savedAudio.src) return;
+    var d = savedAudio.duration;
+    if (isFinite(d) && d > 0 && t > d) t = d;
+    if (!(t >= 0)) t = 0;
+    try { savedAudio.currentTime = t; } catch (e) {}
   }
   function msHandler(action, fn) {
     if (!("mediaSession" in navigator)) return;
     try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) {}
   }
-  ["play", "pause", "stop", "nexttrack"].forEach(function (a) {
-    msHandler(a, function () { msAction(a); });
+  ["play", "pause", "stop", "nexttrack", "seekforward", "seekbackward", "seekto"].forEach(function (a) {
+    msHandler(a, function (d) { msAction(a, d); });
   });
   // The previous-track slot registers only while it has a job (saved
   // mode, or live mode with the car-save toggle on), so a switched-off
-  // toggle removes the dead ⏮ from the car instead of ignoring it.
+  // toggle removes the dead ⏮ from a headset or the lock screen
+  // instead of ignoring it. The car's rewind is drawn whatever the
+  // page registers, so its handler stays and does nothing with the
+  // toggle off.
   function syncPrevAction() {
     var active = mode === "saved" || carSave;
     msHandler("previoustrack", active ? function () { msAction("previoustrack"); } : null);
   }
   syncPrevAction();
-  document.addEventListener("iar:msaction", function (e) { msAction(e.detail); });
+  document.addEventListener("iar:msaction", function (e) {
+    var d = e.detail;
+    if (d && typeof d === "object") msAction(d.action, d); else msAction(d);
+  });
   $("audiocues").checked = audioCues;
   $("audiocues").addEventListener("change", function () {
     audioCues = $("audiocues").checked;
@@ -4010,8 +4077,9 @@
       startListening();
     }
   } else if (mode === "live" && idbSupported && store.get("iar.paused", false)) {
-    // Paused when the page went away: it stays paused, on the same
-    // song, and the one button carries on with it.
+    // Paused when the page went away - by the listener, or by the
+    // device when the car went: it stays paused, on the same song,
+    // and the one button carries on with it.
     streamState("paused - tap play to carry on where you were", "");
   }
 })();

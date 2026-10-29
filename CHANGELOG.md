@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- In the car, the progress bar is back, and the two buttons the car
+  draws beside play - fast-forward and rewind - save the song and skip
+  it, the jobs previous and next did. The last release took the bar
+  away to get previous and next back; the car draws the seek pair in
+  that slot whatever the page does, so now the page answers them: the
+  icons still say ten seconds, which cannot be changed, but rewind
+  saves what you are hearing (when that setting is on) and
+  fast-forward skips. Previous and next on a headset or the lock
+  screen do the same. The bar follows the song and can be dragged to
+  a place in it; the saved-songs player seeks by ten seconds with the
+  same buttons.
+
+### Fixed
+
+- The radio no longer starts playing because the phone was looked at
+  after the car went away. When the car turns off, the phone pauses
+  the music; opening the page then - taking the phone out in a shop -
+  used to count as the signal to carry on, out loud, from your hand.
+  The phone's pause is now the same pause as yours: the song stays
+  where it was, the page says the audio output went, and Play or the
+  car's play button carries it on. The setting that said "Resume when
+  the car reconnects" now says what it does: it decides whether a page
+  opened again while the radio was playing carries on by itself.
+
 ## [2.1.5] - 2026-10-28
 
 ### Fixed

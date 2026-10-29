@@ -102,6 +102,7 @@ function updateSeek() {}
 function paintNow() {}
 function applyMediaMetadata() {}
 function mediaPlaybackState() {}
+function syncMediaPosition() {}
 function updateSaveButtons() {}
 function pfPreloadNext() {}
 function pfTrimStore() {}

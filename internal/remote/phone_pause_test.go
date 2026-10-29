@@ -25,6 +25,8 @@ import (
 // place it started from; every pfPlay call in picks; the button's
 // states in buttons; the lock screen's in media; the status line's
 // in statuses. Storage (kv) outlives reload(), as the browser's does.
+// The whole of it runs inside one function, so the fakes - the
+// document, the navigator - are bindings of its own on any node.
 func phonePlayer(t *testing.T, script string, out any) {
 	t.Helper()
 	node, err := exec.LookPath("node")
@@ -39,11 +41,20 @@ func phonePlayer(t *testing.T, script string, out any) {
 	var fns []string
 	for _, name := range []string{"pfTossed", "pfPlayable", "pfListed", "pfReady", "pfNextId", "heardMark", "loadHeard",
 		"heardMerged", "saveHeard", "clearHeard", "pfMarkHeard", "pfUnhear", "tossedStored", "loadTossed", "saveTossed",
-		"pfForget", "pfToss", "pfAdoptRecords", "quiet", "onSystemPause", "tryResume", "startBuffered", "stopBuffered",
+		"pfForget", "pfToss", "pfAdoptRecords", "quiet", "onSystemPause", "startBuffered", "stopBuffered",
 		"pauseBuffered", "resumeBuffered", "pfUnpause", "pfSavePosition", "pfClearPosition", "pfResumeTarget", "pfSeekTo",
-		"pfPlay", "pfStarted", "pfAdvance", "pfSkip", "pfStatus", "startListening", "stopListening", "msAction"} {
+		"pfPlay", "pfStarted", "pfAdvance", "pfSkip", "pfStatus", "startListening", "stopListening", "msAction",
+		"retryNow", "onVisible"} {
 		fns = append(fns, jsFunction(t, src, name))
 	}
+	// The cold start - what a page does on opening, which is not a
+	// function - is lifted whole and run as coldStart().
+	coldAt := strings.Index(src, `  if (carResume && mode === "live" && store.get("iar.wasplaying", false)) {`)
+	coldEnd := strings.LastIndex(src, "})();")
+	if coldAt < 0 || coldEnd < coldAt {
+		t.Fatal("app.js does not start cold where the harness expects it to")
+	}
+	coldStart := "function coldStart() {\n" + src[coldAt:coldEnd] + "}\n"
 	capLine := regexp.MustCompile(`var maxHeard = \d+;`).FindString(src)
 	if capLine == "" {
 		t.Fatal("app.js does not declare maxHeard")
@@ -53,7 +64,10 @@ func phonePlayer(t *testing.T, script string, out any) {
 		t.Fatal("app.js does not declare maxTossed")
 	}
 	harness := `
+(function () {
 var window = { AbortController: AbortController };
+var document = { hidden: false };
+var navigator = {};
 var clock = 1000000;
 Date.now = function () { return clock++; };
 var kv = {};
@@ -67,7 +81,7 @@ var store = {
 // straight after the tick it is about.
 var positionEveryMs = 0;
 var pfStallMs = 8000, maxPlayFails = 3;
-var resumePending = false, autoStarting = false, pfPlayFails = 0, lastManualSkip = 0;
+var autoStarting = false, pfPlayFails = 0, lastManualSkip = 0, carResume = true, idbSupported = true;
 var lastNow = "", msArtist = "", mode = "live", carSave = false, repeatOne = null;
 var stateEl = { textContent: "" };
 var statuses = [], buttons = [], media = [], plays = [], picks = [], systemPauses = 0;
@@ -82,6 +96,10 @@ function pfState(text) { if (pf.active) statuses.push(text); }
 function setPlayButton(on) { buttons.push(!!on); }
 function mediaPlaybackState(s) { media.push(s); }
 function applyMediaMetadata() {}
+function syncMediaPosition() {}
+function flushSaveQueue() {}
+function seekSaved() {}
+function seekOffset() { return 10; }
 function pfShowMinutes() {}
 function updateSaveButtons() {}
 function updateSeek() {}
@@ -162,12 +180,12 @@ var pf;
 function reload() {
   pf = { active: false, warm: false, db: null, epoch: -1, rows: [], have: {}, playingId: null, prevId: null,
     els: [null, null], cur: 0, ctrl: null, queueCtrl: null, queueTag: "", fetchTimer: null, queueTimer: null, cueTimer: null,
-    offline: false, seen: {}, wrapped: false, wantPlay: false, paused: false, startSeq: 0, resumeAt: null, posSavedAt: 0,
+    offline: false, seen: {}, wrapped: false, wantPlay: false, paused: false, systemPaused: false, startSeq: 0, resumeAt: null, posSavedAt: 0,
     loop: false, storeFull: false, tossed: {}, bad: {}, playWhy: "", lastAdvance: 0, nudged: false, skipped: 0,
     switchOnDownload: false };
   loadTossed();
   pf.seen = loadHeard();
-  resumePending = false; lastManualSkip = 0; playRefuse = null;
+  lastManualSkip = 0; playRefuse = null;
   statuses = []; buttons = []; media = []; plays = []; picks = []; systemPauses = 0;
 }
 // bank puts songs on the device as a running page has them; listed
@@ -190,7 +208,7 @@ function running() { pf.active = true; pf.wantPlay = true; }
 function cur() { return pf.els[pf.cur]; }
 function snap() {
   var el = cur();
-  return { id: pf.playingId, active: pf.active, paused: pf.paused, el: el ? el.id : "", src: el ? el.src : "", t: el ? el.currentTime : -1,
+  return { id: pf.playingId, active: pf.active, paused: pf.paused, sysPaused: !!pf.systemPaused, el: el ? el.id : "", src: el ? el.src : "", t: el ? el.currentTime : -1,
     elPaused: el ? el.paused : true, stPaused: store.get("iar.paused", null), stPlaying: store.get("iar.wasplaying", null),
     position: store.get("iar.position", null), button: buttons.length ? buttons[buttons.length - 1] : null,
     media: media.length ? media[media.length - 1] : "", status: statuses.length ? statuses[statuses.length - 1] : "",
@@ -198,16 +216,19 @@ function snap() {
 }
 function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 ` + strings.Join(fns, "\n") + `
+` + coldStart + `
 // Every pick of a song, and every pause the page takes for the
 // system's, are counted around the functions as they ship.
 var realPfPlay = pfPlay;
 pfPlay = function (id, hold) { picks.push({ id: id }); return realPfPlay(id, hold); };
 var realOnSystemPause = onSystemPause;
-onSystemPause = function (e) { var was = resumePending; realOnSystemPause(e); if (resumePending && !was) systemPauses++; };
+onSystemPause = function (e) { var was = pf.systemPaused; realOnSystemPause(e); if (pf.systemPaused && !was) systemPauses++; };
 var out = {};
 function finish() { console.log(JSON.stringify(out)); process.exit(0); }
 setTimeout(function () { out.hung = true; finish(); }, 5000);
-` + script
+` + script + `
+})();
+`
 	cmd := exec.Command(node, "-e", harness)
 	outRaw, err := cmd.CombinedOutput()
 	if err != nil {
@@ -231,21 +252,22 @@ setTimeout(function () { out.hung = true; finish(); }, 5000);
 // under it, the stores, and what the button, the lock screen and the
 // status line last said.
 type playerSnap struct {
-	ID       string   `json:"id"`
-	Active   bool     `json:"active"`
-	Paused   bool     `json:"paused"`
-	El       string   `json:"el"`
-	Src      string   `json:"src"`
-	T        float64  `json:"t"`
-	ElPaused bool     `json:"elPaused"`
-	StPaused *bool    `json:"stPaused"`
-	StPlay   *bool    `json:"stPlaying"`
-	Position *songPos `json:"position"`
-	Button   *bool    `json:"button"`
-	Media    string   `json:"media"`
-	Status   string   `json:"status"`
-	Picks    []string `json:"picks"`
-	Plays    []string `json:"plays"`
+	ID        string   `json:"id"`
+	Active    bool     `json:"active"`
+	Paused    bool     `json:"paused"`
+	SysPaused bool     `json:"sysPaused"`
+	El        string   `json:"el"`
+	Src       string   `json:"src"`
+	T         float64  `json:"t"`
+	ElPaused  bool     `json:"elPaused"`
+	StPaused  *bool    `json:"stPaused"`
+	StPlay    *bool    `json:"stPlaying"`
+	Position  *songPos `json:"position"`
+	Button    *bool    `json:"button"`
+	Media     string   `json:"media"`
+	Status    string   `json:"status"`
+	Picks     []string `json:"picks"`
+	Plays     []string `json:"plays"`
 }
 
 type songPos struct {
@@ -278,7 +300,6 @@ func TestPhonePauseKeepsTheSongAndResumesItInPlace(t *testing.T) {
 		Paused       playerSnap `json:"paused"`
 		SystemPauses int        `json:"systemPauses"`
 		Later        playerSnap `json:"later"`
-		TryResume    bool       `json:"tryResume"`
 		Resumed      playerSnap `json:"resumed"`
 	}
 	phonePlayer(t, `
@@ -294,9 +315,9 @@ wait(5).then(function () {
   clock += 600000;
   pfStatus();
   out.later = snap();
-  // The car's output comes back, the page becomes visible: neither
-  // is a reason to make sound.
-  out.tryResume = tryResume();
+  // The page becomes visible, the connection changes: neither is a
+  // reason to make sound.
+  onVisible(); retryNow();
   resumeBuffered();
   return wait(5);
 }).then(function () {
@@ -330,9 +351,6 @@ wait(5).then(function () {
 	l := got.Later
 	if !l.ElPaused || l.T != 42 || len(l.Picks) != 1 || !strings.HasPrefix(l.Status, "paused") {
 		t.Errorf("ten minutes into the pause the status check left the song: %+v (want still paused at 42, no prod, status still paused)", l)
-	}
-	if got.TryResume {
-		t.Error("an output coming back resumed a song the listener had paused")
 	}
 	r := got.Resumed
 	if r.Paused || r.ID != "A" || r.Src != "blob:A" || r.ElPaused || r.T != 42 {
@@ -554,15 +572,14 @@ wait(5).then(function () {
 // asked for, which the browser reports as a failure. It is the
 // listener's own pause, already written and said: the status line
 // keeps "paused", not a red "tap play to resume", and the same holds
-// for the play an output coming back asks for.
+// for a play over the pause the device took when its output went.
 func TestPhoneAPauseOverAPendingResumeIsNotAnError(t *testing.T) {
 	var got struct {
-		After         playerSnap `json:"after"`
-		Said          []string   `json:"said"`
-		SystemPauses  int        `json:"systemPauses"`
-		AfterOutput   playerSnap `json:"afterOutput"`
-		SaidOutput    []string   `json:"saidOutput"`
-		ResumePending bool       `json:"resumePending"`
+		After        playerSnap `json:"after"`
+		Said         []string   `json:"said"`
+		SystemPauses int        `json:"systemPauses"`
+		AfterOutput  playerSnap `json:"afterOutput"`
+		SaidOutput   []string   `json:"saidOutput"`
 	}
 	phonePlayer(t, `
 reload(); running(); bank("A B C"); listed("A B C");
@@ -587,13 +604,12 @@ wait(5).then(function () {
   cur().tick(1);
   cur().pause();
   statuses = [];
-  tryResume();
+  resumeBuffered();
   pauseBuffered();
   return wait(5);
 }).then(function () {
   out.afterOutput = snap();
   out.saidOutput = statuses.slice();
-  out.resumePending = resumePending;
   finish();
 });
 `, &got)
@@ -614,8 +630,8 @@ wait(5).then(function () {
 		t.Errorf("the page's own pause was taken for the system's %d times", got.SystemPauses)
 	}
 	o := got.AfterOutput
-	if !o.Paused || o.ID != "A" || !o.ElPaused || got.ResumePending || !strings.HasPrefix(o.Status, "paused · ") {
-		t.Errorf("a pause over the output's pending resume: %+v, resumePending=%v (want A paused, no system resume pending, status paused)", o, got.ResumePending)
+	if !o.Paused || o.SysPaused || o.ID != "A" || !o.ElPaused || !strings.HasPrefix(o.Status, "paused · ") {
+		t.Errorf("a pause over the resume of the device's pause: %+v (want A paused as the listener's, status paused)", o)
 	}
 	for _, s := range got.SaidOutput {
 		if strings.Contains(s, "tap play to resume") {
@@ -918,5 +934,126 @@ wait(5).then(function () {
 	u := got.Unstaged
 	if !u.Active || !u.Paused || u.ID != "A" || u.Src != "blob:A" || !u.ElPaused || u.T != 0 || strings.Join(u.Plays, " ") != "A@0" {
 		t.Errorf("a pause during the beeps with nothing staged: %+v (want the one song held at its top, the device still running)", u)
+	}
+}
+
+// The car turns off, and the phone pauses the music on its own - a
+// pause the page did not ask for. It used to be held as pending, and
+// the page becoming visible was taken as the signal to carry on: the
+// owner taking the phone out in a shop, and the radio starting out
+// loud in their hand. The device's pause is now the pause the
+// listener's own is - the song kept where it was, written to storage,
+// the button reading Play, the lock screen paused, the status line
+// saying the output went - and nothing short of the one button or the
+// car's play command makes sound: not the tab being looked at, not
+// the page coming back from the browser's sleep, not a connection
+// change, and not a page opened afresh while paused, which a page
+// opened afresh while playing does start.
+func TestPhoneTheDevicesPauseIsAPauseAndLookingIsNotAPlay(t *testing.T) {
+	var got struct {
+		Control      playerSnap `json:"control"`
+		Paused       playerSnap `json:"paused"`
+		SystemPauses int        `json:"systemPauses"`
+		Looked       playerSnap `json:"looked"`
+		Later        playerSnap `json:"later"`
+		Resumed      playerSnap `json:"resumed"`
+		Cold         playerSnap `json:"cold"`
+		AfterCold    playerSnap `json:"afterCold"`
+		Pressed      playerSnap `json:"pressed"`
+	}
+	phonePlayer(t, `
+// The control: a page opened again while the radio was playing
+// carries on by itself.
+reload(); records("A B C"); listed("A B C");
+store.set("iar.wasplaying", true);
+coldStart();
+wait(10).then(function () {
+  out.control = snap();
+  cur().tick(42);
+  // The car goes away: the device pauses the song itself.
+  cur().pause();
+  out.paused = snap();
+  out.systemPauses = systemPauses;
+  // The phone comes out of the pocket, the page comes back from the
+  // browser's sleep, the connection changes: none of them is a play.
+  document.hidden = true; onVisible();
+  document.hidden = false; onVisible(); onVisible(); retryNow();
+  return wait(5);
+}).then(function () {
+  out.looked = snap();
+  // Minutes go by paused; the poll keeps checking the status.
+  clock += 600000;
+  pfStatus();
+  out.later = snap();
+  // The car's play command carries the song on in place.
+  msAction("play");
+  return wait(5);
+}).then(function () {
+  out.resumed = snap();
+  // The output goes again, and this time the page is opened afresh -
+  // the car reopening it, a tab the browser dropped and reloaded.
+  cur().tick(3);
+  cur().pause();
+  reload(); records("A B C");
+  out.cold = snap();
+  coldStart();
+  return wait(10);
+}).then(function () {
+  out.afterCold = snap();
+  // The one press after the reload brings the song back where it was.
+  resumeBuffered();
+  return wait(10);
+}).then(function () {
+  out.pressed = snap();
+  finish();
+});
+`, &got)
+	c := got.Control
+	if !c.Active || c.ID != "A" || c.ElPaused || strings.Join(c.Plays, " ") != "A@0" {
+		t.Fatalf("a page opened again while the radio was playing: %+v (want A playing by itself)", c)
+	}
+	p := got.Paused
+	if !p.Active || !p.Paused || !p.SysPaused || p.ID != "A" || p.Src != "blob:A" || p.T != 42 || !p.ElPaused {
+		t.Errorf("the device's pause: %+v (want A kept on its element at 42, paused as the device's, the device still running)", p)
+	}
+	if boolText(p.StPaused) != "true" || boolText(p.StPlay) != "false" || p.Position == nil || p.Position.ID != "A" || p.Position.T != 42 {
+		t.Errorf("the device's pause wrote iar.paused=%s iar.wasplaying=%s and the place %+v; want true, false and A at 42", boolText(p.StPaused), boolText(p.StPlay), p.Position)
+	}
+	if p.Media != "paused" || p.Button == nil || *p.Button {
+		t.Errorf("the device's pause told the lock screen %q and the button %s; want paused and Play", p.Media, boolText(p.Button))
+	}
+	if !strings.HasPrefix(p.Status, "paused - audio output disconnected · ") || !strings.HasSuffix(p.Status, " ahead") {
+		t.Errorf("the device's pause said %q; want \"paused - audio output disconnected · N ahead\"", p.Status)
+	}
+	if got.SystemPauses != 1 {
+		t.Errorf("the device's pause was counted %d times; want once", got.SystemPauses)
+	}
+	l := got.Looked
+	if !l.ElPaused || l.T != 42 || strings.Join(l.Plays, " ") != "A@0" || len(l.Picks) != 1 || !strings.HasPrefix(l.Status, "paused - audio output disconnected") {
+		t.Errorf("the page looked at, woken and reconnected: %+v (want A still paused at 42, no play, no pick, the status still the device's pause)", l)
+	}
+	l = got.Later
+	if !l.ElPaused || l.T != 42 || strings.Join(l.Plays, " ") != "A@0" || !strings.HasPrefix(l.Status, "paused - audio output disconnected") {
+		t.Errorf("ten minutes into the device's pause the status check left the song: %+v (want still paused at 42, no prod)", l)
+	}
+	r := got.Resumed
+	if r.Paused || r.SysPaused || r.ID != "A" || r.Src != "blob:A" || r.ElPaused || r.T != 42 || strings.Join(r.Plays, " ") != "A@0 A@42" {
+		t.Errorf("the car's play: %+v (want A playing on from 42 on the same element)", r)
+	}
+	if boolText(r.StPaused) != "false" || boolText(r.StPlay) != "true" || r.Media != "playing" || r.Button == nil || !*r.Button || !strings.HasPrefix(r.Status, "playing") {
+		t.Errorf("the car's play left iar.paused=%s iar.wasplaying=%s lock screen %q button %s status %q; want false, true, playing, Pause, playing",
+			boolText(r.StPaused), boolText(r.StPlay), r.Media, boolText(r.Button), r.Status)
+	}
+	c = got.Cold
+	if c.Active || boolText(c.StPaused) != "true" || boolText(c.StPlay) != "false" || c.Position == nil || c.Position.ID != "A" || c.Position.T != 45 {
+		t.Fatalf("a page opened again after the device's pause: %+v (want not running, iar.paused true, iar.wasplaying false, the place A at 45)", c)
+	}
+	a := got.AfterCold
+	if a.Active || len(a.Plays) != 0 || len(a.Picks) != 0 || a.Status != "paused - tap play to carry on where you were" {
+		t.Errorf("the cold start after the device's pause: %+v (want nothing started, the page saying it is paused)", a)
+	}
+	p = got.Pressed
+	if !p.Active || p.Paused || p.ID != "A" || p.ElPaused || p.T != 45 || strings.Join(p.Plays, " ") != "A@45" {
+		t.Errorf("one press after the reload: %+v (want A playing from 45)", p)
 	}
 }

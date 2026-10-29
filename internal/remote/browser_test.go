@@ -2173,8 +2173,9 @@ func TestRealBrowserSilentSongIsNotReportedAsPlaying(t *testing.T) {
 // TestRealBrowserAutoResume covers the car-off pause machinery: a
 // system pause (one our code did not initiate) must keep the audio
 // element intact with an honest status instead of tearing it down and
-// restarting playback, and the media-session play action, the play
-// button and a page reload must resume it in place.
+// restarting playback, the page being looked at must not resume it,
+// and the media-session play action and the play button must resume
+// it in place; a page reloaded while playing starts by itself.
 func TestRealBrowserAutoResume(t *testing.T) {
 	need(t, "geckodriver", "firefox", "pactl", "ffmpeg", "go")
 	sinkName, _ := nullSink(t)
@@ -2207,9 +2208,12 @@ func TestRealBrowserAutoResume(t *testing.T) {
 	if msState != "paused" {
 		t.Fatalf("media session playbackState = %q", msState)
 	}
-	// The connectivity nudge must leave the paused element alone (no
-	// teardown, no loudspeaker restart).
-	w.exec(`window.dispatchEvent(new Event('online')); return true;`, nil)
+	// The connectivity nudge, the tab being looked at and the page
+	// coming back from the browser's sleep must all leave the paused
+	// element alone (no teardown, no loudspeaker restart).
+	w.exec(`window.dispatchEvent(new Event('online'));
+		document.dispatchEvent(new Event('visibilitychange'));
+		document.dispatchEvent(new Event('resume')); return true;`, nil)
 	time.Sleep(4 * time.Second)
 	var kept bool
 	w.exec(`var a=[document.getElementById('bufaudio0'),document.getElementById('bufaudio1')];

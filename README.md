@@ -631,11 +631,14 @@ still shows the version it was served.
 
 The page publishes media-session metadata, so lock screens, Bluetooth
 displays and car interfaces show the song's title and genre line with
-working play, pause and next buttons. The page also tells the browser
-the radio is a live stream, which is what decides whether a car offers
-seeking, so the car's buttons are previous and next rather than
-seek-back and seek-forward, which an endless radio could not answer;
-the saved-songs player stays seekable. Pause there is the same pause as
+working play, pause and next buttons, and a progress bar that follows
+the song and can be dragged to a place in it. Android Auto draws
+fast-forward and rewind where previous and next used to be, and the
+icons cannot be relabelled: on the radio those two buttons do the
+radio's jobs - fast-forward skips, and rewind saves the song when that
+setting is on - exactly as next and previous do from a headset or the
+lock screen. In the saved-songs player they seek by ten seconds, as
+the icons say. Pause there is the same pause as
 on the page: the song stays where it is, the car keeps showing it as
 paused, and the car's play button carries it on - so a car can start
 the music again without the phone in hand. The car's stop button is
@@ -658,14 +661,16 @@ Two car conveniences live under Settings, remembered per device:
   for the rest of the song. It captures every previous-track input, a
   voice assistant's "previous song" included. In the saved-songs
   player, previous keeps its normal meaning.
-- **Resume when the car reconnects.** When the car turns off, playback
-  pauses and resumes by itself when the car asks to play again - never
-  on a timer, so a phone in a pocket stays silent. A pause you pressed
-  yourself is not resumed this way: the car reconnecting leaves it
-  paused until you, or the car's play button, carry it on. Hands-free
-  resume may need Android Auto's "Automatically resume media" setting,
-  and after a long stop the phone's battery management can require one
-  tap.
+- **Carry on playing when the page reopens.** After a reload, or the
+  car opening the page again, the radio carries on by itself if it was
+  playing when the page went away; switched off, it waits for Play. A
+  paused radio stays paused either way - one you paused, and one the
+  phone paused because the car or the headphones went away - until
+  you or the car's play button carry it on, never because the page was
+  looked at, so a phone taken out of a pocket in a shop stays quiet.
+  Hands-free resume when the car reconnects needs Android Auto's
+  "Automatically resume media" setting, and after a long stop the
+  phone's battery management can require one tap.
 
 ### Saved songs
 
