@@ -21,7 +21,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   there, the same as a drag of the bar, and the radio took that at its
   word and moved the song. A seek to a spot ten seconds away is now
   recognised as the button and does the button's job - rewind saves,
-  fast-forward skips - while dragging the bar still seeks.
+  fast-forward skips - while dragging the bar still seeks. Pressing a
+  button again straight after another - skip, skip; save, then skip -
+  is the button both times.
 
 ## [2.1.6] - 2026-10-29
 

@@ -60,7 +60,7 @@ process.on("uncaughtException", function (e) { out.errors.push(String(e && e.sta
 setTimeout(function () { out.errors.push("the scenario never finished"); finish(); }, 5000);
 (function () {
 var mode = "live", carSave = true, lastNow = "", msArtist = "", lastMetaSig = "", mediaLive = null;
-var repeatOne = null, calls = [], notes = [], lastSeekAt = 0;
+var repeatOne = null, calls = [], notes = [], lastDragAt = 0;
 var el = { duration: NaN, currentTime: 0, addEventListener: function () {}, removeEventListener: function () {} };
 var pf = { active: false, playingId: null, els: [el, null], cur: 0 };
 var savedAudio = { src: "", duration: NaN, currentTime: 0, pause: function () { calls.push("saved pause"); } };
@@ -377,10 +377,13 @@ finish();
 // rewind saves, fast-forward skips - a little short or long of ten
 // seconds included, and clamped at the song's ends. A drag is still a
 // drag; a scrub and the release on its heels are a drag whatever they
-// land on; the car-save setting off leaves rewind doing nothing;
-// nothing playing leaves both doing nothing; the saved player seeks
-// for every one of them; and every action is noted for the radio's
-// log, a seek with its verdict.
+// land on; a button pressed again hard on the heels of a button -
+// skip then skip on the song that came up, save then skip, save then
+// save - is the button both times and opens no drag window, since
+// only a drag does that; the car-save setting off leaves rewind doing
+// nothing; nothing playing leaves both doing nothing; the saved
+// player seeks for every one of them; and every action is noted for
+// the radio's log, a seek with its verdict.
 func TestPhoneCarTenSecondButtonsArriveAsSeeks(t *testing.T) {
 	var got struct {
 		Back       string    `json:"back"`
@@ -395,6 +398,9 @@ func TestPhoneCarTenSecondButtonsArriveAsSeeks(t *testing.T) {
 		Release    string    `json:"release"`
 		Later      string    `json:"later"`
 		Burst      string    `json:"burst"`
+		SkipSkip   string    `json:"skipSkip"`
+		SaveSkip   string    `json:"saveSkip"`
+		SaveSave   string    `json:"saveSave"`
 		NoSave     string    `json:"noSave"`
 		Idle       string    `json:"idle"`
 		SavedTimes []float64 `json:"savedTimes"`
@@ -438,6 +444,20 @@ out.later = press(50, null, 5000);
 // Two plain seeks close together: a drag and its release.
 el.currentTime = 60;
 out.burst = press(90) + "," + press(100, null, 800);
+// A button hard on the heels of a button: fast-forward, then
+// fast-forward again just over a second on with the next song a
+// second in; rewind then fast-forward a second apart; rewind twice a
+// second apart. None of them is a drag.
+el.currentTime = 60;
+out.skipSkip = press(70) + ",";
+el.currentTime = 1.2;
+out.skipSkip += press(11.2, null, 1200);
+el.currentTime = 60;
+out.saveSkip = press(50) + "," + press(70, null, 1000);
+el.currentTime = 60;
+out.saveSave = press(50) + ",";
+el.currentTime = 61;
+out.saveSave += press(51, null, 1000);
 // The car-save setting off.
 carSave = false; syncPrevAction(); el.currentTime = 60;
 out.noSave = press(50);
@@ -467,6 +487,9 @@ finish();
 		"the release ten seconds on":            {got.Release, "nothing moved to 40"},
 		"ten seconds on well after":             {got.Later, "skip stays"},
 		"two seeks close together":              {got.Burst, "nothing moved to 90,nothing moved to 100"},
+		"skip, then skip again a second on":     {got.SkipSkip, "skip stays,skip stays"},
+		"save, then skip a second on":           {got.SaveSkip, "save stays,skip stays"},
+		"save, then save again a second on":     {got.SaveSave, "save stays,save stays"},
 		"ten seconds back with car-save off":    {got.NoSave, "nothing stays"},
 		"ten seconds on with nothing playing":   {got.Idle, "nothing stays"},
 	} {
@@ -492,6 +515,12 @@ finish();
 		"seekto (live) to 50.0s from 40.0s: button-forward",
 		"seekto (live) to 90.0s from 60.0s: drag",
 		"seekto (live) to 100.0s from 90.0s: drag",
+		"seekto (live) to 70.0s from 60.0s: button-forward",
+		"seekto (live) to 11.2s from 1.2s: button-forward",
+		"seekto (live) to 50.0s from 60.0s: button-back",
+		"seekto (live) to 70.0s from 60.0s: button-forward",
+		"seekto (live) to 50.0s from 60.0s: button-back",
+		"seekto (live) to 51.0s from 61.0s: button-back",
 		"seekto (live) to 50.0s from 60.0s: button-back",
 		"seekto (live) to 70.0s with nothing playing",
 		"seekto (saved) to 50.0s",

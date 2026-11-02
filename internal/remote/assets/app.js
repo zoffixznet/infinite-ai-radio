@@ -2421,20 +2421,23 @@
   // and at the song's ends the car clamps the place to the end it ran
   // into. A seek of that shape is the button. A drag in progress is a
   // drag whatever it asks for: a scrub (a seekto flagged fastSeek, or
-  // one close on the heels of another) marks one, and the seekto that
-  // follows within a breath is its release, even when it lands ten
-  // seconds away.
-  var lastSeekAt = 0;
+  // one close on the heels of another drag) marks one, and the seekto
+  // that follows within a breath is its release, even when it lands
+  // ten seconds away. Only a drag opens that window: a button press
+  // never does, so a press hard on the heels of another - skip, skip;
+  // save, then skip - is the button both times and not a seek.
+  var lastDragAt = 0;
   function carSeekVerdict(el, details) {
     var now = Date.now();
-    var scrub = !!details.fastSeek || now - lastSeekAt < 1500;
-    lastSeekAt = now;
-    if (scrub) return "drag";
     var cur = el.currentTime || 0, dur = el.duration, target = details.seekTime;
     var delta = target - cur;
-    if ((delta >= -14 && delta <= -6) || (target <= 0.5 && cur <= 14)) return "button-back";
-    if ((delta >= 6 && delta <= 14) || (isFinite(dur) && dur > 0 && target >= dur - 0.5 && cur >= dur - 14)) return "button-forward";
-    return "drag";
+    var verdict;
+    if (details.fastSeek || now - lastDragAt < 1500) verdict = "drag";
+    else if ((delta >= -14 && delta <= -6) || (target <= 0.5 && cur <= 14)) verdict = "button-back";
+    else if ((delta >= 6 && delta <= 14) || (isFinite(dur) && dur > 0 && target >= dur - 0.5 && cur >= dur - 14)) verdict = "button-forward";
+    else verdict = "drag";
+    if (verdict === "drag") lastDragAt = now;
+    return verdict;
   }
 
   // msAction routes every media-session action; the same dispatch is
