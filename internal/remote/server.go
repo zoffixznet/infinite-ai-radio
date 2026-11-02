@@ -118,6 +118,9 @@ type Server struct {
 	// account.
 	ipLimit   *accounts.Limiter
 	acctLimit *accounts.Limiter
+	// noteLimit caps the lines a phone may write into the log per
+	// account, so a page gone wrong cannot fill it.
+	noteLimit *accounts.Limiter
 	tmpl      *template.Template
 	flashes   *flashStore
 	// boot stamps this process into the listing's ETag. The store's
@@ -181,6 +184,7 @@ func newServer(cfg Config, ctl Controls, log *slog.Logger) (*Server, error) {
 		trackMP3:  newMP3Cache(),
 		ipLimit:   accounts.NewLimiter(loginAttempts, loginWindow),
 		acctLimit: accounts.NewLimiter(loginAttempts, loginWindow),
+		noteLimit: accounts.NewLimiter(noteLinesPerMinute, time.Minute),
 		tmpl:      tmpl,
 		flashes:   newFlashStore(),
 		boot:      strconv.FormatInt(time.Now().UnixNano(), 36),
@@ -299,6 +303,9 @@ func (s *Server) buildHandler() http.Handler {
 	// Renaming what is playing is the same act as renaming it in the
 	// saved list, and answers to the same permission.
 	mux.HandleFunc("POST /retitle", s.apiPerm("rename songs", permSave, s.handleRetitle))
+	// A note is a line in the log and nothing else, and any account
+	// that is logged in may write one.
+	mux.HandleFunc("POST /note", s.api(s.handleNote))
 	// Sessions: listing for everyone; loading changes what everyone
 	// hears (new-prompt permission); naming is a save; deleting is
 	// admin-only.
@@ -701,6 +708,46 @@ func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request, u accounts.
 	ack := s.ctl.Steer(text)
 	s.ctl.Announce("remote steer by " + u.Email + ": " + text + " -> " + ack)
 	s.reply(w, ack)
+}
+
+// noteLinesPerMinute is how many lines one account may write into the
+// log in a minute; the rest are dropped without a word, since the page
+// writing them never reads the answer.
+const noteLinesPerMinute = 30
+
+// maxNoteRunes bounds one note.
+const maxNoteRunes = 200
+
+// handleNote writes one line the phone sends into the radio's log:
+// what the car or the system asked of the page, kept so a drive can
+// be read back afterwards. It touches nothing else, so it goes
+// straight to the log rather than through the player. The login
+// limiter does the counting: every line written is a strike against
+// the account, and thirty inside a minute shut it up until the oldest
+// ages out.
+func (s *Server) handleNote(w http.ResponseWriter, r *http.Request, u accounts.User) {
+	text := textFieldN(r, "text", 4*maxNoteRunes)
+	if text == "" {
+		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+	text = firstRunes(text, maxNoteRunes)
+	if ok, _ := s.noteLimit.Allowed(u.Email); ok {
+		s.noteLimit.Fail(u.Email)
+		s.log.Info("remote note", "event", "remote_note", "user", u.Email, "text", text)
+	}
+	s.reply(w, "noted")
+}
+
+// firstRunes cuts s to its first n letters.
+func firstRunes(s string, n int) string {
+	for i := range s {
+		if n == 0 {
+			return s[:i]
+		}
+		n--
+	}
+	return s
 }
 
 func (s *Server) handleLyricsGen(w http.ResponseWriter, r *http.Request, u accounts.User) {

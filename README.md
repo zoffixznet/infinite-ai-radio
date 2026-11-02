@@ -637,8 +637,11 @@ fast-forward and rewind where previous and next used to be, and the
 icons cannot be relabelled: on the radio those two buttons do the
 radio's jobs - fast-forward skips, and rewind saves the song when that
 setting is on - exactly as next and previous do from a headset or the
-lock screen. In the saved-songs player they seek by ten seconds, as
-the icons say. Pause there is the same pause as
+lock screen. The car sends those two buttons as a seek to a spot ten
+seconds away rather than as the buttons themselves, and the radio
+tells that apart from a drag of the bar, which still seeks. In the
+saved-songs player they seek by ten seconds, as the icons say. Pause
+there is the same pause as
 on the page: the song stays where it is, the car keeps showing it as
 paused, and the car's play button carries it on - so a car can start
 the music again without the phone in hand. The car's stop button is
@@ -1201,6 +1204,10 @@ log, which has the full story including the engine's own output.
   itself; expect at most a couple of minutes of looped music.
   The interface and `iar doctor` show the failure streak and the last
   reason.
+- **What did the car just do?** - the phone notes each command the car
+  or the system sends - a button, or a seek with the spot it asked for
+  and what the radio made of it - in the structured log
+  (`logs/iar.log`); look for the lines whose event is `remote_note`.
 
 Known limitations: this is a background-music radio, not a songwriting
 studio - you steer the vibe, the machine makes the calls - and the

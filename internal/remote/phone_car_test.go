@@ -21,8 +21,9 @@ import (
 // The registration of the actions, which app.js does at its top
 // level, is lifted along with the functions. The live player is one
 // fake element, el, on a pf the script fills with playing(); the
-// saved player is savedAudio; and what the buttons are routed to
-// lands in calls.
+// saved player is savedAudio; what the buttons are routed to lands
+// in calls; and what the page would note in the radio's log lands in
+// notes.
 //
 // The whole of it runs inside one function, so the fake navigator is
 // a binding of that function's own: node 21 and later put a
@@ -45,7 +46,7 @@ func phoneCar(t *testing.T, script string, out any) {
 	src := string(raw)
 	var fns []string
 	for _, name := range []string{"applyMediaMetadata", "mediaPlaybackState", "syncMediaLiveness", "syncMediaPosition", "pfSeekTo",
-		"msAction", "seekOffset", "seekSaved", "msHandler", "syncPrevAction"} {
+		"carSeekVerdict", "msAction", "seekOffset", "seekSaved", "msHandler", "syncPrevAction"} {
 		fns = append(fns, jsFunction(t, src, name))
 	}
 	register := regexp.MustCompile(`\[("[a-z]+", )*"[a-z]+"\]\.forEach\(function \(a\) \{\n\s*msHandler\(a, function \(d\) \{ msAction\(a, d\); \}\);\n\s*\}\);`).FindString(src)
@@ -59,7 +60,7 @@ process.on("uncaughtException", function (e) { out.errors.push(String(e && e.sta
 setTimeout(function () { out.errors.push("the scenario never finished"); finish(); }, 5000);
 (function () {
 var mode = "live", carSave = true, lastNow = "", msArtist = "", lastMetaSig = "", mediaLive = null;
-var repeatOne = null, calls = [];
+var repeatOne = null, calls = [], notes = [], lastSeekAt = 0;
 var el = { duration: NaN, currentTime: 0, addEventListener: function () {}, removeEventListener: function () {} };
 var pf = { active: false, playingId: null, els: [el, null], cur: 0 };
 var savedAudio = { src: "", duration: NaN, currentTime: 0, pause: function () { calls.push("saved pause"); } };
@@ -71,6 +72,7 @@ function pfSkip() { calls.push("skip"); }
 function updateLoopState() {}
 function step(dir) { calls.push("step " + dir); }
 function carSaveAction() { calls.push("save"); }
+function noteRadio(text) { notes.push(text); }
 function offlineMark() { return ""; }
 function saveMark() { return ""; }
 function MediaMetadata(m) { this.title = m.title; this.artist = m.artist; }
@@ -363,5 +365,139 @@ finish();
 	}
 	if want := "playing"; strings.Join(got.OlderStates, ",") != want {
 		t.Errorf("a browser without setPositionState was told %q; want %q", got.OlderStates, want)
+	}
+}
+
+// The owner's complaint, the third time round: the car's ten-second
+// buttons were back, and moved the song by ten seconds. Android Auto
+// does not send seekforward and seekbackward for them; it works out a
+// place ten seconds from the one the page declared and asks for it
+// through seekto, the same as a drag of the bar. A seek of that shape
+// is the button, and does the button's job without moving the song -
+// rewind saves, fast-forward skips - a little short or long of ten
+// seconds included, and clamped at the song's ends. A drag is still a
+// drag; a scrub and the release on its heels are a drag whatever they
+// land on; the car-save setting off leaves rewind doing nothing;
+// nothing playing leaves both doing nothing; the saved player seeks
+// for every one of them; and every action is noted for the radio's
+// log, a seek with its verdict.
+func TestPhoneCarTenSecondButtonsArriveAsSeeks(t *testing.T) {
+	var got struct {
+		Back       string    `json:"back"`
+		Forward    string    `json:"forward"`
+		BackNear   string    `json:"backNear"`
+		ForwardFar string    `json:"forwardFar"`
+		DragBack   string    `json:"dragBack"`
+		DragFar    string    `json:"dragFar"`
+		Start      string    `json:"start"`
+		End        string    `json:"end"`
+		Scrub      string    `json:"scrub"`
+		Release    string    `json:"release"`
+		Later      string    `json:"later"`
+		Burst      string    `json:"burst"`
+		NoSave     string    `json:"noSave"`
+		Idle       string    `json:"idle"`
+		SavedTimes []float64 `json:"savedTimes"`
+		Notes      []string  `json:"notes"`
+	}
+	phoneCar(t, `
+var clock = 100000;
+Date.now = function () { return clock; };
+// press is one seekto from the car, after ms (five seconds unless
+// said), reported as what it was routed to and whether the song moved.
+function press(seekTime, extra, after) {
+  clock += after == null ? 5000 : after;
+  var d = { seekTime: seekTime };
+  if (extra) for (var k in extra) d[k] = extra[k];
+  calls = [];
+  var was = el.currentTime;
+  handlers.seekto(d);
+  return (calls.join("+") || "nothing") + (el.currentTime === was ? " stays" : " moved to " + el.currentTime);
+}
+playing("a", 180);
+handlers.play();
+el.currentTime = 60;
+out.back = press(50);
+out.forward = press(70);
+out.backNear = press(50.5);
+out.forwardFar = press(73);
+out.dragBack = press(57);
+el.currentTime = 60;
+out.dragFar = press(100);
+// Clamped at the start and at the end.
+el.currentTime = 8;
+out.start = press(0);
+el.currentTime = 171;
+out.end = press(179.8);
+// A scrub, its release ten seconds on within a second, and a press
+// ten seconds on well after.
+el.currentTime = 60;
+out.scrub = press(30, { fastSeek: true });
+out.release = press(40, null, 1000);
+out.later = press(50, null, 5000);
+// Two plain seeks close together: a drag and its release.
+el.currentTime = 60;
+out.burst = press(90) + "," + press(100, null, 800);
+// The car-save setting off.
+carSave = false; syncPrevAction(); el.currentTime = 60;
+out.noSave = press(50);
+carSave = true; syncPrevAction();
+// Nothing playing on the device.
+pf.active = false;
+out.idle = press(70);
+pf.active = true;
+// The saved player.
+mode = "saved"; pf.active = false; pf.playingId = null;
+savedAudio.src = "blob:c"; savedAudio.duration = 200; savedAudio.currentTime = 60;
+handlers.seekto({ seekTime: 50 }); out.savedTimes = [savedAudio.currentTime];
+clock += 5000; handlers.seekto({ seekTime: 60 }); out.savedTimes.push(savedAudio.currentTime);
+out.notes = notes;
+finish();
+`, &got)
+	for name, c := range map[string][2]string{
+		"ten seconds back":                      {got.Back, "save stays"},
+		"ten seconds on":                        {got.Forward, "skip stays"},
+		"nine and a half back":                  {got.BackNear, "save stays"},
+		"thirteen on":                           {got.ForwardFar, "skip stays"},
+		"three back":                            {got.DragBack, "nothing moved to 57"},
+		"forty on":                              {got.DragFar, "nothing moved to 100"},
+		"back to the start from eight seconds":  {got.Start, "save stays"},
+		"on to the end from nine seconds short": {got.End, "skip stays"},
+		"a scrub":                               {got.Scrub, "nothing moved to 30"},
+		"the release ten seconds on":            {got.Release, "nothing moved to 40"},
+		"ten seconds on well after":             {got.Later, "skip stays"},
+		"two seeks close together":              {got.Burst, "nothing moved to 90,nothing moved to 100"},
+		"ten seconds back with car-save off":    {got.NoSave, "nothing stays"},
+		"ten seconds on with nothing playing":   {got.Idle, "nothing stays"},
+	} {
+		if c[0] != c[1] {
+			t.Errorf("%s: the car's seek did %q; want %q", name, c[0], c[1])
+		}
+	}
+	if want := []float64{50, 60}; !equalFloats(got.SavedTimes, want) {
+		t.Errorf("the saved player was moved to %v; want %v (a seek is a seek there)", got.SavedTimes, want)
+	}
+	wantNotes := []string{
+		"play (live)",
+		"seekto (live) to 50.0s from 60.0s: button-back",
+		"seekto (live) to 70.0s from 60.0s: button-forward",
+		"seekto (live) to 50.5s from 60.0s: button-back",
+		"seekto (live) to 73.0s from 60.0s: button-forward",
+		"seekto (live) to 57.0s from 60.0s: drag",
+		"seekto (live) to 100.0s from 60.0s: drag",
+		"seekto (live) to 0.0s from 8.0s: button-back",
+		"seekto (live) to 179.8s from 171.0s: button-forward",
+		"seekto (live) to 30.0s from 60.0s: drag",
+		"seekto (live) to 40.0s from 30.0s: drag",
+		"seekto (live) to 50.0s from 40.0s: button-forward",
+		"seekto (live) to 90.0s from 60.0s: drag",
+		"seekto (live) to 100.0s from 90.0s: drag",
+		"seekto (live) to 50.0s from 60.0s: button-back",
+		"seekto (live) to 70.0s with nothing playing",
+		"seekto (saved) to 50.0s",
+		"seekto (saved) to 60.0s",
+	}
+	if strings.Join(got.Notes, "\n") != strings.Join(wantNotes, "\n") {
+		t.Errorf("the page noted:\n%s\nwant:\n%s", strings.Join(got.Notes, "\n"), strings.Join(wantNotes, "\n"))
 	}
 }

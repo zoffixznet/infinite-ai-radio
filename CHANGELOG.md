@@ -6,6 +6,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The phone notes each command the car or the system sends - play,
+  pause, stop, next, previous, and a seek with the spot it asked for
+  and what the radio made of it - in the radio's log, so a drive can
+  be read back afterwards. The lines carry the event `remote_note`.
+
+### Fixed
+
+- The car's ten-second buttons save and skip now. The car does not
+  send them as the rewind and fast-forward they look like: it works
+  out a spot ten seconds from where the song is and asks for a seek
+  there, the same as a drag of the bar, and the radio took that at its
+  word and moved the song. A seek to a spot ten seconds away is now
+  recognised as the button and does the button's job - rewind saves,
+  fast-forward skips - while dragging the bar still seeks.
+
 ## [2.1.6] - 2026-10-29
 
 ### Changed

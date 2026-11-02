@@ -119,6 +119,7 @@ function savedPlay() {}
 function updateLoopState() {}
 function step() {}
 function carSaveAction() {}
+function noteRadio() {}
 var savedAudio = { pause: function () {} };
 function dbReady() { return Promise.resolve(); }
 function idbStore() { return { put: function () { return {}; }, get: function () { return {}; }, "delete": function () { return {}; }, getAll: function () { return { all: true }; }, clear: function () { return {}; } }; }

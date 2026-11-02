@@ -2399,11 +2399,51 @@
     doSave($("save"), false, [stateEl, $("savestatus")]);
   }
 
+  // noteRadio writes one line into the radio's log, fire and forget:
+  // what the car or the system asked of the page, so a drive can be
+  // read back afterwards from a log the phone has no room to show.
+  // Nothing is said about the answer, and nothing is sent while the
+  // radio is out of reach.
+  function noteRadio(text) {
+    if (radioUnreachable()) return;
+    try {
+      fetch("/note", { method: "POST", headers: headers, body: "text=" + encodeURIComponent(text), keepalive: true })["catch"](function () {});
+    } catch (e) {}
+  }
+
+  // carSeekVerdict says what a seekto in live mode is: the car's
+  // rewind ("button-back"), its fast-forward ("button-forward"), or
+  // the bar dragged ("drag"). The car's ten-second buttons do not
+  // arrive as seekbackward and seekforward: Android Auto works out a
+  // place ten seconds from the one the page declared and asks for
+  // that, through the same seekto as a real drag - a little more or
+  // less than ten, since the car's clock and the page's drift apart,
+  // and at the song's ends the car clamps the place to the end it ran
+  // into. A seek of that shape is the button. A drag in progress is a
+  // drag whatever it asks for: a scrub (a seekto flagged fastSeek, or
+  // one close on the heels of another) marks one, and the seekto that
+  // follows within a breath is its release, even when it lands ten
+  // seconds away.
+  var lastSeekAt = 0;
+  function carSeekVerdict(el, details) {
+    var now = Date.now();
+    var scrub = !!details.fastSeek || now - lastSeekAt < 1500;
+    lastSeekAt = now;
+    if (scrub) return "drag";
+    var cur = el.currentTime || 0, dur = el.duration, target = details.seekTime;
+    var delta = target - cur;
+    if ((delta >= -14 && delta <= -6) || (target <= 0.5 && cur <= 14)) return "button-back";
+    if ((delta >= 6 && delta <= 14) || (isFinite(dur) && dur > 0 && target >= dur - 0.5 && cur >= dur - 14)) return "button-forward";
+    return "drag";
+  }
+
   // msAction routes every media-session action; the same dispatch is
   // reachable through the "iar:msaction" DOM event so scripted clients
   // can drive the car controls, with the action as a string or as an
-  // object naming it alongside its details.
+  // object naming it alongside its details. Every action is noted in
+  // the radio's log - one line a press, a seek with its verdict.
   function msAction(action, details) {
+    if (action !== "seekto") noteRadio(action + " (" + mode + ")");
     switch (action) {
       case "play":
         // The car's play carries on with the paused song in place,
@@ -2447,12 +2487,35 @@
         }
         break;
       case "seekto":
-        // The bar dragged, on the car or the lock screen.
-        if (!details || typeof details.seekTime !== "number" || !isFinite(details.seekTime)) break;
+        // The bar dragged, on the car or the lock screen - or the
+        // car's ten-second buttons, which arrive as a seek to a place
+        // ten seconds away (see carSeekVerdict) and do the buttons'
+        // jobs. The saved player seeks for every one of them.
+        if (!details || typeof details.seekTime !== "number" || !isFinite(details.seekTime)) {
+          noteRadio("seekto (" + mode + ") to no place");
+          break;
+        }
         if (mode === "live") {
           var el = pf.active && pf.playingId ? pf.els[pf.cur] : null;
-          if (el) { pfSeekTo(el, details.seekTime); syncMediaPosition(); }
+          if (!el) {
+            noteRadio("seekto (live) to " + details.seekTime.toFixed(1) + "s with nothing playing");
+            break;
+          }
+          var verdict = carSeekVerdict(el, details);
+          noteRadio("seekto (live) to " + details.seekTime.toFixed(1) + "s from " + (el.currentTime || 0).toFixed(1) + "s: " + verdict);
+          if (verdict === "button-back") {
+            if (carSave) carSaveAction();
+          } else if (verdict === "button-forward") {
+            if (pf.active) pfSkip();
+          } else {
+            pfSeekTo(el, details.seekTime);
+          }
+          // Declared either way: a button leaves the song where it
+          // was, and a car that drew the bar at the place it asked for
+          // is told the real one.
+          syncMediaPosition();
         } else {
+          noteRadio("seekto (saved) to " + details.seekTime.toFixed(1) + "s");
           seekSaved(details.seekTime);
         }
         break;
