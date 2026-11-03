@@ -118,13 +118,11 @@ type Server struct {
 	// account.
 	ipLimit   *accounts.Limiter
 	acctLimit *accounts.Limiter
-	// noteLimit and noteDayLimit cap the lines a phone may write into
-	// the log per account, a minute and a day at a time, so a page gone
-	// wrong cannot fill it.
-	noteLimit    *accounts.Limiter
-	noteDayLimit *accounts.Limiter
-	tmpl         *template.Template
-	flashes      *flashStore
+	// noteLimit caps the lines a phone may write into the log per
+	// account, so a page gone wrong cannot fill it.
+	noteLimit *accounts.Limiter
+	tmpl      *template.Template
+	flashes   *flashStore
 	// boot stamps this process into the listing's ETag. The store's
 	// version counter starts over with the process, so without it a
 	// radio restarted onto the same store could hand out a tag a phone
@@ -176,21 +174,20 @@ func newServer(cfg Config, ctl Controls, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("remote: parsing page templates: %w", err)
 	}
 	return &Server{
-		cfg:          cfg,
-		ctl:          ctl,
-		log:          log,
-		users:        cfg.Users,
-		sessions:     cfg.Sessions,
-		mailer:       cfg.Mailer,
-		catalog:      snippets.NewCatalog(cfg.SnippetsDir),
-		trackMP3:     newMP3Cache(),
-		ipLimit:      accounts.NewLimiter(loginAttempts, loginWindow),
-		acctLimit:    accounts.NewLimiter(loginAttempts, loginWindow),
-		noteLimit:    accounts.NewLimiter(noteLinesPerMinute, time.Minute),
-		noteDayLimit: accounts.NewLimiter(noteLinesPerDay, 24*time.Hour),
-		tmpl:         tmpl,
-		flashes:      newFlashStore(),
-		boot:         strconv.FormatInt(time.Now().UnixNano(), 36),
+		cfg:       cfg,
+		ctl:       ctl,
+		log:       log,
+		users:     cfg.Users,
+		sessions:  cfg.Sessions,
+		mailer:    cfg.Mailer,
+		catalog:   snippets.NewCatalog(cfg.SnippetsDir),
+		trackMP3:  newMP3Cache(),
+		ipLimit:   accounts.NewLimiter(loginAttempts, loginWindow),
+		acctLimit: accounts.NewLimiter(loginAttempts, loginWindow),
+		noteLimit: accounts.NewLimiter(noteLinesPerMinute, time.Minute),
+		tmpl:      tmpl,
+		flashes:   newFlashStore(),
+		boot:      strconv.FormatInt(time.Now().UnixNano(), 36),
 	}, nil
 }
 
@@ -718,11 +715,6 @@ func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request, u accounts.
 // writing them never reads the answer.
 const noteLinesPerMinute = 30
 
-// noteLinesPerDay is how many lines one account may write into the log
-// in any 24 hours, dropped the same way past it: the minute's limit
-// alone would let a page that never stops write forty thousand a day.
-const noteLinesPerDay = 2000
-
 // maxNoteRunes bounds one note.
 const maxNoteRunes = 200
 
@@ -731,8 +723,8 @@ const maxNoteRunes = 200
 // be read back afterwards. It touches nothing else, so it goes
 // straight to the log rather than through the player. The login
 // limiter does the counting: every line written is a strike against
-// the account, and thirty inside a minute - or two thousand inside a
-// day - shut it up until the oldest ages out.
+// the account, and thirty inside a minute shut it up until the oldest
+// ages out.
 func (s *Server) handleNote(w http.ResponseWriter, r *http.Request, u accounts.User) {
 	text := textFieldN(r, "text", 4*maxNoteRunes)
 	if text == "" {
@@ -740,11 +732,8 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request, u accounts.U
 		return
 	}
 	text = firstRunes(text, maxNoteRunes)
-	minuteOK, _ := s.noteLimit.Allowed(u.Email)
-	dayOK, _ := s.noteDayLimit.Allowed(u.Email)
-	if minuteOK && dayOK {
+	if ok, _ := s.noteLimit.Allowed(u.Email); ok {
 		s.noteLimit.Fail(u.Email)
-		s.noteDayLimit.Fail(u.Email)
 		s.log.Info("remote note", "event", "remote_note", "user", u.Email, "text", text)
 	}
 	s.reply(w, "noted")

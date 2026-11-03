@@ -17,10 +17,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The phone's notes of what the car and the system asked for are
-  capped at 2000 lines an account a day, as well as 30 a minute, so a
-  page left running cannot fill the log. The lines past either limit
-  are dropped; the phone carries on as before.
 - The car setting reads "Car rewind button saves the track", and its
   note says what the buttons do in the car: rewind saves, fast-forward
   skips, previous on the steering wheel or a headset saves too, and
