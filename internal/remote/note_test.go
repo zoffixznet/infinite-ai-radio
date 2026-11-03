@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"iar/internal/accounts"
 )
 
 // logSink keeps the server's log lines, under a lock, since the server
@@ -97,5 +100,48 @@ func TestRemoteNoteIsALineInTheLog(t *testing.T) {
 	}
 	if got := sink.lines("remote_note"); len(got) != 31 {
 		t.Errorf("a note without a login was written: %d lines", len(got))
+	}
+}
+
+// Past the minute's limit there is a day's: two thousand lines an
+// account in any 24 hours, the rest dropped and answered as if written
+// just the same, and another account not held back by it. The test
+// shrinks the day's ceiling so it can be reached without a day of
+// minutes.
+func TestRemoteNoteDailyCeiling(t *testing.T) {
+	h := newHarness(t, nil)
+	sink := &logSink{}
+	h.s.log = slog.New(slog.NewTextHandler(sink, nil))
+	admin := h.admin()
+	listener := h.activate(h.invite(admin, "listener@example.com", nil), "listen-pass-1")
+
+	// The ceiling the radio runs with.
+	day := h.s.noteDayLimit
+	for i := 0; i < noteLinesPerDay; i++ {
+		if ok, _ := day.Allowed("probe@example.com"); !ok {
+			t.Fatalf("the day's ceiling closed after %d lines; want %d", i, noteLinesPerDay)
+		}
+		day.Fail("probe@example.com")
+	}
+	if ok, wait := day.Allowed("probe@example.com"); ok || wait <= 23*time.Hour {
+		t.Fatalf("line %d of a day: allowed %v, reopens in %s; want refused for about a day", noteLinesPerDay+1, ok, wait)
+	}
+
+	h.s.noteDayLimit = accounts.NewLimiter(5, 24*time.Hour)
+	for i := 1; i <= 8; i++ {
+		resp, body := listener.postAPI("/note", url.Values{"text": {"play (live)"}})
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"ok":true`) || !strings.Contains(body, "noted") {
+			t.Fatalf("note %d: %d %s; want it answered as noted", i, resp.StatusCode, body)
+		}
+	}
+	if got := sink.lines("remote_note"); len(got) != 5 {
+		t.Errorf("8 notes against a ceiling of 5 wrote %d lines; want 5", len(got))
+	}
+	resp, _ := admin.postAPI("/note", url.Values{"text": {"pause (live)"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the admin's note: %d", resp.StatusCode)
+	}
+	if got := sink.lines("remote_note"); len(got) != 6 || !strings.Contains(got[5], "user=admin@example.com") {
+		t.Errorf("another account past the first's ceiling: %d lines; want 6 with the admin's last", len(got))
 	}
 }

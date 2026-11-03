@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The radio's logs are capped and rotate on their own. When
+  `logs/iar.log` passes 20 MB, or `logs/engine-daemon.log` passes
+  50 MB, it moves aside to `.1` (the previous `.1` to `.2`, the oldest
+  dropped) and a fresh file starts, while the radio keeps running. A
+  log already over its cap is rotated the next time it is opened. The
+  caps are the new `log_max_mb` and `engine_log_max_mb` settings.
+
+### Changed
+
+- The phone's notes of what the car and the system asked for are
+  capped at 2000 lines an account a day, as well as 30 a minute, so a
+  page left running cannot fill the log. The lines past either limit
+  are dropped; the phone carries on as before.
+- The car setting reads "Car rewind button saves the track", and its
+  note says what the buttons do in the car: rewind saves, fast-forward
+  skips, previous on the steering wheel or a headset saves too, and
+  dragging the bar moves through the song.
+
 ## [2.1.7] - 2026-11-02
 
 ### Added

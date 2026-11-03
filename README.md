@@ -657,13 +657,15 @@ how it works.
 
 Two car conveniences live under Settings, remembered per device:
 
-- **The previous-track button saves the track.** An endless radio has
-  no meaningful "previous", so that button - on the steering wheel,
-  headset or car screen - doubles as save-what-I-am-hearing, confirmed
-  by the "Saved:" marker in front of the song's name, which stays there
-  for the rest of the song. It captures every previous-track input, a
-  voice assistant's "previous song" included. In the saved-songs
-  player, previous keeps its normal meaning.
+- **Car rewind button saves the track.** An endless radio has no
+  meaningful "previous", so the car screen's ten-second rewind button,
+  and previous on the steering wheel or a headset, double as
+  save-what-I-am-hearing, confirmed by the "Saved:" marker in front of
+  the song's name, which stays there for the rest of the song. It
+  captures every previous-track input, a voice assistant's "previous
+  song" included. Switched off, those buttons do nothing on the radio;
+  fast-forward and next skip either way. In the saved-songs player,
+  previous keeps its normal meaning.
 - **Carry on playing when the page reopens.** After a reload, or the
   car opening the page again, the radio carries on by itself if it was
   playing when the page went away; switched off, it waits for Play. A
@@ -778,6 +780,8 @@ everything else keeps its default. The complete set, with defaults:
   "lyrics_generator": "scribe",
   "vocal_languages": [],
   "default_preset": "nu-metal",
+  "log_max_mb": 20,
+  "engine_log_max_mb": 50,
   "remote": {
     "enabled": false,
     "port": 8246,
@@ -889,6 +893,12 @@ everything else keeps its default. The complete set, with defaults:
   names a language of its own seeds the list instead, so the switches
   show it. Flipping a switch releases that pin, drops the songs made
   ahead and starts generating in the new languages.
+- `log_max_mb` and `engine_log_max_mb`: how large, in megabytes, the
+  radio's log (`logs/iar.log`, default 20) and the engine daemon's log
+  (`logs/engine-daemon.log`, default 50) may grow. Past its cap a log
+  is moved aside to `.1`, the previous `.1` becomes `.2`, the older
+  copy is dropped, and a fresh file starts - while the radio runs, with
+  no restart. The smallest cap is 1.
 - `buffer_tracks` is no longer used: the songs ahead of every listener
   live in the store on disk (see the `buffer` section). The key can be
   deleted.
@@ -1134,6 +1144,8 @@ Inside the data directory:
 - `exports/` - MP3 exports
 - `logs/iar.log` - structured JSON log of the player
 - `logs/engine-daemon.log` - the shared engine daemon's log
+- `logs/*.log.1`, `logs/*.log.2` - the two older copies of each log,
+  kept when it reaches its size cap
 - `state/` - engine daemon state, locks and phase-duration records
 
 ## Models and licensing
@@ -1208,6 +1220,10 @@ log, which has the full story including the engine's own output.
   or the system sends - a button, or a seek with the spot it asked for
   and what the radio made of it - in the structured log
   (`logs/iar.log`); look for the lines whose event is `remote_note`.
+- **Where did the older log lines go?** - each log is capped
+  (`log_max_mb`, `engine_log_max_mb`); at its cap it moves to
+  `logs/<name>.log.1`, the one before that to `.log.2`, so the two
+  previous files sit next to the current one in `logs/`.
 
 Known limitations: this is a background-music radio, not a songwriting
 studio - you steer the vibe, the machine makes the calls - and the

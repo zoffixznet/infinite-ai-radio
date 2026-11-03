@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"iar/internal/engine/acestep"
+	"iar/internal/logging"
 	"iar/internal/state"
 )
 
@@ -111,10 +113,6 @@ func engineDaemonCommand() *cobra.Command {
 }
 
 func runEngineDaemon() error {
-	// The daemon logs JSON to stdout, which the spawner redirects into
-	// the engine daemon log file.
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
 	paths, err := resolvePathsEnsured()
 	if err != nil {
 		return err
@@ -123,6 +121,13 @@ func runEngineDaemon() error {
 	if err != nil {
 		return err
 	}
+	// The daemon logs JSON to stdout, which the spawner redirects into
+	// the engine daemon log file; there it writes through a rotating
+	// file instead, so the log stays under its cap.
+	out, closeLog := daemonLogOutput(daemonLogPath(paths), cfg.EngineLogMaxBytes())
+	defer closeLog()
+	logger := slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
 	stateD, err := state.NewDir(paths.DataDir)
 	if err != nil {
 		return err
@@ -146,4 +151,30 @@ func runEngineDaemon() error {
 		},
 		IdleTimeout: time.Duration(cfg.ACEStep.IdleMinutes) * time.Minute,
 	}, logger)
+}
+
+// daemonLogOutput is where the engine daemon writes its log. Spawned by
+// the radio, its stdout is the engine daemon log itself; then the log is
+// opened as a rotating file, and every rotation also moves stdout and
+// stderr onto the fresh file, so a crash report lands next to the lines
+// before it. Run by hand with stdout elsewhere, it logs to stdout as
+// before.
+func daemonLogOutput(path string, maxBytes int64) (io.Writer, func()) {
+	plain := func() {}
+	out, err := os.Stdout.Stat()
+	if err != nil || !out.Mode().IsRegular() {
+		return os.Stdout, plain
+	}
+	onDisk, err := os.Stat(path)
+	if err != nil || !os.SameFile(out, onDisk) {
+		return os.Stdout, plain
+	}
+	r, err := logging.OpenRotating(path, maxBytes)
+	if err != nil {
+		return os.Stdout, plain
+	}
+	r.OnRotate = redirectStdio
+	// Opening may have rotated a log already over its cap.
+	redirectStdio(r.File())
+	return r, func() { r.Close() }
 }

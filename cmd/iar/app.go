@@ -46,7 +46,7 @@ func newApp(verbose bool) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	logger, closer, err := logging.Setup(paths.LogFile(), verbose)
+	logger, closer, err := logging.Setup(paths.LogFile(), cfg.LogMaxBytes(), verbose)
 	if err != nil {
 		return nil, err
 	}
@@ -71,8 +71,10 @@ func (a *app) close() {
 }
 
 // daemonLogFile is where the shared engine daemon writes its output.
-func (a *app) daemonLogFile() string {
-	return filepath.Join(a.paths.LogsDir(), "engine-daemon.log")
+func (a *app) daemonLogFile() string { return daemonLogPath(a.paths) }
+
+func daemonLogPath(p config.Paths) string {
+	return filepath.Join(p.LogsDir(), "engine-daemon.log")
 }
 
 // buildEngine constructs the configured music engine backed by the shared

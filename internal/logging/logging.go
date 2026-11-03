@@ -4,19 +4,19 @@ package logging
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
 )
 
-// Setup opens (appending) the log file at path and installs a JSON slog
-// logger writing to it. When verbose is true, log lines are also mirrored to
-// stderr in text form. The returned closer flushes and closes the file.
-func Setup(path string, verbose bool) (*slog.Logger, io.Closer, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+// Setup opens (appending) the log file at path, rotating it whenever it
+// would pass maxBytes, and installs a JSON slog logger writing to it.
+// When verbose is true, log lines are also mirrored to stderr in text
+// form. The returned closer flushes and closes the file.
+func Setup(path string, maxBytes int64, verbose bool) (*slog.Logger, io.Closer, error) {
+	f, err := OpenRotating(path, maxBytes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening log file: %w", err)
+		return nil, nil, err
 	}
 	var handler slog.Handler = slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})
 	if verbose {

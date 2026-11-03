@@ -415,3 +415,29 @@ func TestDeltaBytes(t *testing.T) {
 		}
 	}
 }
+
+// The daemon rotates its log at a size cap. A tracker reading into the
+// old file must pick the fresh one up from its start, even when the
+// fresh file has already grown past the old offset.
+func TestModelTrackerFollowsRotation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "engine-daemon.log")
+	writeLog(t, path, daemonLine(`[_load_model_context] Loaded vae to cuda in 0.1s (RSS: 2 -> 1 MB, delta: -644 MB)`))
+	tr := newModelTracker(path)
+	if len(tr.resident()) != 1 {
+		t.Fatal("setup: vae should be resident")
+	}
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	// The load comes first in the fresh file, inside the stretch an
+	// offset carried over from the old file would skip.
+	fresh := daemonLine(`[_load_model_context] Loaded model from disk to cuda in 1.0s (RSS: 1 -> 2 MB)`)
+	for i := 0; i < 3; i++ {
+		fresh += daemonLine(`unrelated chatter`)
+	}
+	writeLog(t, path, fresh)
+	if got := tr.resident(); len(got) != 2 {
+		t.Fatalf("the DiT loaded in the fresh file was missed, got %v", names(got))
+	}
+}

@@ -33,7 +33,10 @@ type modelTracker struct {
 	mu     sync.Mutex
 	offset int64
 	seeded bool
-	live   map[string]Model
+	// file identifies the log the offset is into; the daemon rotates
+	// its log at a size cap, and a fresh file is read from its start.
+	file os.FileInfo
+	live map[string]Model
 }
 
 func newModelTracker(path string) *modelTracker {
@@ -85,10 +88,11 @@ func (t *modelTracker) consume() {
 			t.offset = 0
 		}
 	}
-	if size < t.offset {
-		// Truncated or replaced: start over from the beginning.
+	if size < t.offset || (t.file != nil && !os.SameFile(t.file, info)) {
+		// Truncated, rotated or replaced: start over from the beginning.
 		t.offset = 0
 	}
+	t.file = info
 	n := size - t.offset
 	if n <= 0 {
 		return

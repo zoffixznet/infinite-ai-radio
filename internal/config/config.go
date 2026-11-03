@@ -61,6 +61,13 @@ type Config struct {
 	// now, so this is read only to convert sessions saved back then -
 	// those that carry no answer of their own - and never written.
 	VocalLanguagesOff []string `json:"vocal_languages_off,omitempty"`
+	// LogMaxMB caps the radio's log (logs/iar.log) in megabytes. Past
+	// it the file moves aside to iar.log.1 (the previous .1 to .2, the
+	// oldest dropped) and a fresh one starts.
+	LogMaxMB int `json:"log_max_mb"`
+	// EngineLogMaxMB caps the engine daemon's log
+	// (logs/engine-daemon.log) the same way.
+	EngineLogMaxMB int `json:"engine_log_max_mb"`
 
 	ACEStep  ACEStep  `json:"acestep"`
 	Buffer   Buffer   `json:"buffer"`
@@ -230,6 +237,8 @@ func Default() Config {
 		MP3Quality:        0,
 		LyricsGenerator:   "scribe",
 		DefaultPreset:     "nu-metal",
+		LogMaxMB:          20,
+		EngineLogMaxMB:    50,
 		Buffer: Buffer{
 			Songs:        72,
 			ReserveSongs: 80,
@@ -380,7 +389,23 @@ func (c *Config) sanitize() {
 	if c.Sessions.AutoRetentionDays < 0 {
 		c.Sessions.AutoRetentionDays = 0
 	}
+	if c.LogMaxMB < MinLogMB {
+		c.LogMaxMB = MinLogMB
+	}
+	if c.EngineLogMaxMB < MinLogMB {
+		c.EngineLogMaxMB = MinLogMB
+	}
 }
+
+// MinLogMB is the smallest log cap the config accepts; anything lower
+// is raised to it.
+const MinLogMB = 1
+
+// LogMaxBytes is the radio log's cap in bytes.
+func (c Config) LogMaxBytes() int64 { return int64(c.LogMaxMB) << 20 }
+
+// EngineLogMaxBytes is the engine daemon log's cap in bytes.
+func (c Config) EngineLogMaxBytes() int64 { return int64(c.EngineLogMaxMB) << 20 }
 
 // writeOwnerOnly replaces path with data through a 0600 temp file and a
 // rename, so the result is complete and owner-only regardless of the

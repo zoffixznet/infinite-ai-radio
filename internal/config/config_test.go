@@ -267,3 +267,28 @@ func TestSetVocalLanguagesCreatesTheFile(t *testing.T) {
 		t.Errorf("languages = %v", cfg.VocalLanguages)
 	}
 }
+
+func TestLogCapsDefaultAndClamp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvDataDir, filepath.Join(dir, "data"))
+	t.Setenv(EnvConfigDir, dir)
+	p, _ := ResolvePaths()
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogMaxMB != 20 || cfg.EngineLogMaxMB != 50 {
+		t.Fatalf("default caps = %d/%d MB, want 20/50", cfg.LogMaxMB, cfg.EngineLogMaxMB)
+	}
+	if cfg.LogMaxBytes() != 20<<20 || cfg.EngineLogMaxBytes() != 50<<20 {
+		t.Fatalf("caps in bytes = %d/%d", cfg.LogMaxBytes(), cfg.EngineLogMaxBytes())
+	}
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"log_max_mb":0,"engine_log_max_mb":-3}`), 0o644)
+	if cfg, _ = Load(p); cfg.LogMaxMB != MinLogMB || cfg.EngineLogMaxMB != MinLogMB {
+		t.Fatalf("caps below the minimum load as %d/%d MB", cfg.LogMaxMB, cfg.EngineLogMaxMB)
+	}
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"log_max_mb":5,"engine_log_max_mb":200}`), 0o644)
+	if cfg, _ = Load(p); cfg.LogMaxMB != 5 || cfg.EngineLogMaxMB != 200 {
+		t.Fatalf("caps load as %d/%d MB", cfg.LogMaxMB, cfg.EngineLogMaxMB)
+	}
+}
