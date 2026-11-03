@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.8] - 2026-11-03
+
 ### Added
 
 - The radio's logs are capped and rotate on their own. When
@@ -696,7 +698,8 @@ First public release. Everything below is what you get on day one.
 - Published as a static Linux binary for amd64 and arm64, with every
   asset embedded.
 
-[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.7...HEAD
+[Unreleased]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.8...HEAD
+[2.1.8]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.7...v2.1.8
 [2.1.7]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.6...v2.1.7
 [2.1.6]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.5...v2.1.6
 [2.1.5]: https://github.com/zoffixznet/infinite-ai-radio/compare/v2.1.4...v2.1.5
